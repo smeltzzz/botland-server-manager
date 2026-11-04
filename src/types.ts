@@ -1,6 +1,12 @@
 export type GameId = 'cod4' | 'waw' | 'mw2' | 'bo1' | 'mw3' | 'bo2';
-export type GameStatus = 'stopped' | 'starting' | 'running' | 'stopping';
-export interface LogEntry { at: string; level: string; message: string }
+export type GameStatus = 'stopped' | 'starting' | 'running' | 'stopping' | 'restarting';
+export interface LogEntry { at: string; level: string; message: string; source?: 'manager' | 'stdout' | 'stderr' | 'file' }
+export interface ConnectCandidate { adapter: string; address: string; scope: string; label: string; connectAddress: string }
+export interface ConnectAddresses { primaryAddress: string | null; ambiguous: boolean; candidates: ConnectCandidate[] }
+export interface OrphanCandidate { pid: number; port: number; reason: string }
+export interface RestartState { enabled: boolean; attempts: number; nextAttemptAt: string | null; cutOff: boolean }
+export interface ConfigBackup { id: string; date: string; bytes: number }
+export interface ConfigRestorePreview { token: string; summary: { changed: boolean; currentBytes: number; backupBytes: number; contents: string } }
 export interface Game {
   id: GameId;
   title: string;
@@ -14,6 +20,9 @@ export interface Game {
   pathSource: 'manual' | 'steam' | 'none';
   keyStatus: 'not-required' | 'stored' | 'missing' | 'unavailable';
   modBusy: boolean;
+  connect: ConnectAddresses;
+  orphan: OrphanCandidate | null;
+  restart: RestartState;
   config: Record<string, string>;
   options: { port: number; mode: string; shuffle: boolean; selectedMaps: string[]; gamePath: string; lan: boolean };
   blockers: string[];
@@ -46,6 +55,13 @@ export interface ManagerApi {
   chooseRoot(): Promise<boolean>;
   rescanInstallations(): Promise<void>;
   createStarterConfig(id: GameId): Promise<string>;
+  copyConnectAddress(id: GameId, address: string): Promise<boolean>;
+  setAutoRestart(id: GameId, enabled: boolean): Promise<void>;
+  rescanOrphans(): Promise<void>;
+  listConfigBackups(id: GameId, target: ConfigTarget, mode: string): Promise<ConfigBackup[]>;
+  previewConfigRestore(id: GameId, target: ConfigTarget, mode: string, backupId: string): Promise<ConfigRestorePreview>;
+  restoreConfigBackup(id: GameId, target: ConfigTarget, mode: string, backupId: string, token: string): Promise<void>;
+  pruneConfigBackups(id: GameId, target: ConfigTarget, mode: string, ids: string[]): Promise<{ removed: number }>;
   botStatus(id: GameId): Promise<BotStatus>;
   botAction(id: GameId, operation: 'install' | 'update' | 'reinstall' | 'remove' | 'restore', versionId?: string): Promise<void>;
   setBotChannel(id: GameId, channel: 'stable' | 'development'): Promise<void>;

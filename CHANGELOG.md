@@ -9,6 +9,9 @@ Notable changes to botLANd Server Manager are recorded here. This project follow
 - Remove the legacy launcher requirement for starting servers. Plutonium keys can be saved with Electron safeStorage or explicitly imported from a private launcher.
 - Create missing starter base configs without overwriting existing files, including required MW3/BO2 rotation execs.
 - Add opt-in Bot Warfare install/update/reinstall/remove/restore for all six games, with official-source ZIP validation, Cod4R clientid patch, per-file backups/rollback, preserved user-edited waypoints, and release-update checks.
+- Add per-game connection-address Copy, source-labelled file log tailing, bounded redacted session logs, opt-in crash restart with backoff, Cod4R console-first graceful stop, read-only possible-orphan warnings, and transactional config backup restore/prune.
+- Journal Bot Warfare file changes for interrupted-update recovery and stage verified firewall replacements before removing previously marked rules.
+- Enforce the 18-player cap for MW2, MW3 and BO2 in guided config validation; document a manual Windows Firewall/UAC integration check.
 
 ## 0.2.7
 

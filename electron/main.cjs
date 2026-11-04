@@ -1,11 +1,13 @@
 const path = require('node:path');
 const fs = require('node:fs/promises');
 const { constants } = require('node:fs');
-const { app, BrowserWindow, dialog, ipcMain, safeStorage, session, shell } = require('electron');
+const { app, BrowserWindow, clipboard, dialog, ipcMain, safeStorage, session, shell } = require('electron');
 const { ServerManager } = require('./manager.cjs');
 const { KeyStore } = require('./key-store.cjs');
 const { BotWarfareSource } = require('./botwarfare-source.cjs');
 const { BotWarfareInstaller } = require('./botwarfare-install.cjs');
+const { SessionLogs } = require('./session-logs.cjs');
+const { discoverConnectAddresses } = require('./connect-address.cjs');
 const { profileFor } = require('./profiles.cjs');
 const { sourceRepos } = require('./schema.cjs');
 
@@ -46,7 +48,8 @@ async function createWindow() {
     // Server output can arrive while the renderer is reloading or gone; sending to a
     // disposed frame throws and must not crash the main process or end a stream handler.
     try { if (window && !window.isDestroyed()) window.webContents.send('manager:event', data); } catch { /* Renderer unavailable. */ }
-  }, defaultRoot, { keyStore: new KeyStore(path.join(app.getPath('userData'), 'keys.json'), safeStorage), modSource, modInstaller });
+  }, defaultRoot, { keyStore: new KeyStore(path.join(app.getPath('userData'), 'keys.json'), safeStorage),
+    modSource, modInstaller, sessionLogs: new SessionLogs({ userData: app.getPath('userData') }) });
   const recoveredSettings = await manager.initialize();
   await manager.rescanInstallations();
   window = new BrowserWindow({
@@ -104,10 +107,25 @@ if (primaryInstance) app.whenReady().then(() => {
       case 'maps': return manager.maps(id);
       case 'start': return manager.start(id);
       case 'stop': return manager.stop(id);
+      case 'setAutoRestart': return manager.setAutoRestart(id, payload.enabled);
+      case 'rescanOrphans': return manager.rescanOrphans();
+      case 'copyConnectAddress': {
+        profileFor(id);
+        if (typeof payload.address !== 'string' || manager.instances.get(id)?.status !== 'running') throw new Error('Start this server before copying its address.');
+        const port = manager.instances.get(id).activePort;
+        const connect = discoverConnectAddresses(port);
+        if (!connect.candidates.some(candidate => candidate.connectAddress === payload.address)) throw new Error('That local connect address is no longer available. Refresh the page.');
+        clipboard.writeText(payload.address);
+        return true;
+      }
       case 'saveOptions': return manager.saveOptions(id, payload.values);
       case 'document': return manager.document(id, payload.target, payload.mode);
       case 'previewSettings': return manager.previewSettings(id, payload.target, payload.mode, payload.values, payload.expectedPath);
       case 'commitSettings': return manager.commitSettings(id, payload.target, payload.mode, payload.values, payload.token, payload.expectedPath);
+      case 'listConfigBackups': return manager.listConfigBackups(id, payload.target, payload.mode);
+      case 'previewConfigRestore': return manager.previewConfigRestore(id, payload.target, payload.mode, payload.backupId);
+      case 'restoreConfigBackup': return manager.restoreConfigBackup(id, payload.target, payload.mode, payload.backupId, payload.token);
+      case 'pruneConfigBackups': return manager.pruneConfigBackups(id, payload.target, payload.mode, payload.ids);
       case 'artwork': return manager.artwork(id, payload.kind);
       case 'firewallStatus': return manager.firewallStatus(id);
       case 'firewallApply': return manager.firewallApply(id);

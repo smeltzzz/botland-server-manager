@@ -131,9 +131,9 @@ test('preview redacts secrets and rejects stale writes while backing up', async 
     assert.ok(!JSON.stringify(preview).includes('newSecret'));
     await fs.appendFile(file, '// changed elsewhere\r\n');
     await assert.rejects(saveConfig(file, { rcon_password: 'newSecret' }, { ...config, token: preview.token }), /changed since preview/i);
-    const fresh = await previewConfig(file, { sv_maxclients: '20' }, config);
-    await saveConfig(file, { sv_maxclients: '20' }, { ...config, token: fresh.token });
-    assert.match(await fs.readFile(file, 'utf8'), /sv_maxclients "20"/);
+    const fresh = await previewConfig(file, { sv_maxclients: '16' }, config);
+    await saveConfig(file, { sv_maxclients: '16' }, { ...config, token: fresh.token });
+    assert.match(await fs.readFile(file, 'utf8'), /sv_maxclients "16"/);
     assert.ok((await fs.readdir(dir)).some(name => name.startsWith('server.cfg.bak-')));
   } finally { await fs.rm(dir, { recursive: true, force: true }); }
 });

@@ -86,12 +86,48 @@ async function regular(file) {
   } catch (error) { if (error.code === 'ENOENT') return null; throw error; }
 }
 async function mkdirSafe(dir) { await noLinks(dir); await fs.mkdir(dir, { recursive: true }); await noLinks(dir); }
+// Directory sync is not supported by all Windows filesystems/Node builds. File
+// syncs are mandatory; directory syncs are best effort on Windows only.
+async function syncDir(dir) {
+  try { const handle = await fs.open(dir, 'r'); try { await handle.sync(); } finally { await handle.close(); } }
+  catch (error) {
+    if (process.platform !== 'win32' || !['EPERM', 'EINVAL', 'EISDIR', 'ENOTSUP'].includes(error.code)) throw error;
+  }
+}
+async function durableFile(file, bytes) {
+  await noLinks(file);
+  const handle = await fs.open(file, 'wx');
+  try { await handle.writeFile(bytes); await handle.sync(); } finally { await handle.close(); }
+  await syncDir(path.dirname(file));
+}
 async function put(file, bytes, stage) {
   await mkdirSafe(path.dirname(file));
   await noLinks(file);
   const staged = path.join(stage, 'publish-' + randomUUID());
-  await fs.writeFile(staged, bytes, { flag: 'wx' });
+  await durableFile(staged, bytes);
   await fs.rename(staged, file);
+  await syncDir(path.dirname(file));
+}
+const JOURNAL = 'transaction.json';
+const COMMITTED = 'committed';
+const stagePrefix = id => `.botland-stage-${id}-`;
+const donePrefix = id => `.botland-done-${id}-`;
+const journalError = () => new Error('Invalid Bot Warfare transaction journal; refusing to touch files.');
+async function stageBytes(stage, name, expected) {
+  const bytes = await regular(path.join(stage, name));
+  if (!bytes || digest(bytes) !== expected) throw journalError();
+  return bytes;
+}
+async function verifySnapshot(dir, id, snapshot) {
+  await noLinks(dir);
+  if (!(await fs.lstat(dir)).isDirectory()) throw journalError();
+  const bytes = await stageBytes(dir, 'version.json', snapshot.sha256);
+  let version;
+  try { version = JSON.parse(bytes.toString('utf8')); } catch { throw journalError(); }
+  if (!version || version.version !== 1 || version.versionId !== snapshot.versionId || version.id !== id ||
+      !Number.isFinite(Date.parse(version.date)) || (version.manifest !== null && !version.manifest)) throw journalError();
+  if (version.manifest) validateManifest(version.manifest, id);
+  for (const file of records(id, version.files)) await stageBytes(dir, file.path, file.sha256);
 }
 async function readManifest(base, id) {
   const bytes = await regular(path.join(base, MANIFEST));
@@ -179,9 +215,17 @@ class BotWarfareInstaller {
     }
     return result.sort((a, b) => b.date.localeCompare(a.date) || b.versionId.localeCompare(a.versionId));
   }
+  async prune(paths, id) {
+    // Housekeeping must never undo a successful publish or recovered rollback.
+    try {
+      const versions = await this.versions(paths, id);
+      for (const old of versions.slice(MAX_VERSIONS)) { await noLinks(old.dir); await fs.rm(old.dir, { recursive: true }); }
+    } catch { /* A later status call will report damaged history. */ }
+  }
   async status(id, gamePath) {
     return this.queued(id, async () => {
       const paths = await this.paths(id, gamePath);
+      await this.recover(id, paths);
       const manifest = await readManifest(paths.folder, id);
       const versions = await this.versions(paths, id);
       const markers = id === 'bo1' ? ['mod.ff', 'mp_bots.iwd'] :
@@ -195,6 +239,7 @@ class BotWarfareInstaller {
   async listVersions(id, gamePath) {
     return this.queued(id, async () => {
       const paths = await this.paths(id, gamePath);
+      await this.recover(id, paths);
       return (await this.versions(paths, id)).map(({ dir, ...entry }) => entry);
     });
   }
@@ -209,12 +254,118 @@ class BotWarfareInstaller {
       files.push({ path: name, sha256: digest(bytes) });
       const dest = within(dir, name);
       await mkdirSafe(path.dirname(dest));
-      await fs.writeFile(dest, bytes, { flag: 'wx' });
+      await durableFile(dest, bytes);
     }
     const record = { version: 1, versionId, id, date: new Date(this.now()).toISOString(),
       manifest: previous, files };
-    await fs.writeFile(path.join(dir, 'version.json'), JSON.stringify(record), { flag: 'wx' });
+    await durableFile(path.join(dir, 'version.json'), Buffer.from(JSON.stringify(record)));
     return { dir, record };
+  }
+  async recover(id, paths) {
+    await noLinks(paths.parent);
+    let names;
+    try { names = (await fs.readdir(paths.parent)).filter(name =>
+      name.startsWith(stagePrefix(id)) || name.startsWith(donePrefix(id))); }
+    catch (error) { if (error.code === 'ENOENT') return; throw error; }
+    for (const name of names) {
+      if (!/^\.botland-(?:stage|done)-[a-z0-9]+-[a-zA-Z0-9]{6}$/u.test(name)) throw journalError();
+      await this.checkRunning(id);
+      const dir = path.join(paths.parent, name);
+      if (name.startsWith(donePrefix(id))) {
+        await noLinks(dir);
+        if (!(await fs.lstat(dir)).isDirectory()) throw journalError();
+        await fs.rm(dir, { recursive: true });
+        await syncDir(paths.parent);
+      } else {
+        await this.recoverStage(id, paths, dir);
+        await this.prune(paths, id);
+      }
+    }
+  }
+  async recoverStage(id, paths, stage) {
+    await noLinks(stage);
+    if (!(await fs.lstat(stage)).isDirectory()) throw journalError();
+    const raw = await regular(path.join(stage, JOURNAL));
+    if (!raw || raw.length > 2 * 1024 * 1024) throw journalError();
+    let journal;
+    try { journal = JSON.parse(raw.toString('utf8')); } catch { throw journalError(); }
+    if (journal.version !== 1 || journal.id !== id || journal.folder !== paths.folder ||
+        !Array.isArray(journal.changes) || journal.changes.length > 10001 ||
+        (journal.snapshot !== null && (!journal.snapshot || !ID.test(journal.snapshot.versionId) ||
+          !HASH.test(journal.snapshot.sha256)))) throw journalError();
+    const seen = new Set();
+    const changes = [];
+    for (const [index, entry] of journal.changes.entries()) {
+      if (!entry || (entry.path !== MANIFEST && !allowed(id, entry.path)) ||
+          (entry.before !== null && !HASH.test(entry.before)) ||
+          (entry.after !== null && !HASH.test(entry.after)) ||
+          (entry.before === null && entry.after === null) ||
+          seen.has(entry.path.toLowerCase())) throw journalError();
+      seen.add(entry.path.toLowerCase());
+      const before = entry.before === null ? null : await stageBytes(stage, `before-${index}`, entry.before);
+      if (entry.after !== null) await stageBytes(stage, `after-${index}`, entry.after);
+      changes.push({ ...entry, original: before });
+    }
+    const permitted = new Set([JOURNAL, COMMITTED, ...(journal.snapshot ? ['version'] : [])]);
+    for (const index of changes.keys()) {
+      if (changes[index].before !== null) permitted.add(`before-${index}`);
+      if (changes[index].after !== null) permitted.add(`after-${index}`);
+    }
+    for (const name of await fs.readdir(stage)) {
+      const file = path.join(stage, name);
+      await noLinks(file);
+      if (!permitted.has(name) && !/^publish-[a-f0-9-]{36}$/u.test(name)) throw journalError();
+      if (name.startsWith('publish-') && !(await fs.lstat(file)).isFile()) throw journalError();
+    }
+    const marker = await regular(path.join(stage, COMMITTED));
+    if (marker && !marker.equals(Buffer.from(digest(raw)))) throw journalError();
+    if (!marker && journal.snapshot) await verifySnapshot(path.join(stage, 'version'), id, journal.snapshot);
+    if (marker) {
+      if (journal.snapshot) {
+        const dest = path.join(paths.history, journal.snapshot.versionId);
+        const staged = path.join(stage, 'version');
+        const stagedStat = await fs.lstat(staged).catch(error => { if (error.code === 'ENOENT') return null; throw error; });
+        const destStat = await fs.lstat(dest).catch(error => { if (error.code === 'ENOENT') return null; throw error; });
+        if (Boolean(stagedStat) === Boolean(destStat)) throw journalError();
+        const dir = stagedStat ? staged : dest;
+        await verifySnapshot(dir, id, journal.snapshot);
+        if (stagedStat) {
+          await mkdirSafe(paths.history);
+          await fs.rename(staged, dest);
+          await syncDir(paths.history);
+        }
+      }
+    } else {
+      // Validate the *entire* transaction before undoing any file. A changed
+      // file (or symlink) is a user conflict, not permission to discard data.
+      const undo = [];
+      for (const entry of changes) {
+        const dest = entry.path === MANIFEST ? path.join(paths.folder, MANIFEST) : within(paths.folder, entry.path);
+        const current = await regular(dest);
+        const currentHash = current === null ? null : digest(current);
+        if (currentHash !== entry.before && currentHash !== entry.after) {
+          throw new Error(`Bot Warfare recovery conflict at ${entry.path}; journal retained.`);
+        }
+        if (currentHash !== entry.before) undo.push({ dest, entry });
+      }
+      for (const { dest, entry } of undo.reverse()) {
+        const current = await regular(dest);
+        // Re-check immediately before each mutation; external concurrent
+        // writers still require OS-level locking for a strict guarantee.
+        if ((current === null ? null : digest(current)) !== entry.after) throw new Error('Bot Warfare recovery conflict; journal retained.');
+        if (entry.original) await put(dest, entry.original, stage);
+        else { await fs.unlink(dest); await syncDir(path.dirname(dest)); }
+      }
+    }
+    // Move the resolved journal out of the active namespace before deleting it.
+    // A crash during recursive deletion then leaves only disposable .done data,
+    // never an ambiguous half-deleted active journal.
+    const done = path.join(paths.parent, path.basename(stage).replace(stagePrefix(id), donePrefix(id)));
+    await noLinks(done);
+    await fs.rename(stage, done);
+    await syncDir(paths.parent);
+    await fs.rm(done, { recursive: true });
+    await syncDir(paths.parent);
   }
   async transition(id, paths, desired, nextManifest, capture, snapshot = true) {
     await this.checkRunning(id);
@@ -241,9 +392,10 @@ class BotWarfareInstaller {
     const newManifest = nextManifest ? Buffer.from(JSON.stringify(nextManifest, null, 2) + '\n') : null;
     if (oldManifest || newManifest) changes.set(MANIFEST, newManifest);
     await mkdirSafe(paths.parent);
-    const stage = await fs.mkdtemp(path.join(paths.parent, `.botland-stage-${id}-`));
-    const originals = new Map();
-    let published = false;
+    const stage = await fs.mkdtemp(path.join(paths.parent, stagePrefix(id)));
+    await syncDir(paths.parent);
+    let prepared = false;
+    let committed = false;
     try {
       let hasPrior = Boolean(previous);
       if (snapshot && !hasPrior) {
@@ -252,49 +404,55 @@ class BotWarfareInstaller {
         }
       }
       const prior = snapshot && hasPrior ? await this.snapshot(paths, id, previous, capture, stage) : null;
-      for (const name of changes.keys()) originals.set(name, await regular(name === MANIFEST ? manifestFile : within(paths.folder, name)));
+      const entries = [];
+      for (const [name, bytes] of changes) {
+        const index = entries.length;
+        const original = await regular(name === MANIFEST ? manifestFile : within(paths.folder, name));
+        if (original) await durableFile(path.join(stage, `before-${index}`), original);
+        if (bytes) await durableFile(path.join(stage, `after-${index}`), bytes);
+        entries.push({ path: name, before: original === null ? null : digest(original),
+          after: bytes === null ? null : digest(bytes) });
+      }
+      const versionBytes = prior && await fs.readFile(path.join(prior.dir, 'version.json'));
+      const journal = Buffer.from(JSON.stringify({ version: 1, id, folder: paths.folder,
+        snapshot: prior ? { versionId: prior.record.versionId, sha256: digest(versionBytes) } : null,
+        changes: entries }));
+      await durableFile(path.join(stage, JOURNAL), journal);
+      prepared = true;
       await this.checkRunning(id);
       let count = 0;
       for (const [name, bytes] of changes) {
         const dest = name === MANIFEST ? manifestFile : within(paths.folder, name);
-        await noLinks(dest);
+        // Revalidate source after staging: never overwrite a concurrent edit.
+        const original = await regular(dest);
+        if ((original === null ? null : digest(original)) !== entries[count].before) {
+          throw new Error('Bot Warfare target changed during staging.');
+        }
         if (bytes) await put(dest, bytes, stage);
-        else await fs.rm(dest, { force: true });
-        published = true;
+        else { await fs.unlink(dest); await syncDir(path.dirname(dest)); }
         await this.fault(++count, name);
       }
-      if (prior) {
-        await mkdirSafe(paths.history);
-        await noLinks(path.join(paths.history, prior.record.versionId));
-        await fs.rename(prior.dir, path.join(paths.history, prior.record.versionId));
-      }
+      await durableFile(path.join(stage, COMMITTED), Buffer.from(digest(journal)));
+      committed = true;
+      await this.recoverStage(id, paths, stage);
     } catch (error) {
-      if (published) {
-        const failures = [];
-        for (const [name, bytes] of [...originals].reverse()) {
-          const dest = name === MANIFEST ? manifestFile : within(paths.folder, name);
-          try {
-            await noLinks(dest);
-            if (bytes) await put(dest, bytes, stage);
-            else await fs.rm(dest, { force: true });
-          } catch (failure) { failures.push(failure); }
-        }
-        if (failures.length) throw new AggregateError([error, ...failures], 'Bot Warfare rollback failed; inspect installation.');
-      }
+      // Test-only crash seam: leave a fully prepared journal and partial
+      // publication on disk, as if the process stopped at this point.
+      if (error?.simulateCrash) throw error;
+      if (prepared && !committed) {
+        try { await this.recoverStage(id, paths, stage); }
+        catch (failure) { throw new AggregateError([error, failure], 'Bot Warfare rollback failed; transaction journal retained.'); }
+      } else if (!prepared) await fs.rm(stage, { recursive: true });
       throw error;
-    } finally { await fs.rm(stage, { recursive: true, force: true }); }
-    // Pruning is housekeeping, not part of the transaction. Never let it undo
-    // a successful publish. Do not follow links even in old history entries.
-    try {
-      const versions = await this.versions(paths, id);
-      for (const old of versions.slice(MAX_VERSIONS)) { await noLinks(old.dir); await fs.rm(old.dir, { recursive: true }); }
-    } catch { /* A later status call will report damaged history. */ }
+    }
+    await this.prune(paths, id);
     return { state: nextManifest ? 'installed' : 'not-installed', targetPath: paths.folder, manifest: nextManifest };
   }
   async install(id, gamePath, channel = 'stable') {
     return this.queued(id, async () => {
       if (!['stable', 'development'].includes(channel)) throw new Error('Unknown Bot Warfare channel.');
       const paths = await this.paths(id, gamePath);
+      await this.recover(id, paths);
       await this.checkRunning(id);
       const source = await this.source.resolveSource(id, channel);
       if (!source?.supported || !source.assetUrl || !['tag', 'commit'].includes(source.refType) || !source.ref) {
@@ -345,6 +503,7 @@ class BotWarfareInstaller {
   async remove(id, gamePath) {
     return this.queued(id, async () => {
       const paths = await this.paths(id, gamePath);
+      await this.recover(id, paths);
       await this.checkRunning(id);
       const manifest = await readManifest(paths.folder, id);
       if (!manifest) throw new Error('Unknown Bot Warfare installation; nothing owned to remove.');
@@ -354,6 +513,7 @@ class BotWarfareInstaller {
   async restore(id, gamePath, versionId) {
     return this.queued(id, async () => {
       const paths = await this.paths(id, gamePath);
+      await this.recover(id, paths);
       await this.checkRunning(id);
       const version = (await this.versions(paths, id)).find(item => item.versionId === versionId);
       if (!version) throw new Error('Unknown Bot Warfare version.');

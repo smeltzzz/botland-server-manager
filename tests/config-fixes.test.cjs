@@ -35,7 +35,7 @@ test('simultaneous commits with the same preview token cannot both succeed', asy
     const file = path.join(dir, 'server.cfg');
     const original = Buffer.from('set sv_maxclients "18"\r\n// untouched\n', 'utf8');
     await fs.writeFile(file, original);
-    const { token } = await previewConfig(file, { sv_maxclients: '20' }, { id: 'mw2' });
+    const { token } = await previewConfig(file, { sv_maxclients: '20' }, { id: 'cod4' });
     const results = await Promise.allSettled([
       saveConfig(file, { sv_maxclients: '20' }, { token }),
       saveConfig(file, { sv_maxclients: '22' }, { token }),

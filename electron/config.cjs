@@ -94,13 +94,16 @@ function validateValues(values, opts = {}, text = '') {
     cleaned[key] = validateOne(value, field, key);
   }
   const current = Object.fromEntries([...existing].map(([key, entry]) => [key, entry.value]));
-  const slotCap = opts.id === 'mw3' ? 18 : 64;
+  const slotCap = ['mw2', 'mw3', 'bo2'].includes(opts.id) ? 18 : 64;
   // A missing or non-numeric slot count must not disable the check (NaN compares false).
   const rawSlots = cleaned.sv_maxclients ?? current.sv_maxclients ?? '';
   const slots = /^\s*\d+\s*$/.test(rawSlots) ? Math.min(Number(rawSlots), slotCap) : slotCap;
   if ('bots_manage_fill' in cleaned && +(cleaned.bots_manage_fill) > slots) throw new Error('Bot target cannot exceed player slots.');
   if ('sv_maxclients' in cleaned && +(cleaned.bots_manage_fill ?? current.bots_manage_fill ?? 0) > +cleaned.sv_maxclients) throw new Error('Bot target cannot exceed player slots.');
-  if (opts.id === 'mw3' && +cleaned.sv_maxclients > 18) throw new Error('Modern Warfare 3 supports at most 18 player slots.');
+  if (slotCap === 18 && +cleaned.sv_maxclients > 18) {
+    const name = { mw2: 'Modern Warfare 2', mw3: 'Modern Warfare 3', bo2: 'Black Ops II' }[opts.id];
+    throw new Error(`${name} supports at most 18 player slots.`);
+  }
   const min = +(cleaned.bots_skill_min ?? current.bots_skill_min ?? 1);
   const max = +(cleaned.bots_skill_max ?? current.bots_skill_max ?? 7);
   if (min > max) throw new Error('Minimum bot skill cannot exceed maximum bot skill.');

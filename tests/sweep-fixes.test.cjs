@@ -26,7 +26,7 @@ test('a setting that an unterminated block comment would hide is refused instead
 });
 
 test('MW3 bot fill target is capped at its 18 slots even when sv_maxclients is absent', () => {
-  assert.throws(() => validateValues({ bots_manage_fill: '24' }, opts('mw3'), ''), /cannot exceed player slots/);
+  assert.throws(() => validateValues({ bots_manage_fill: '24' }, opts('mw3'), ''), /cannot exceed player slots|between 0 and 18/);
   assert.deepEqual(validateValues({ bots_manage_fill: '18' }, opts('mw3'), ''), { bots_manage_fill: '18' });
   assert.deepEqual(validateValues({ bots_manage_fill: '24' }, opts('cod4'), ''), { bots_manage_fill: '24' });
 });

@@ -25,6 +25,7 @@ app.whenReady().then(async () => {
     if (action === 'artwork') return manager.artwork(payload.id, payload.kind);
     if (action === 'firewallStatus') return manager.firewallStatus(payload.id);
     if (action === 'botStatus') return manager.botStatus(payload.id);
+    if (action === 'listConfigBackups') return manager.listConfigBackups(payload.id, payload.target, payload.mode);
     throw new Error('Visual smoke test is read-only.');
   });
   const win = new BrowserWindow({ width: 1380, height: 860, show: true, backgroundColor: '#1B1A19',

@@ -62,6 +62,7 @@ async function fixture(t, id, { pausedDownload = false } = {}) {
   };
   const source = new BotWarfareSource({ userData: path.join(root, 'user-data'), fetch, now: () => 1_000_000 });
   const downloads = [];
+  const fixtureArchive = modArchive(id);
   let releaseDownload;
   let downloadEntered;
   const downloadGate = new Promise(resolve => { releaseDownload = resolve; });
@@ -70,8 +71,7 @@ async function fixture(t, id, { pausedDownload = false } = {}) {
   const download = async (url, options) => {
     downloads.push({ url, options });
     if (pausedDownload) { downloadEntered(); await downloadGate; }
-    const bytes = modArchive(id);
-    return { bytes, sha256: sha256(bytes) };
+    return { bytes: fixtureArchive, sha256: sha256(fixtureArchive) };
   };
   let manager;
   const installer = new BotWarfareInstaller({ source, download, localAppData,
@@ -79,7 +79,7 @@ async function fixture(t, id, { pausedDownload = false } = {}) {
   manager = new ServerManager(path.join(root, 'settings.json'), () => {}, path.join(root, 'absent-scripts'),
     { modSource: source, modInstaller: installer, detectInstallations: async () => ({ games: {} }) });
   manager.data.games[id] = { gamePath };
-  return { root, gamePath, localAppData, manager, installer, metadata, fetches, downloads,
+  return { root, gamePath, localAppData, manager, installer, metadata, fetches, downloads, fixtureArchive,
     enteredDownload, releaseDownload };
 }
 
@@ -133,7 +133,7 @@ test('unknown mod, pending install/start guard, manifest provenance, update badg
   assert.equal(status.manifest.ref, 'v2.4.0');
   assert.equal(Object.hasOwn(status.manifest, 'tag'), false);
   assert.equal(status.manifest.channel, 'stable');
-  assert.equal(status.manifest.sha256, sha256(modArchive('mw2')));
+  assert.equal(status.manifest.sha256, sha256(f.fixtureArchive));
   assert.deepEqual(status.manifest, JSON.parse(await fs.readFile(path.join(base, 'botland-install.json'), 'utf8')));
   assert.equal(status.versions.length, 1); // The unknown mod was snapshotted before replacement.
   assert.equal(status.versions[0].manifest, null);

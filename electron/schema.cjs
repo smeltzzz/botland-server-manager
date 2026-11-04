@@ -103,7 +103,10 @@ function schemaFor(id, target = 'base', mode = 'dom') {
     ['playerrespawndelay', 'Respawn delay', 120], ['waverespawndelay', 'Wave respawn delay', 120],
   ];
   const rules = modeRules.map(([name, label, max]) => f(`scr_${mode}_${name}`, R, `${label} for ${mode.toUpperCase()}`, 'integer', { min: 0, max, presentOnly: true }));
-  return { dialect: 'dvar', fields: [...serverFields, ...botFields.filter(field => field.games.includes(id)), ...(id === 'mw3' || id === 'bo2' ? [] : rules)] };
+  const slotCap = ['mw2', 'mw3', 'bo2'].includes(id) ? 18 : 64;
+  const fields = [...serverFields, ...botFields.filter(field => field.games.includes(id)), ...(id === 'mw3' || id === 'bo2' ? [] : rules)]
+    .map(field => ['sv_maxclients', 'bots_manage_fill'].includes(field.key) ? { ...field, max: slotCap } : field);
+  return { dialect: 'dvar', fields };
 }
 function fieldFor(id, target, key, mode) { return schemaFor(id, target, mode).fields.find(field => field.key === key.toLowerCase()); }
 const sourceRepos = { cod4: 'https://github.com/ineedbots/iw3_bot_warfare', waw: 'https://github.com/ineedbots/t4_bot_warfare', mw2: 'https://github.com/ineedbots/iw4_bot_warfare', bo1: 'https://github.com/ineedbots/t5_bot_warfare', mw3: 'https://github.com/ineedbots/iw5_bot_warfare', bo2: 'https://github.com/ineedbots/t6_bot_warfare' };

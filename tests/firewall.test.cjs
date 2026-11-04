@@ -52,23 +52,22 @@ test('applies the rule elevated with the stored port and visibility scope', asyn
   manager.firewallQuery = async () => [rule(28962, 'LocalSubnet')];
   assert.equal((await manager.firewallApply('cod4')).state, 'lan');
   assert.equal(runs.length, 1);
-  const [deleteLine, addLine, guard] = runs[0];
-  assert.match(deleteLine, /delete rule name="botLANd CoD4 UDP"/);
-  assert.match(addLine, /add rule name="botLANd CoD4 UDP"/);
-  assert.match(addLine, /dir=in/);
-  assert.match(addLine, /action=allow/);
-  assert.match(addLine, /protocol=UDP/);
-  assert.match(addLine, /localport=28962/);
-  assert.match(addLine, /remoteip=localsubnet/);
-  assert.match(guard, /netsh could not add the firewall rule/);
+  const script = runs[0].join('\n');
+  assert.match(script, /\$targetName = 'botLANd CoD4 UDP'/);
+  assert.match(script, /\$targetPort = '28962'/);
+  assert.match(script, /\$targetScope = 'LocalSubnet'/);
+  assert.match(script, /New-NetFirewallRule/);
+  assert.match(script, /Assert-ManagedRule/);
+  assert.match(script, /Set-NetFirewallRule.*-NewDisplayName/);
+  assert.ok(script.indexOf('New-NetFirewallRule') < script.indexOf('Remove-NetFirewallRule'));
   manager.data.games.mw3 = { port: 27016, lan: false };
   const mw3Runs = [];
   manager.runElevated = async lines => { mw3Runs.push(lines); };
   manager.firewallQuery = async () => [rule(27016, 'Any')];
   assert.equal((await manager.firewallApply('mw3')).state, 'any');
-  const [, mw3Add] = mw3Runs[0];
-  assert.match(mw3Add, /localport=27016/);
-  assert.match(mw3Add, /remoteip=any/);
+  const mw3Script = mw3Runs[0].join('\n');
+  assert.match(mw3Script, /\$targetPort = '27016'/);
+  assert.match(mw3Script, /\$targetScope = 'Any'/);
 });
 
 test('a running server keeps its rule on the launched port; scope follows saved visibility', async () => {
@@ -80,13 +79,13 @@ test('a running server keeps its rule on the launched port; scope follows saved 
   manager.firewallQuery = async () => [rule(28962, 'LocalSubnet')];
   assert.deepEqual(await manager.firewallStatus('cod4'), { name: 'botLANd CoD4 UDP', port: 28962, state: 'lan' });
   await manager.firewallApply('cod4');
-  assert.match(runs[0][1], /localport=28962/);
-  assert.match(runs[0][1], /remoteip=localsubnet/);
+  assert.match(runs[0].join('\n'), /\$targetPort = '28962'/);
+  assert.match(runs[0].join('\n'), /\$targetScope = 'LocalSubnet'/);
   // Switching to Public while running widens the scope immediately, on the live port.
   manager.data.games.cod4.lan = false;
   await manager.firewallApply('cod4');
-  assert.match(runs[1][1], /localport=28962/);
-  assert.match(runs[1][1], /remoteip=any/);
+  assert.match(runs[1].join('\n'), /\$targetPort = '28962'/);
+  assert.match(runs[1].join('\n'), /\$targetScope = 'Any'/);
   // Once stopped, the saved port applies and the old rule reads as a mismatch.
   manager.instances.delete('cod4');
   assert.deepEqual(await manager.firewallStatus('cod4'), { name: 'botLANd CoD4 UDP', port: 30000, state: 'drift' });
@@ -101,8 +100,8 @@ test('BO1 always gets a LAN-scoped rule because its launch stays public', async 
   manager.runElevated = async lines => { runs.push(lines); };
   manager.firewallQuery = async () => [rule(28961, 'LocalSubnet')];
   assert.equal((await manager.firewallApply('bo1')).state, 'lan');
-  assert.match(runs[0][1], /localport=28961/);
-  assert.match(runs[0][1], /remoteip=localsubnet/);
+  assert.match(runs[0].join('\n'), /\$targetPort = '28961'/);
+  assert.match(runs[0].join('\n'), /\$targetScope = 'LocalSubnet'/);
 });
 
 test('removes the rule elevated and reports a missing rule', async () => {

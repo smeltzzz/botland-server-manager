@@ -2,10 +2,12 @@
 // when the Electron preload is absent; packaged builds never use these fixtures.
 import type { BotStatus, ConfigDocument, ConfigField, Game, GameId, ManagerApi, ManagerEvent, MapData, Snapshot } from './types';
 
-const base: Pick<Game, 'options' | 'config' | 'blockers' | 'warnings' | 'logs' | 'status' | 'pid' | 'startedAt'> = {
+const base: Pick<Game, 'options' | 'config' | 'blockers' | 'warnings' | 'logs' | 'status' | 'pid' | 'startedAt' | 'connect' | 'orphan' | 'restart'> = {
   options: { port: 28961, mode: 'dom', shuffle: true, selectedMaps: [], gamePath: '', lan: true },
   config: { sv_hostname: 'botLANd — Domination', sv_maxclients: '18', bots_main: '1', bots_manage_fill: '14', bots_skill: '4', bots_team: 'autoassign', bots_manage_fill_mode: '0', bots_play_obj: '1', scr_dom_timelimit: '15', scr_dom_scorelimit: '200' },
   blockers: [], warnings: [], logs: [], status: 'stopped', pid: null, startedAt: null,
+  connect: { primaryAddress: null, ambiguous: false, candidates: [] }, orphan: null,
+  restart: { enabled: false, attempts: 0, nextAttemptAt: null, cutOff: false },
 };
 const definitions: [GameId, string, string, string, Game['family'], string, number][] = [
   ['cod4', 'Call of Duty 4', 'CoD4', 'Modern Warfare', 'mw', 'CoD4R / IW3x', 28962],
@@ -25,6 +27,8 @@ const snapshot: Snapshot = { root: '', updatesEnabled: true, updates: { cod4: { 
   gamePath: detected.has(id) ? `C:\\Example\\SteamLibrary\\steamapps\\common\\${title}` : '',
   configPath: detected.has(id) ? `C:\\Example\\SteamLibrary\\steamapps\\common\\${title}\\main\\server.cfg` : '',
   options: { ...base.options, port, lan: id !== 'bo1' },
+  connect: { ...base.connect, candidates: [] }, restart: { ...base.restart },
+  orphan: id === 'mw3' ? { pid: 8124, port, reason: 'Sample preview: an unverified listener uses this port.' } : null,
   blockers: detected.has(id) ? id === 'mw3' ? ['A Plutonium server key is required.'] : [] : ['Game folder not found.'],
   warnings: id === 'bo1' ? ['The existing BO1 launch profile does not use -lan. Add the LAN firewall rule from the Overview tab to restrict network access.'] : [],
 })) };
@@ -32,6 +36,12 @@ const pool = ['mp_crash', 'mp_crossfire', 'mp_backlot', 'mp_bloc', 'mp_bog', 'mp
 const subscribers = new Set<(event: ManagerEvent) => void>();
 const emit = () => subscribers.forEach(listener => listener({ type: 'state', snapshot: structuredClone(snapshot) }));
 const find = (id: GameId) => snapshot.games.find(game => game.id === id)!;
+function demoConnect(game: Game) {
+  const port = game.options.port;
+  const candidates = [{ adapter: 'Home Wi-Fi', address: '192.168.1.24', scope: 'private', label: 'Local network', connectAddress: `192.168.1.24:${port}` }];
+  if (game.id === 'cod4') candidates.push({ adapter: 'Demo VPN', address: '10.8.0.5', scope: 'private', label: 'VPN network', connectAddress: `10.8.0.5:${port}` });
+  game.connect = { primaryAddress: candidates.length === 1 ? candidates[0].address : null, ambiguous: candidates.length > 1, candidates };
+}
 const botRepos: Record<GameId, string> = { cod4: 'iw3', waw: 't4', mw2: 'iw4', bo1: 't5', mw3: 'iw5', bo2: 't6' };
 const demoManifest = (id: GameId, ref: string, channel: 'stable' | 'development' = 'stable'): NonNullable<BotStatus['manifest']> => ({
   channel, ref, refType: channel === 'stable' ? 'tag' : 'commit', sha256: 'a'.repeat(64), date: '2026-10-20T12:00:00.000Z', repo: `https://github.com/ineedbots/${botRepos[id]}_bot_warfare`, patches: [],
@@ -66,15 +76,23 @@ function demoDocument(id: GameId, target: 'base' | 'mode', mode?: string): Confi
     entries: Object.entries(values).map(([key, value]) => ({ key, value, masked: false, hasValue: true, count: 1 })) };
 }
 export function createDemoManager(): ManagerApi {
+  document.documentElement.dataset.demo = 'true';
   return {
     snapshot: async () => structuredClone(snapshot),
     maps: async (id): Promise<MapData> => ({ maps: pool, modes: id === 'mw3' ? [{ value: 'DOM_default', label: 'DOM' }] : [{ value: 'dom', label: 'Domination' }, { value: 'tdm', label: 'Team Deathmatch' }, { value: 'dm', label: 'Free for All' }] }),
-    start: async id => { const game = find(id); if (!game.installed || game.blockers.length) throw new Error('Resolve the setup checks before starting.'); game.status = 'running'; game.pid = 4108; game.startedAt = new Date().toISOString(); game.logs = [{ at: new Date().toISOString(), level: 'info', message: `Started ${game.engine} with the selected map rotation.` }]; emit(); },
-    stop: async id => { const game = find(id); game.status = 'stopped'; game.pid = null; emit(); },
+    start: async id => { const game = find(id); if (!game.installed || game.blockers.length) throw new Error('Resolve the setup checks before starting.'); game.status = 'running'; game.pid = 4108; game.startedAt = new Date().toISOString(); game.restart = { ...game.restart, attempts: 0, nextAttemptAt: null, cutOff: false }; demoConnect(game); game.logs = [{ at: new Date().toISOString(), level: 'info', source: 'manager', message: `Started ${game.engine} with the selected map rotation.` }, { at: new Date().toISOString(), level: 'info', source: 'stdout', message: 'Demo server output (no game process launched).' }]; emit(); },
+    stop: async id => { const game = find(id); game.status = 'stopped'; game.pid = null; game.connect = { primaryAddress: null, ambiguous: false, candidates: [] }; game.restart.nextAttemptAt = null; emit(); },
+    copyConnectAddress: async (id, address) => { const game = find(id); return game.status === 'running' && game.connect.candidates.some(candidate => candidate.connectAddress === address); },
+    setAutoRestart: async (id, enabled) => { find(id).restart.enabled = enabled; emit(); },
+    rescanOrphans: async () => { emit(); },
     chooseFolder: async id => { const game = find(id); game.installed = true; game.pathSource = 'manual'; game.gamePath = `C:\\Example\\SelectedGames\\${game.title}`; game.configPath = `${game.gamePath}\\main\\server.cfg`; updateDemoReadiness(id); return true; },
     chooseRoot: async () => { snapshot.root = 'C:\\Example\\OptionalScripts'; emit(); return true; },
     rescanInstallations: async () => { emit(); },
     createStarterConfig: async id => { const game = find(id); if (!game.installed) throw new Error('Choose a game folder first.'); game.config.sv_hostname = `botLANd ${game.short} Server`; emit(); return game.configPath; },
+    listConfigBackups: async () => [],
+    previewConfigRestore: async () => { throw new Error('No sample backups are available.'); },
+    restoreConfigBackup: async () => { throw new Error('No sample backups are available.'); },
+    pruneConfigBackups: async () => { throw new Error('No sample backups are available.'); },
     botStatus: async id => structuredClone({ ...botStatuses[id], targetPath: `${find(id).gamePath}\\mods\\bots` }),
     botAction: async (id, operation, versionId) => {
       const game = find(id);

@@ -13,6 +13,7 @@ keys.json.*
 botwarfare-sources.json
 botwarfare-sources.json.*
 botland-install.json
+session-logs/
 .botland-stage-*/
 .botland-versions-*/
 *.bak-*

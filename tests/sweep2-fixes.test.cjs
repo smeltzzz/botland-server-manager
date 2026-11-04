@@ -102,9 +102,9 @@ test('adding a setting to an empty config does not start with a blank line', () 
 
 test('bot target is checked even when the slot count is non-numeric, and MW3 stays capped at 18', () => {
   assert.throws(() => validateValues({ bots_manage_fill: '70' }, opts('cod4'), 'set sv_maxclients "abc"\n'), /cannot exceed player slots|between/);
-  assert.throws(() => validateValues({ bots_manage_fill: '20' }, opts('mw3'), 'set sv_maxclients "abc"\n'), /cannot exceed player slots/);
+  assert.throws(() => validateValues({ bots_manage_fill: '20' }, opts('mw3'), 'set sv_maxclients "abc"\n'), /cannot exceed player slots|between 0 and 18/);
   assert.deepEqual(validateValues({ bots_manage_fill: '40' }, opts('waw'), 'set sv_maxclients "abc"\n'), { bots_manage_fill: '40' });
-  assert.throws(() => validateValues({ bots_manage_fill: '20' }, opts('mw3'), 'set sv_maxclients "24"\n'), /cannot exceed player slots/);
+  assert.throws(() => validateValues({ bots_manage_fill: '20' }, opts('mw3'), 'set sv_maxclients "24"\n'), /cannot exceed player slots|between 0 and 18/);
   assert.deepEqual(validateValues({ bots_manage_fill: '12' }, opts('cod4'), 'set sv_maxclients "18"\n'), { bots_manage_fill: '12' });
 });
 

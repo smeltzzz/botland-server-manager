@@ -44,6 +44,7 @@ async function fixture(t, id, overrides = {}) {
   await fs.mkdir(localAppData);
   let version = 'one';
   const downloaded = [];
+  const downloadHashes = [];
   const source = { async resolveSource(gameId, channel) {
     assert.equal(gameId, id);
     return { supported: true, repo: `https://github.com/ineedbots/${id}_bot_warfare`,
@@ -53,10 +54,11 @@ async function fixture(t, id, overrides = {}) {
   const download = async url => {
     downloaded.push(url);
     const bytes = archive(input(id, version));
+    downloadHashes.push(hash(bytes));
     return { bytes, sha256: hash(bytes) };
   };
   const installer = new BotWarfareInstaller({ source, download, localAppData, ...overrides });
-  return { game, localAppData, installer, downloaded, setVersion: v => { version = v; } };
+  return { game, localAppData, installer, downloaded, downloadHashes, setVersion: v => { version = v; } };
 }
 const read = file => fs.readFile(file, 'utf8');
 const exists = async file => Boolean(await fs.stat(file).catch(() => null));
@@ -84,7 +86,7 @@ test('all six fixture ZIP recipes install to fixed paths and record verified pro
       assert.equal(manifest.repo, `https://github.com/ineedbots/${id}_bot_warfare`);
       assert.equal(manifest.channel, 'stable');
       assert.equal(manifest.ref, 'v-one');
-      assert.equal(manifest.sha256, hash(archive(input(id, 'one'))));
+      assert.equal(manifest.sha256, f.downloadHashes[0]);
       assert.equal(manifest.files.length, expected[id].length);
       for (const file of manifest.files) {
         assert.ok(expected[id].includes(file.path));
@@ -197,6 +199,148 @@ test('fault after a partial update rolls every written file and manifest back by
   await assert.rejects(f.installer.install('bo1', f.game), /injected failure/u);
   for (let i = 0; i < names.length; i++) assert.deepEqual(await fs.readFile(path.join(base, names[i])), before[i]);
   assert.equal((await f.installer.status('bo1', f.game)).versions.length, 0);
+});
+
+const interrupted = count => { if (count === 2) throw Object.assign(new Error('simulated process death'), { simulateCrash: true }); };
+const stages = async (parent, id) => (await fs.readdir(parent)).filter(name => name.startsWith(`.botland-stage-${id}-`));
+
+test('a fresh process recovers interrupted creation before status and a subsequent install', async t => {
+  const f = await fixture(t, 'cod4', { fault: interrupted });
+  const base = path.join(f.game, 'mods', 'mp_bots');
+  const keep = path.join(base, 'notes.txt');
+  await fs.mkdir(base, { recursive: true });
+  await fs.writeFile(keep, 'user data');
+  await assert.rejects(f.installer.install('cod4', f.game), /simulated process death/u);
+  assert.equal((await stages(path.dirname(base), 'cod4')).length, 1);
+  const fresh = new BotWarfareInstaller({ source: f.installer.source, download: f.installer.download,
+    localAppData: f.localAppData });
+  assert.equal((await fresh.status('cod4', f.game)).state, 'not-installed');
+  assert.equal(await read(keep), 'user data');
+  assert.equal(await exists(path.join(base, 'z_svr_bots.iwd')), false);
+  assert.equal(await exists(path.join(base, 'maps/mp/gametypes/_callbacksetup.gsx')), false);
+  assert.deepEqual(await stages(path.dirname(base), 'cod4'), []);
+  await fresh.install('cod4', f.game);
+  assert.equal((await fresh.status('cod4', f.game)).state, 'installed');
+});
+
+test('interrupted update and remove recover originals and keep snapshot history', async t => {
+  let crash = false;
+  const f = await fixture(t, 'bo2', { fault(count) { if (crash) interrupted(count); } });
+  await f.installer.install('bo2', f.game);
+  const base = path.join(f.localAppData, 'Plutonium', 'storage', 't6', 'scripts', 'mp');
+  const names = ['bots.gsc', 'bots_adapter_pt6.gsc', 'botland-install.json'];
+  const original = await Promise.all(names.map(name => fs.readFile(path.join(base, name))));
+  f.setVersion('two'); crash = true;
+  await assert.rejects(f.installer.install('bo2', f.game), /simulated process death/u);
+  const fresh = new BotWarfareInstaller({ source: f.installer.source, download: f.installer.download,
+    localAppData: f.localAppData });
+  // Remove must recover the update before it reads ownership.
+  await fresh.remove('bo2', f.game);
+  const prior = (await fresh.listVersions('bo2', f.game)).find(v => v.manifest?.ref === 'v-one');
+  assert.ok(prior);
+  await fresh.restore('bo2', f.game, prior.versionId);
+  for (let i = 0; i < names.length; i++) assert.deepEqual(await fs.readFile(path.join(base, names[i])), original[i]);
+  crash = false;
+  await fresh.remove('bo2', f.game);
+  const removeCrash = new BotWarfareInstaller({ source: f.installer.source, download: f.installer.download,
+    localAppData: f.localAppData, fault: interrupted });
+  await fresh.restore('bo2', f.game, prior.versionId);
+  await assert.rejects(removeCrash.remove('bo2', f.game), /simulated process death/u);
+  // Restore also performs recovery before reading the requested snapshot.
+  await fresh.restore('bo2', f.game, prior.versionId);
+  assert.equal((await fresh.status('bo2', f.game)).state, 'installed');
+  assert.equal(await read(path.join(base, 'bots.gsc')), 'release-one');
+  assert.ok((await fresh.listVersions('bo2', f.game)).length <= 3);
+});
+
+test('recovery preserves conflicting user edits and retains journal until conflict is fixed', async t => {
+  let crash = false;
+  const f = await fixture(t, 'bo1', { fault(count) { if (crash) interrupted(count); } });
+  await f.installer.install('bo1', f.game);
+  f.setVersion('two'); crash = true;
+  await assert.rejects(f.installer.install('bo1', f.game), /simulated process death/u);
+  const base = path.join(f.localAppData, 'Plutonium', 'storage', 't5', 'mods', 'mp_bots');
+  const parent = path.dirname(base);
+  const target = path.join(base, 'mod.ff');
+  await fs.writeFile(target, 'my edits');
+  const fresh = new BotWarfareInstaller({ source: f.installer.source, download: f.installer.download,
+    localAppData: f.localAppData });
+  await assert.rejects(fresh.status('bo1', f.game), /recovery conflict/u);
+  await assert.rejects(fresh.install('bo1', f.game), /recovery conflict/u);
+  assert.equal(await read(target), 'my edits');
+  assert.equal(await read(path.join(base, 'mp_bots.iwd')), 'release-two');
+  assert.equal((await stages(parent, 'bo1')).length, 1);
+  await fs.writeFile(target, 'release-two');
+  assert.equal((await fresh.status('bo1', f.game)).manifest.ref, 'v-one');
+  assert.equal(await read(path.join(base, 'mod.ff')), 'release-one');
+  assert.deepEqual(await stages(parent, 'bo1'), []);
+});
+
+test('corrupt journal or backup fails closed and is never silently deleted', async t => {
+  const f = await fixture(t, 'bo1', { fault: interrupted });
+  await assert.rejects(f.installer.install('bo1', f.game), /simulated process death/u);
+  const base = path.join(f.localAppData, 'Plutonium', 'storage', 't5', 'mods', 'mp_bots');
+  const parent = path.dirname(base);
+  const stage = path.join(parent, (await stages(parent, 'bo1'))[0]);
+  const first = await fs.readFile(path.join(base, 'description.txt'));
+  await fs.writeFile(path.join(stage, 'after-0'), 'corrupt');
+  await assert.rejects(f.installer.status('bo1', f.game), /transaction journal/u);
+  assert.deepEqual(await fs.readFile(path.join(base, 'description.txt')), first);
+  assert.equal((await stages(parent, 'bo1')).length, 1);
+  await fs.writeFile(path.join(stage, 'transaction.json'), '{broken');
+  await assert.rejects(f.installer.remove('bo1', f.game), /transaction journal/u);
+  assert.equal((await stages(parent, 'bo1')).length, 1);
+});
+
+test('recovery refuses a junction in a managed path and leaves unrelated targets alone', async t => {
+  const f = await fixture(t, 'cod4', { fault: interrupted });
+  await assert.rejects(f.installer.install('cod4', f.game), /simulated process death/u);
+  const base = path.join(f.game, 'mods', 'mp_bots');
+  const outside = path.join(path.dirname(f.game), 'outside');
+  await fs.mkdir(outside);
+  const mapDir = path.join(base, 'maps');
+  await fs.rm(mapDir, { recursive: true });
+  try { await fs.symlink(outside, mapDir, 'junction'); }
+  catch (error) { if (error.code === 'EPERM') return; throw error; }
+  await assert.rejects(f.installer.status('cod4', f.game), /symlink|junction/u);
+  assert.deepEqual(await fs.readdir(outside), []);
+  assert.equal((await stages(path.dirname(base), 'cod4')).length, 1);
+  await fs.rm(mapDir);
+  // The missing file was created by the interrupted install, so rolling back
+  // leaves it absent without touching the outside directory.
+  assert.equal((await f.installer.status('cod4', f.game)).state, 'not-installed');
+  assert.deepEqual(await fs.readdir(outside), []);
+});
+
+test('cleanup interrupted after recovery is safe to resume', async t => {
+  const f = await fixture(t, 'mw3');
+  const base = path.join(f.localAppData, 'Plutonium', 'storage', 'iw5', 'mods', 'bots');
+  await fs.mkdir(path.dirname(base), { recursive: true });
+  const done = path.join(path.dirname(base), '.botland-done-mw3-ABC123');
+  await fs.mkdir(done);
+  await fs.writeFile(path.join(done, 'leftover'), 'already resolved');
+  assert.equal((await f.installer.status('mw3', f.game)).state, 'not-installed');
+  assert.equal(await exists(done), false);
+});
+
+test('a durable commit marker finalizes history rather than undoing a complete publish', async t => {
+  let crash = false;
+  const f = await fixture(t, 'bo1', { fault(count, name) {
+    if (crash && name === 'botland-install.json') throw Object.assign(new Error('simulated process death'), { simulateCrash: true });
+  } });
+  await f.installer.install('bo1', f.game);
+  f.setVersion('two'); crash = true;
+  await assert.rejects(f.installer.install('bo1', f.game), /simulated process death/u);
+  const base = path.join(f.localAppData, 'Plutonium', 'storage', 't5', 'mods', 'mp_bots');
+  const stage = path.join(path.dirname(base), (await stages(path.dirname(base), 'bo1'))[0]);
+  await fs.writeFile(path.join(stage, 'committed'), hash(await fs.readFile(path.join(stage, 'transaction.json'))));
+  const fresh = new BotWarfareInstaller({ source: f.installer.source, download: f.installer.download,
+    localAppData: f.localAppData });
+  const status = await fresh.status('bo1', f.game);
+  assert.equal(status.manifest.ref, 'v-two');
+  assert.equal(status.versions.length, 1);
+  assert.equal(status.versions[0].manifest.ref, 'v-one');
+  assert.deepEqual(await stages(path.dirname(base), 'bo1'), []);
 });
 
 test('restore prior version, retain three snapshots, refuse running/starting and serialize same-game operations', async t => {

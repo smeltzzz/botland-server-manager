@@ -12,6 +12,12 @@ const { artworkFor, loadImage } = require('./artwork.cjs');
 const { scanMaps, modeOptions, rotationText, writeRotation } = require('./maps.cjs');
 const { detectSteamGames, inspectGameFolder } = require('./detection.cjs');
 const { createStarterConfig: writeStarterConfig } = require('./starter-config.cjs');
+const { listBackups, previewRestore, restoreBackup, pruneBackups } = require('./config-backups.cjs');
+const { discoverConnectAddresses } = require('./connect-address.cjs');
+const { findPossibleOrphans } = require('./orphan-detect.cjs');
+const { ServerLogTail } = require('./log-tail.cjs');
+const { redactLog } = require('./session-logs.cjs');
+const { buildFirewallApplyLines } = require('./firewall-rule.cjs');
 const { SOURCES } = require('./botwarfare-source.cjs');
 const exec = promisify(execFile);
 const safeName = /^[a-z0-9_]+$/i;
@@ -40,7 +46,10 @@ async function peMachine(file) {
 class ServerManager {
   /** @param {string} settingsPath @param {(event: object) => void} notify @param {string} initialRoot
    * @param {{keyStore?: import('./key-store.cjs').KeyStore, detectInstallations?: typeof detectSteamGames,
-   * modSource?: import('./botwarfare-source.cjs').BotWarfareSource, modInstaller?: import('./botwarfare-install.cjs').BotWarfareInstaller}} [services] */
+   * modSource?: import('./botwarfare-source.cjs').BotWarfareSource, modInstaller?: import('./botwarfare-install.cjs').BotWarfareInstaller,
+   * restartTimers?: {now: () => number, setTimeout: typeof setTimeout, clearTimeout: typeof clearTimeout},
+   * sessionLogs?: import('./session-logs.cjs').SessionLogs, findPossibleOrphans?: typeof findPossibleOrphans,
+   * networkInterfaces?: typeof os.networkInterfaces, createLogTail?: (options: object) => ServerLogTail}} [services] */
   constructor(settingsPath, notify, initialRoot, services = {}) {
     this.settingsPath = settingsPath;
     this.notify = notify;
@@ -56,11 +65,25 @@ class ServerManager {
     this.botUpdates = {};
     this.instances = new Map();
     this.logs = new Map();
+    this.sessionCleanup = new Map();
     this.persistQueue = Promise.resolve();
     this.mutationQueue = Promise.resolve();
     this.broadcastSequence = 0;
     this.lastBroadcast = 0;
     this.stopTimeout = 5000;
+    this.gracefulStopTimeout = 3000;
+    this.restartDelays = [2000, 4000, 8000, 16000, 30000];
+    this.restartWindow = 10 * 60 * 1000;
+    this.restartTimers = services.restartTimers || { now: Date.now, setTimeout, clearTimeout };
+    this.restarts = new Map();
+    this.sessionLogs = services.sessionLogs;
+    this.findPossibleOrphans = services.findPossibleOrphans || findPossibleOrphans;
+    this.networkInterfaces = services.networkInterfaces || os.networkInterfaces;
+    this.createLogTail = services.createLogTail || (options => new ServerLogTail(options));
+    this.orphans = new Map();
+    this.orphanScan = null;
+    this.orphanTimer = null;
+    this.shuttingDown = false;
   }
   // Returns the path of a preserved copy when unreadable settings were reset.
   async initialize() {
@@ -135,7 +158,32 @@ class ServerManager {
   }
   async rescanInstallations() {
     this.detected = await this.detectInstallations();
+    await this.rescanOrphans();
+    // Keep the read-only diagnostic off the snapshot path. Only a real startup
+    // installation scan installs this unref'd periodic refresh.
+    if (!this.orphanTimer && !this.shuttingDown) {
+      this.orphanTimer = setInterval(() => { this.rescanOrphans().catch(() => {}); }, 60_000);
+      this.orphanTimer.unref?.();
+    }
     await this.broadcastState();
+  }
+  async rescanOrphans() {
+    if (this.orphanScan) return this.orphanScan;
+    const scan = (async () => {
+      const candidates = (await Promise.all(order.map(async id => ({ id, port: this.options(id).port,
+        gamePath: await this.gamePath(id) })))).filter(item => item.gamePath);
+      let findings = [];
+      try { findings = await this.findPossibleOrphans(candidates); }
+      catch { /* Netstat is optional; an unavailable scan cannot prove occupancy. */ }
+      const owned = new Set([...this.instances.values()].map(instance => instance.child?.pid).filter(pid => Number.isInteger(pid) && pid > 0));
+      this.orphans = new Map(findings.filter(item => item && !owned.has(item.pid) &&
+        candidates.some(candidate => candidate.id === item.id && candidate.port === item.port))
+        .map(item => [item.id, { pid: item.pid, port: item.port, reason: item.reason }]));
+      await this.broadcastState();
+      return [...this.orphans.entries()];
+    })();
+    this.orphanScan = scan;
+    try { return await scan; } finally { if (this.orphanScan === scan) this.orphanScan = null; }
   }
   async keyStatus(id) {
     if (profileFor(id).executable !== 'plutonium') return 'not-required';
@@ -178,6 +226,33 @@ class ServerManager {
       throw new Error('A verified development build is not available for this game. Use stable.');
     }
     await this.updateSettings(data => { data.games[id] = { ...data.games[id], botChannel: channel }; });
+    await this.broadcastState();
+  }
+  restartState(id) {
+    let state = this.restarts.get(id);
+    if (!state) {
+      state = { crashes: [], attempts: 0, nextAttemptAt: null, cutOff: false, timer: null, suppressed: false };
+      this.restarts.set(id, state);
+    }
+    return state;
+  }
+  cancelRestart(id) {
+    const state = this.restarts.get(id);
+    if (state?.timer !== null && state?.timer !== undefined) this.restartTimers.clearTimeout(state.timer);
+    if (state) { state.timer = null; state.nextAttemptAt = null; }
+    const instance = this.instances.get(id);
+    if (instance?.status === 'restarting') this.instances.delete(id);
+  }
+  async setAutoRestart(id, enabled) {
+    profileFor(id);
+    if (typeof enabled !== 'boolean') throw new Error('Automatic restart must be on or off.');
+    const state = this.restartState(id);
+    if (!enabled) state.suppressed = true;
+    try {
+      await this.updateSettings(data => { data.games[id] = { ...data.games[id], autoRestart: enabled }; });
+    } catch (error) { state.suppressed = false; throw error; }
+    if (!enabled) this.cancelRestart(id);
+    else state.suppressed = false;
     await this.broadcastState();
   }
   async setUpdateChecks(enabled) {
@@ -226,6 +301,8 @@ class ServerManager {
     profileFor(id);
     if (!['install', 'update', 'reinstall', 'remove', 'restore'].includes(operation)) throw new Error('Unknown Bot Warfare action.');
     if (!this.modInstaller) throw new Error('Bot Warfare installer is unavailable.');
+    // A pending restart has no live process; changing mod files cancels that retry.
+    if (this.instances.get(id)?.status === 'restarting') this.cancelRestart(id);
     if (this.modBusy.has(id) || this.instances.has(id)) throw new Error('Stop this server before changing Bot Warfare.');
     // Reserve the game synchronously. start() checks this set before spawning,
     // closing the race between a download and a server starting mid-install.
@@ -334,12 +411,27 @@ class ServerManager {
         catch { if (!result.blockers.some(x => x.startsWith('Could not read server config'))) result.blockers.push(`Could not read server config: ${profile.config.replaceAll('/', '\\')}`); }
       }
       const instance = this.instances.get(id);
+      const restart = this.restarts.get(id);
+      if (restart && instance?.status === 'running' && instance.startedAt && this.restartTimers.now() - Date.parse(instance.startedAt) > this.restartWindow) {
+        restart.crashes = [];
+        restart.attempts = 0;
+      }
       return { id, title: profile.title, short: profile.short, subtitle: profile.subtitle, family: profile.family, engine: profile.engine,
         configPath: result.gamePath ? path.join(result.gamePath, profile.config) : '',
         gamePath: result.gamePath, installed: result.installed, pathSource: result.pathSource, keyStatus: result.keyStatus,
         modBusy: this.modBusy.has(id), config, options: result.options, blockers: result.blockers, warnings: result.warnings,
         status: instance?.status || 'stopped', pid: instance?.child?.pid ?? null, startedAt: instance?.startedAt ?? null,
         activePort: instance?.activePort ?? null,
+        connect: instance?.status === 'running' && instance.activePort
+          ? discoverConnectAddresses(instance.activePort, this.networkInterfaces)
+          : { primaryAddress: null, primary: null, ambiguous: false, candidates: [] },
+        orphan: (() => {
+          const orphan = this.orphans.get(id);
+          const owned = [...this.instances.values()].some(value => value.child?.pid && value.child.pid === orphan?.pid);
+          return orphan?.port === result.options.port && !owned ? orphan : null;
+        })(),
+        restart: { enabled: this.data.games?.[id]?.autoRestart === true, attempts: restart?.attempts || 0,
+          nextAttemptAt: restart?.nextAttemptAt || null, cutOff: restart?.cutOff || false },
         logs: (this.logs.get(id) || []).slice(-120) };
     }));
     return { root: this.data.root, games, updatesEnabled: this.data.updatesEnabled, updates: this.botUpdates };
@@ -353,14 +445,36 @@ class ServerManager {
     this.lastBroadcast = sequence;
     this.notify({ type: 'state', snapshot });
   }
-  addLog(id, text, level = 'info', key = '') {
-    const message = String(text).replaceAll(key || '\0', '[REDACTED]').slice(0, 2000);
-    const entry = { at: new Date().toISOString(), level, message };
+  addLog(id, text, level = 'info', key = '', source = 'manager') {
+    const message = redactLog(text, key || this.instances.get(id)?.logKey || '').slice(0, 2000);
+    const entry = { at: new Date().toISOString(), level, message, source };
     const lines = this.logs.get(id) || [];
     lines.push(entry);
     if (lines.length > 400) lines.splice(0, lines.length - 400);
     this.logs.set(id, lines);
+    if (this.instances.get(id)?.sessionOpen && this.sessionLogs) {
+      try { Promise.resolve(this.sessionLogs.append(id, entry)).catch(() => {}); }
+      catch { /* Disk logging is optional and must not interrupt the server. */ }
+    }
     this.notify({ type: 'log', id, entry });
+  }
+  // A failed tail or optional disk log never changes process ownership. Cleanup
+  // is idempotent because a failed launch and its child's close may race.
+  releaseSession(id, instance) {
+    if (!instance.cleanupPromise) {
+      instance.cleanupPromise = (async () => {
+        try { await instance.logTail?.stop(); } catch { /* Logging is best effort. */ }
+        instance.sessionOpen = false;
+        if (this.sessionLogs && instance.sessionStarted) {
+          try { await this.sessionLogs.close(id); } catch { /* Keep the lifecycle independent of disk I/O. */ }
+        }
+        instance.logKey = '';
+      })();
+      const cleanup = instance.cleanupPromise;
+      this.sessionCleanup.set(id, cleanup);
+      cleanup.finally(() => { if (this.sessionCleanup.get(id) === cleanup) this.sessionCleanup.delete(id); }).catch(() => {});
+    }
+    return instance.cleanupPromise;
   }
   async maps(id, gamePathOverride) {
     const profile = profileFor(id);
@@ -474,6 +588,24 @@ class ServerManager {
     await saveConfig(file, values, { id, target, mode: selectedMode, token });
     await this.broadcastState();
     return this.document(id, target, selectedMode);
+  }
+  async listConfigBackups(id, target = 'base', mode) {
+    const { file } = await this.configTarget(id, target, mode);
+    return listBackups(file);
+  }
+  async previewConfigRestore(id, target, mode, backupId) {
+    const { file } = await this.configTarget(id, target, mode);
+    return previewRestore(file, backupId);
+  }
+  async restoreConfigBackup(id, target, mode, backupId, token) {
+    const { file } = await this.configTarget(id, target, mode);
+    const restored = await restoreBackup(file, backupId, token);
+    await this.broadcastState();
+    return restored;
+  }
+  async pruneConfigBackups(id, target, mode, ids) {
+    const { file } = await this.configTarget(id, target, mode);
+    return pruneBackups(file, ids);
   }
   async artwork(id, kind) {
     profileFor(id);
@@ -613,11 +745,7 @@ class ServerManager {
     const port = this.firewallPort(id);
     const name = this.firewallName(id);
     const scope = this.firewallScope(id) === 'lan' ? 'localsubnet' : 'any';
-    await this.runElevated([
-      `netsh advfirewall firewall delete rule name="${name}" > $null 2>&1`,
-      `netsh advfirewall firewall add rule name="${name}" dir=in action=allow protocol=UDP localport=${port} remoteip=${scope} > $null 2>&1`,
-      `if ($LASTEXITCODE -ne 0) { throw 'netsh could not add the firewall rule (exit ' + $LASTEXITCODE + ').' }`,
-    ]);
+    await this.runElevated(buildFirewallApplyLines({ name, port, scope }));
     return this.firewallStatus(id);
   }
   async firewallRemove(id) {
@@ -649,11 +777,64 @@ class ServerManager {
     if (profile.id !== 'mw3') args.push('+map_rotate');
     return { file: bootstrapPath(), cwd: path.join(process.env.LOCALAPPDATA || '', 'Plutonium'), args };
   }
-  async start(id) {
+  scheduleRestart(id, instance) {
+    const state = this.restartState(id);
+    if (this.shuttingDown || instance.noRestart || state.suppressed || this.data.games?.[id]?.autoRestart !== true || this.modBusy.has(id)) return false;
+    const now = this.restartTimers.now();
+    // An uninterrupted healthy run starts a fresh crash budget.
+    if (instance.startedAt && now - Date.parse(instance.startedAt) > this.restartWindow) state.crashes = [];
+    state.crashes = state.crashes.filter(at => now - at < this.restartWindow);
+    state.crashes.push(now);
+    state.attempts = state.crashes.length;
+    if (state.attempts > this.restartDelays.length) {
+      state.cutOff = true;
+      this.addLog(id, 'Automatic restart stopped after repeated crashes. Start manually to clear the cutoff.', 'error');
+      return false;
+    }
+    const delay = this.restartDelays[state.attempts - 1];
+    instance.status = 'restarting';
+    instance.child = null;
+    instance.startedAt = null;
+    instance.activePort = null;
+    state.nextAttemptAt = new Date(now + delay).toISOString();
+    state.timer = this.restartTimers.setTimeout(() => {
+      state.timer = null;
+      state.nextAttemptAt = null;
+      if (this.instances.get(id) !== instance || state.suppressed || this.shuttingDown || this.modBusy.has(id) || this.data.games?.[id]?.autoRestart !== true) {
+        if (this.instances.get(id) === instance) this.instances.delete(id);
+        this.broadcastState().catch(() => {});
+        return;
+      }
+      // A slow file-tail drain must not close a newly opened retry session.
+      this.releaseSession(id, instance).then(() => {
+        if (this.instances.get(id) !== instance || state.suppressed || this.shuttingDown || this.modBusy.has(id) || this.data.games?.[id]?.autoRestart !== true) {
+          if (this.instances.get(id) === instance) this.instances.delete(id);
+          this.broadcastState().catch(() => {});
+          return;
+        }
+        this.instances.delete(id);
+        this.launch(id, true).catch(() => {});
+      }).catch(() => {});
+    }, delay);
+    this.addLog(id, `Server exited unexpectedly. Restart attempt ${state.attempts} in ${delay / 1000}s.`, 'error');
+    return true;
+  }
+  async start(id) { return this.launch(id, false); }
+  async launch(id, retry) {
     const profile = profileFor(id);
+    if (this.shuttingDown) throw new Error('The manager is shutting down.');
+    if (!retry && this.instances.get(id)?.status === 'restarting') this.cancelRestart(id);
+    // Closing an earlier session may still be draining its tail. Never let that
+    // close race a new session opened for this game (manual or automatic retry).
+    if (this.sessionCleanup.has(id)) await this.sessionCleanup.get(id);
+    if (this.shuttingDown) throw new Error('The manager is shutting down.');
     if (this.instances.has(id)) throw new Error('This server is already starting or running.');
     if (this.modBusy.has(id)) throw new Error('Wait for the Bot Warfare change to finish before starting this server.');
-    const instance = { status: 'starting', child: null, startedAt: null, activePort: null, cancelled: false, stopPromise: null };
+    const restart = this.restartState(id);
+    if (!retry) { restart.crashes = []; restart.attempts = 0; restart.cutOff = false; }
+    else if (restart.cutOff || restart.suppressed || this.data.games?.[id]?.autoRestart !== true) return;
+    const instance = { status: 'starting', child: null, startedAt: null, activePort: null, cancelled: false, stopPromise: null, closed: false,
+      logKey: '', logTail: null, sessionOpen: false, sessionStarted: false, cleanupPromise: null };
     instance.launchDone = new Promise(resolve => { instance.resolveLaunch = resolve; });
     this.instances.set(id, instance);
     let launchKey = '';
@@ -668,7 +849,12 @@ class ServerManager {
       // rather than blocking a launch on a diagnostic tool.
       let portBusy = false;
       try { portBusy = await this.portInUse(options.port); }
-      catch { this.addLog(id, `Could not check whether UDP ${options.port} is free; starting anyway.`, 'info'); }
+      catch {
+        // A manual Start can leave port diagnosis to the engine. Automatic
+        // replacement cannot risk overlapping an unknown leftover process.
+        if (retry) throw new Error(`Could not verify UDP ${options.port} is free. Automatic restart is blocked; inspect the port and start manually.`);
+        this.addLog(id, `Could not check whether UDP ${options.port} is free; starting anyway.`, 'info');
+      }
       if (portBusy) throw new Error(`UDP port ${options.port} is already in use. Stop the other server or choose a different port.`);
       const { maps, modes } = await this.maps(id, gamePath);
       if (!modes.some(m => m.value === options.mode)) throw new Error('Selected game mode is no longer installed.');
@@ -677,18 +863,39 @@ class ServerManager {
       if (!chosen.length) throw new Error('No installed multiplayer maps found.');
       const key = profile.executable === 'plutonium' ? await this.keyStore?.get(id) : '';
       launchKey = key || '';
+      instance.logKey = launchKey;
       if (profile.executable === 'plutonium' && !key) throw new Error('Plutonium server key is not available. Paste it on this game\'s Overview.');
       const rotation = rotationText(profile, chosen, options.mode, options.shuffle);
       if (instance.cancelled) throw new Error('Launch cancelled.');
       await writeRotation(path.join(gamePath, profile.rotation), rotation);
       if (instance.cancelled) throw new Error('Launch cancelled.');
       const command = this.buildCommand(profile, gamePath, options.port, options.mode, key, options.lan);
+      if (this.sessionLogs) {
+        try {
+          await this.sessionLogs.start(id, { key: launchKey });
+          instance.sessionStarted = true;
+          instance.sessionOpen = true;
+        } catch { /* A full or unavailable log directory must not block launch. */ }
+      }
+      try {
+        instance.logTail = this.createLogTail({ id, gamePath,
+          onLine: line => this.addLog(id, line, 'info', launchKey, 'file') });
+        await instance.logTail.start();
+      } catch {
+        try { await instance.logTail?.stop(); } catch { /* Best effort. */ }
+        instance.logTail = null;
+      }
+      if (instance.cancelled) throw new Error('Launch cancelled.');
       this.addLog(id, `Starting ${profile.engine} on UDP ${options.port} (${options.lan === false ? 'public' : 'LAN'}) with ${chosen.length} maps.`, 'info');
-      const child = spawn(command.file, command.args, { cwd: command.cwd, argv0: command.argv0, windowsHide: true, stdio: ['ignore', 'pipe', 'pipe'], shell: false });
+      const child = spawn(command.file, command.args, { cwd: command.cwd, argv0: command.argv0, windowsHide: true, stdio: [id === 'cod4' ? 'pipe' : 'ignore', 'pipe', 'pipe'], shell: false });
       instance.child = child;
+      if (id === 'cod4' && child.stdin) {
+        child.stdin.on('error', () => {}); // A closed console pipe must never crash the app.
+        instance.consoleErrorHandled = true;
+      }
       let spawned = false;
       // Buffer whole lines so a secret split across stdout chunks is never published.
-      for (const [stream, level] of [[child.stdout, 'info'], [child.stderr, 'error']]) {
+      for (const [stream, level, source] of [[child.stdout, 'info', 'stdout'], [child.stderr, 'error', 'stderr']]) {
         if (!stream) continue;
         let pending = '';
         // A multi-byte UTF-8 character may be split across chunks.
@@ -697,37 +904,50 @@ class ServerManager {
           pending += typeof chunk === 'string' ? chunk : decoder.write(chunk);
           const lines = pending.split(/\r?\n/);
           pending = lines.pop();
-          for (const line of lines) this.addLog(id, line, level, key);
-          if (pending.length > 16_000) { this.addLog(id, '[Long server output line omitted]', 'info'); pending = ''; }
+          for (const line of lines) this.addLog(id, line, level, key, source);
+          if (pending.length > 16_000) { this.addLog(id, '[Long server output line omitted]', 'info', key, source); pending = ''; }
         });
-        stream.on('end', () => { pending += decoder.end(); if (pending) this.addLog(id, pending, level, key); });
+        stream.on('end', () => { pending += decoder.end(); if (pending) this.addLog(id, pending, level, key, source); });
       }
       child.on('error', error => { if (spawned) this.addLog(id, `Process error: ${error.message}`, 'error', key); });
       child.on('close', (code, signal) => {
-        const wasStopping = instance.status === 'stopping';
-        if (this.instances.get(id) === instance) this.instances.delete(id);
+        instance.closed = true;
+        const wasStopping = instance.status === 'stopping' || instance.cancelled;
+        const managed = this.instances.get(id) === instance;
+        const restarting = managed && !wasStopping && spawned && Number.isInteger(child.pid) && child.pid > 0 && this.scheduleRestart(id, instance);
         if (spawned) this.addLog(id, wasStopping ? 'Server stopped.' : `Server exited (code ${code ?? 'unknown'}${signal ? `, ${signal}` : ''}).`, wasStopping || code === 0 ? 'info' : 'error');
+        if (managed && !restarting) this.instances.delete(id);
+        this.releaseSession(id, instance).catch(() => {});
         this.broadcastState().catch(() => {});
       });
       await new Promise((resolve, reject) => {
-        const onSpawn = () => { child.off('error', onError); resolve(); };
-        const onError = error => { child.off('spawn', onSpawn); reject(error); };
+        const onSpawn = () => { child.off('error', onError); child.off('close', onClose); spawned = true; resolve(); };
+        const onError = error => { child.off('spawn', onSpawn); child.off('close', onClose); reject(error); };
+        const onClose = () => { child.off('spawn', onSpawn); child.off('error', onError); reject(new Error('Server closed before spawning.')); };
         child.once('spawn', onSpawn);
         child.once('error', onError);
+        child.once('close', onClose);
       });
-      spawned = true;
+      if (instance.closed) return;
       if (instance.cancelled) throw new Error('Launch cancelled.');
       instance.status = 'running';
       instance.startedAt = new Date().toISOString();
       // A renderer refresh failure cannot undo a successfully spawned process.
       await this.broadcastState().catch(() => {});
     } catch (error) {
-      if (!instance.child?.pid && this.instances.get(id) === instance) this.instances.delete(id);
+      if (retry && !instance.cancelled) {
+        restart.cutOff = true;
+        this.addLog(id, 'Automatic restart blocked by launch preflight or process error. Start manually after resolving it.', 'error');
+      }
       if (instance.cancelled) this.addLog(id, 'Launch cancelled.', 'info');
       else this.addLog(id, `Could not start: ${error.message}`, 'error', launchKey);
+      if (!instance.child?.pid && this.instances.get(id) === instance) this.instances.delete(id);
       await this.broadcastState().catch(() => {});
       throw error;
-    } finally { instance.resolveLaunch(); }
+    } finally {
+      if (!instance.child && !instance.closed && instance.status !== 'restarting') await this.releaseSession(id, instance);
+      instance.resolveLaunch();
+    }
   }
   async stopChild(id, instance) {
     try { this.addLog(id, 'Stopping this server and its child processes…', 'info'); } catch { /* A renderer notification must not prevent shutdown. */ }
@@ -748,19 +968,40 @@ class ServerManager {
     child.once('close', markClosed);
     const isClosed = () => sawClose || this.instances.get(id) !== instance;
     try {
-      if (!exited()) {
+      if (id === 'cod4' && !exited() && child.stdin && typeof child.stdin.write === 'function' && !child.stdin.destroyed && child.stdin.writable !== false) {
+        // Cod4R documents `quit` for its -nogui console; no other engine has a verified protocol.
+        if (!instance.consoleErrorHandled) {
+          child.stdin.on('error', () => {}); // A broken console pipe must not crash the manager.
+          instance.consoleErrorHandled = true;
+        }
+        try {
+          child.stdin.write('quit\n');
+          this.addLog(id, 'Waiting for Cod4R to quit gracefully…', 'info');
+          if (await waitForClose(child, isClosed, this.gracefulStopTimeout)) {
+            if (instance.closed) await this.releaseSession(id, instance);
+            return;
+          }
+        } catch { /* Broken stdin: fall through to taskkill for this owned PID. */ }
+      }
+      if (!exited() && !isClosed()) {
         try { await exec('taskkill.exe', ['/PID', String(child.pid), '/T', '/F'], { timeout: 15000, windowsHide: true }); }
         catch (error) {
           if (this.instances.get(id) === instance && !exited()) await restore(`Could not stop server: ${error.message}`);
         }
       }
-      if (await waitForClose(child, isClosed, this.stopTimeout)) return;
+      if (await waitForClose(child, isClosed, this.stopTimeout)) {
+        if (instance.closed) await this.releaseSession(id, instance);
+        return;
+      }
       if (!exited()) await restore('The server process did not exit. Try stopping it again.');
       // The process is gone, but a leftover process still holds its output
       // pipes, so 'close' never fires. Release them so the instance can end.
       child.stdout?.destroy();
       child.stderr?.destroy();
-      if (await waitForClose(child, isClosed, 1000)) return;
+      if (await waitForClose(child, isClosed, 1000)) {
+        if (instance.closed) await this.releaseSession(id, instance);
+        return;
+      }
     } finally { child.off('close', markClosed); }
     if (this.instances.get(id) === instance) {
       this.instances.delete(id);
@@ -769,14 +1010,21 @@ class ServerManager {
         await this.broadcastState();
       } catch { /* The instance is already released. */ }
     }
+    await this.releaseSession(id, instance);
   }
   async stop(id) {
     profileFor(id);
     const instance = this.instances.get(id);
     if (!instance) throw new Error('No running server is managed for this game.');
+    if (instance.status === 'restarting') {
+      this.cancelRestart(id);
+      await this.broadcastState().catch(() => {});
+      return;
+    }
     if (instance.status === 'stopping') return instance.stopPromise || instance.launchDone;
     if (!instance.child?.pid && instance.status !== 'starting') throw new Error('No running server is managed for this game.');
     instance.cancelled = true;
+    instance.noRestart = true; // Even a failed taskkill must not turn a later exit into an automatic retry.
     instance.status = 'stopping';
     instance.stopPromise = (async () => {
       try { await this.broadcastState(); } catch { /* Shutdown must continue if the UI cannot refresh. */ }
@@ -785,7 +1033,15 @@ class ServerManager {
     })();
     return instance.stopPromise;
   }
-  async stopAll() { await Promise.allSettled([...this.instances.keys()].map(id => this.stop(id))); }
+  async stopAll() {
+    this.shuttingDown = true;
+    if (this.orphanTimer) clearInterval(this.orphanTimer);
+    this.orphanTimer = null;
+    await Promise.allSettled([...this.instances.keys()].map(id => this.stop(id)));
+    // The UI remains open after a failed stop; allow a later manual Start while
+    // retaining noRestart on the surviving children from this quit attempt.
+    if (this.hasRunning()) this.shuttingDown = false;
+  }
   hasRunning() { return this.instances.size > 0; }
 }
 module.exports = { ServerManager };
