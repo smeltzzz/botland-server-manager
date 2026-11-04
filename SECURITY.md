@@ -12,4 +12,4 @@ Security fixes target the latest release. Versions before 1.0 are in active deve
 
 ## Threat model note
 
-The current pre-1.0 release reads Plutonium keys from existing private launch scripts in memory and passes them on the game process command line. Keep those files and process diagnostics private. App-managed encrypted key storage is planned but does not change the game engine's command-line requirement.
+Plutonium keys saved in botLANd are encrypted for the current Windows user with Electron `safeStorage` and kept separate from ordinary preferences. Legacy private launch scripts are read only after an explicit key-import request; importing does not remove their plaintext contents. Plutonium still requires the key on the game process command line, so keep launchers, process diagnostics, and screenshots private.

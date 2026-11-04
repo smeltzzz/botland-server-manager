@@ -56,7 +56,7 @@ test('unreadable base config is a blocker and snapshot still resolves', async t 
     assert.ok(state.games.find(game => game.id === id).blockers.some(message => message.startsWith('Could not read server config')));
   }
   assert.ok(!state.games.find(game => game.id === 'waw').blockers.some(message => message.startsWith('Could not read server config')));
-  assert.ok(state.games.find(game => game.id === 'waw').blockers.some(message => message.startsWith('Game folder not found')));
+  assert.ok(state.games.find(game => game.id === 'waw').blockers.some(message => message.includes('was not found in your Steam libraries')));
 });
 
 test('MW3 preflight accepts x86 and proven-working x64 executables, but blocks invalid PE and missing runtime DLL', async t => {
@@ -286,7 +286,7 @@ test('window close and before-quit stay blocked while stopAll is pending', async
   let running = true;
   let window;
   const stopDone = new Promise(resolve => { resolveStop = resolve; });
-  const fakeManager = { initialize: async () => {}, hasRunning: () => running, stopAll: () => stopDone };
+  const fakeManager = { initialize: async () => {}, rescanInstallations: async () => {}, hasRunning: () => running, stopAll: () => stopDone };
   class FakeWindow {
     constructor() {
       window = this;
@@ -308,7 +308,8 @@ test('window close and before-quit stay blocked while stopAll is pending', async
     module: { exports: {} }, __dirname: path.join(__dirname, '..', 'electron'),
     require: name => name === 'electron' ? { app, dialog, BrowserWindow: FakeWindow, ipcMain: { handle() {} }, shell: {}, session: fakeSession }
       : name === './manager.cjs' ? { ServerManager: class { constructor() { return fakeManager; } } }
-        : name.startsWith('./') ? require(path.join(__dirname, '..', 'electron', name)) : require(name),
+        : name === './key-store.cjs' ? { KeyStore: class {} }
+          : name.startsWith('./') ? require(path.join(__dirname, '..', 'electron', name)) : require(name),
   };
   vm.runInNewContext(source, sandbox);
   await new Promise(resolve => setImmediate(resolve));
@@ -428,7 +429,8 @@ test('a second app instance hands off to the first and never opens a window', as
     vm.runInNewContext(source, {
       module: { exports: {} }, __dirname: path.join(__dirname, '..', 'electron'),
       require: name => name === 'electron' ? { app, dialog: {}, BrowserWindow: class {}, ipcMain: { handle() {} }, shell: {}, session: fakeSession }
-        : name.startsWith('./') ? require(path.join(__dirname, '..', 'electron', name)) : require(name),
+        : name === './key-store.cjs' ? { KeyStore: class {} }
+          : name.startsWith('./') ? require(path.join(__dirname, '..', 'electron', name)) : require(name),
     });
     assert.equal(quits, primary ? 0 : 1);
     assert.equal(readyCalls, primary ? 1 : 0);

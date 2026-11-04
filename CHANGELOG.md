@@ -5,6 +5,8 @@ Notable changes to botLANd Server Manager are recorded here. This project follow
 ## Unreleased
 
 - Begin the public-repository foundation: licensing, contribution and security guidance, automated checks, and code-quality tooling.
+- Detect installed Steam games and compatible server engines, with a manual game-folder fallback and first-run checklist.
+- Remove the legacy launcher requirement for starting servers. Plutonium keys can be saved with Electron safeStorage or explicitly imported from a private launcher.
 
 ## 0.2.7
 

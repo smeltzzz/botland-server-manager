@@ -1,10 +1,20 @@
 const path = require('node:path');
 const fs = require('node:fs/promises');
 const { constants } = require('node:fs');
-const { app, BrowserWindow, dialog, ipcMain, session, shell } = require('electron');
+const { app, BrowserWindow, dialog, ipcMain, safeStorage, session, shell } = require('electron');
 const { ServerManager } = require('./manager.cjs');
+const { KeyStore } = require('./key-store.cjs');
 const { profileFor } = require('./profiles.cjs');
 const { sourceRepos } = require('./schema.cjs');
+
+const engineGuides = {
+  cod4: 'https://iw3x.com/setup#hosting',
+  mw2: 'https://github.com/iw4x/iw4x-client',
+  waw: 'https://plutonium.pw/docs/server/t4/setting-up-a-server/',
+  bo1: 'https://plutonium.pw/docs/server/t5/setting-up-a-server/',
+  mw3: 'https://plutonium.pw/docs/server/iw5/setting-up-a-server/',
+  bo2: 'https://plutonium.pw/docs/server/t6/setting-up-a-server/',
+};
 
 /** @type {import('electron').BrowserWindow | undefined} */
 let window;
@@ -25,14 +35,15 @@ async function migrateSettings() {
 }
 
 async function createWindow() {
-  const defaultRoot = app.isPackaged ? path.join(app.getPath('documents'), 'GameServers') : path.resolve(__dirname, '..', '..');
+  const defaultRoot = app.isPackaged ? '' : path.resolve(__dirname, '..', '..');
   await migrateSettings();
   manager = new ServerManager(path.join(app.getPath('userData'), 'settings.json'), data => {
     // Server output can arrive while the renderer is reloading or gone; sending to a
     // disposed frame throws and must not crash the main process or end a stream handler.
     try { if (window && !window.isDestroyed()) window.webContents.send('manager:event', data); } catch { /* Renderer unavailable. */ }
-  }, defaultRoot);
+  }, defaultRoot, { keyStore: new KeyStore(path.join(app.getPath('userData'), 'keys.json'), safeStorage) });
   const recoveredSettings = await manager.initialize();
+  await manager.rescanInstallations();
   window = new BrowserWindow({
     width: 1380, height: 860, minWidth: 980, minHeight: 680,
     backgroundColor: '#1B1A19', autoHideMenuBar: true, show: false,
@@ -105,6 +116,12 @@ if (primaryInstance) app.whenReady().then(() => {
       }
       case 'chooseFolder': return manager.chooseFolder(id, window, dialog);
       case 'chooseRoot': return manager.chooseRoot(window, dialog);
+      case 'rescanInstallations': return manager.rescanInstallations();
+      case 'saveKey': return manager.saveKey(id, payload.key);
+      case 'removeKey': return manager.removeKey(id);
+      case 'importKey': return manager.importKey(id);
+      case 'openKeyPage': return shell.openExternal('https://platform.plutonium.pw/serverkeys/');
+      case 'openEngineGuide': return shell.openExternal(engineGuides[profileFor(id).id]);
       case 'openConfig': {
         const profile = profileFor(id);
         const gamePath = await manager.gamePath(id);

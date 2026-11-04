@@ -95,7 +95,7 @@ test('without a game folder, preflight never reads a config relative to the work
   try {
     for (const id of ['mw3', 'bo2']) {
       const blockers = (await manager.check(id)).blockers;
-      assert.ok(blockers.some(message => message.startsWith('Game folder not found')), blockers.join('\n'));
+      assert.ok(blockers.some(message => message.includes('was not found in your Steam libraries')), blockers.join('\n'));
       assert.ok(!blockers.some(message => message.includes('must exec') || message.includes('Could not read')), blockers.join('\n'));
     }
   } finally { process.chdir(cwd); }
@@ -123,7 +123,7 @@ test('a state snapshot that finishes late is never delivered after a newer one',
 test('a renderer that cannot receive events does not crash the main process', async () => {
   const source = await fs.readFile(path.join(__dirname, '..', 'electron', 'main.cjs'), 'utf8');
   let notify;
-  const fakeManager = { initialize: async () => {}, hasRunning: () => false, stopAll: async () => {} };
+  const fakeManager = { initialize: async () => {}, rescanInstallations: async () => {}, hasRunning: () => false, stopAll: async () => {} };
   class FakeWindow {
     constructor() {
       this.handlers = {};
@@ -143,7 +143,8 @@ test('a renderer that cannot receive events does not crash the main process', as
     module: { exports: {} }, __dirname: path.join(__dirname, '..', 'electron'),
     require: name => name === 'electron' ? { app, dialog: { showErrorBox() {} }, BrowserWindow: FakeWindow, ipcMain: { handle() {} }, shell: {}, session: fakeSession }
       : name === './manager.cjs' ? { ServerManager: class { constructor(_settings, callback) { notify = callback; return fakeManager; } } }
-        : name.startsWith('./') ? require(path.join(__dirname, '..', 'electron', name)) : require(name),
+        : name === './key-store.cjs' ? { KeyStore: class {} }
+          : name.startsWith('./') ? require(path.join(__dirname, '..', 'electron', name)) : require(name),
   };
   vm.runInNewContext(source, sandbox);
   await new Promise(resolve => setImmediate(resolve));

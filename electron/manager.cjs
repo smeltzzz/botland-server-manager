@@ -10,6 +10,7 @@ const { readConfig, readDocument, previewConfig, saveConfig, parseEntries, parse
 const { schemaFor, sourceRepos } = require('./schema.cjs');
 const { artworkFor, loadImage } = require('./artwork.cjs');
 const { scanMaps, modeOptions, rotationText, writeRotation } = require('./maps.cjs');
+const { detectSteamGames, inspectGameFolder } = require('./detection.cjs');
 const exec = promisify(execFile);
 const safeName = /^[a-z0-9_]+$/i;
 async function exists(file) { try { await fs.access(file); return true; } catch { return false; } }
@@ -35,11 +36,17 @@ async function peMachine(file) {
 }
 
 class ServerManager {
-  /** @param {string} settingsPath @param {(event: object) => void} notify @param {string} initialRoot */
-  constructor(settingsPath, notify, initialRoot) {
+  /** @param {string} settingsPath @param {(event: object) => void} notify @param {string} initialRoot
+   * @param {{keyStore?: import('./key-store.cjs').KeyStore, detectInstallations?: typeof detectSteamGames}} [services] */
+  constructor(settingsPath, notify, initialRoot, services = {}) {
     this.settingsPath = settingsPath;
     this.notify = notify;
     this.data = { root: initialRoot, games: {} };
+    this.keyStore = services.keyStore;
+    this.detectInstallations = services.detectInstallations || detectSteamGames;
+    // Explicitly refreshed at app startup; standalone test managers stay isolated
+    // from the developer's real Steam library and game installations.
+    this.detected = null;
     this.instances = new Map();
     this.logs = new Map();
     this.persistQueue = Promise.resolve();
@@ -116,9 +123,41 @@ class ServerManager {
   }
   async gamePath(id) {
     const opts = this.options(id);
-    if (opts.gamePath) return opts.gamePath;
-    const variables = await this.launcher(id);
-    return variables.gamepath || variables.gamedir || '';
+    return opts.gamePath || this.detected?.games?.[id]?.gamePath || '';
+  }
+  async rescanInstallations() {
+    this.detected = await this.detectInstallations();
+    await this.broadcastState();
+  }
+  async keyStatus(id) {
+    if (profileFor(id).executable !== 'plutonium') return 'not-required';
+    if (!this.keyStore) return 'missing';
+    try { return await this.keyStore.has(id) ? 'stored' : 'missing'; }
+    catch { return 'unavailable'; }
+  }
+  async saveKey(id, key) {
+    if (profileFor(id).executable !== 'plutonium') throw new Error('This game does not use a Plutonium server key.');
+    if (!this.keyStore) throw new Error('Secure key storage is unavailable.');
+    await this.keyStore.save(id, key);
+    await this.broadcastState();
+  }
+  async removeKey(id) {
+    if (profileFor(id).executable !== 'plutonium') throw new Error('This game does not use a Plutonium server key.');
+    if (!this.keyStore) throw new Error('Secure key storage is unavailable.');
+    await this.keyStore.remove(id);
+    await this.broadcastState();
+  }
+  async importKey(id) {
+    if (profileFor(id).executable !== 'plutonium') throw new Error('This game does not use a Plutonium server key.');
+    if (!this.keyStore) throw new Error('Secure key storage is unavailable.');
+    // The legacy launcher is read only after an explicit click. Its contents and
+    // parsed key never leave the main process or enter ordinary settings.
+    if (!this.data.root || !await exists(this.data.root)) throw new Error('Choose your private legacy scripts folder before importing a key.');
+    const key = (await this.launcher(id)).key;
+    if (!key) throw new Error('No key was found in this private launcher. Select its scripts folder or paste a key.');
+    await this.keyStore.save(id, key);
+    await this.broadcastState();
+    return true;
   }
   async check(id) {
     const profile = profileFor(id);
@@ -127,13 +166,18 @@ class ServerManager {
     const configPath = path.join(gamePath, profile.config);
     const blockers = [];
     const warnings = [];
-    const launcher = launcherPath(this.data.root, profile);
-    if (!await exists(launcher)) blockers.push('Legacy launcher not found. Check the server scripts folder.');
-    if (!gamePath || !await exists(gamePath)) blockers.push('Game folder not found. Select the installed game folder.');
-    else {
-      if (!await exists(configPath)) blockers.push(`Server config missing: ${profile.config.replaceAll('/', '\\')}`);
-      if (profile.id === 'cod4' && !await exists(path.join(gamePath, profile.executable))) blockers.push('CoD4R dedicated executable not found.');
-      if (profile.id === 'mw2' && !await exists(path.join(gamePath, profile.executable))) blockers.push('IW4x executable not found.');
+    const pathSource = options.gamePath ? 'manual' : gamePath ? 'steam' : 'none';
+    const inspected = this.detected && gamePath ? await inspectGameFolder(id, gamePath) : null;
+    const installed = inspected ? inspected.installed : Boolean(gamePath && await exists(gamePath));
+    const keyStatus = await this.keyStatus(id);
+    if (!installed) {
+      blockers.push(gamePath
+        ? `${profile.short} multiplayer files were not found in ${gamePath}. Choose the folder containing the game executable.`
+        : `${profile.short} was not found in your Steam libraries. Choose its installed game folder to continue.`);
+    } else {
+      if (!await exists(configPath)) blockers.push(`Server config missing at ${configPath}. Create a starter config (coming in the next update) or restore your existing server config.`);
+      if (profile.id === 'cod4' && !await exists(path.join(gamePath, profile.executable))) blockers.push(`Cod4R/IW3x DedRun missing at ${path.join(gamePath, profile.executable)}. Follow the IW3x hosting guide to install it; stock CoD4x is not supported.`);
+      if (profile.id === 'mw2' && !await exists(path.join(gamePath, profile.executable))) blockers.push(`IW4x executable missing at ${path.join(gamePath, profile.executable)}. Install IW4x in the selected MW2 game folder.`);
       if (profile.id === 'mw3') {
         try {
           // Current Plutonium IW5 also starts with a downgraded Steam install whose
@@ -144,14 +188,14 @@ class ServerManager {
         const modes = await modeOptions(profile, gamePath);
         if (!modes.some(mode => mode.value === options.mode)) blockers.push(`IW5 mode recipe missing: admin\\${options.mode}.dsr. Install the IW5 server configs or choose an installed mode.`);
       }
-      if (profile.id === 'cod4' && !await exists(path.join(gamePath, 'mods', 'mp_bots', 'z_svr_bots.iwd'))) blockers.push('CoD4 Bot Warfare mod not found.');
-      if (profile.id === 'mw2' && !await exists(path.join(gamePath, 'userraw', 'z_svr_bots.iwd'))) blockers.push('MW2 Bot Warfare mod not found.');
+      if (profile.id === 'cod4' && !await exists(path.join(gamePath, 'mods', 'mp_bots', 'z_svr_bots.iwd'))) blockers.push(`CoD4 Bot Warfare missing at ${path.join(gamePath, 'mods', 'mp_bots', 'z_svr_bots.iwd')}. Install the ineedbots IW3 mod in the Cod4R mod folder.`);
+      if (profile.id === 'mw2' && !await exists(path.join(gamePath, 'userraw', 'z_svr_bots.iwd'))) blockers.push(`MW2 Bot Warfare missing at ${path.join(gamePath, 'userraw', 'z_svr_bots.iwd')}. Install the ineedbots IW4 mod in IW4x userraw.`);
     }
     if (profile.executable === 'plutonium') {
-      if (!await exists(bootstrapPath())) blockers.push('Plutonium bootstrapper not found.');
-      const variables = await this.launcher(id);
-      if (!variables.key) blockers.push('Server key missing from the existing launcher.');
-      if (profile.id === 'bo1') warnings.push('The existing BO1 launch profile does not use -lan. Add the LAN firewall rule from the Overview tab to restrict network access.');
+      if (!await exists(bootstrapPath())) blockers.push(`Plutonium bootstrapper missing at ${bootstrapPath()}. Install Plutonium using its official guide; botLANd does not install it.`);
+      if (keyStatus === 'missing') blockers.push(`Plutonium server key needed for ${profile.short}. Paste your key in this game's Overview, or explicitly import it from a private launcher.`);
+      if (keyStatus === 'unavailable') blockers.push('Encrypted server keys cannot be read for this Windows user. Sign in with the original account and check Windows encryption. If keys.json in the app data folder is damaged, back it up before removing it, then paste fresh keys; plaintext storage is never used.');
+      if (profile.id === 'bo1') warnings.push('BO1 has no -lan launch flag. Create the LAN firewall rule from the Overview tab to restrict network access.');
       if (id === 'mw3') {
         const storageArchive = path.join(process.env.LOCALAPPDATA || '', 'Plutonium', 'storage', 'iw5', ...profile.mod.split('/'), 'z_svr_bots.iwd');
         const gameArchive = path.join(gamePath, ...profile.mod.split('/'), 'z_svr_bots.iwd');
@@ -179,21 +223,22 @@ class ServerManager {
         }
       } catch { blockers.push(`Could not read server config: ${profile.config.replaceAll('/', '\\')}`); }
     }
-    return { gamePath, blockers, warnings, options };
+    return { gamePath, installed, pathSource, keyStatus, blockers, warnings, options };
   }
   async snapshot() {
     const games = await Promise.all(order.map(async id => {
       const profile = profiles[id];
       const result = await this.check(id);
       let config = {};
-      if (result.gamePath && !result.blockers.some(x => x.startsWith('Server config missing') || x.startsWith('Game folder not found'))) {
+      if (result.installed && !result.blockers.some(x => x.startsWith('Server config missing'))) {
         try { config = await readConfig(path.join(result.gamePath, profile.config), { id, target: 'base', mode: result.options.mode }); }
         catch { if (!result.blockers.some(x => x.startsWith('Could not read server config'))) result.blockers.push(`Could not read server config: ${profile.config.replaceAll('/', '\\')}`); }
       }
       const instance = this.instances.get(id);
       return { id, title: profile.title, short: profile.short, subtitle: profile.subtitle, family: profile.family, engine: profile.engine,
         configPath: result.gamePath ? path.join(result.gamePath, profile.config) : '',
-        gamePath: result.gamePath, config, options: result.options, blockers: result.blockers, warnings: result.warnings,
+        gamePath: result.gamePath, installed: result.installed, pathSource: result.pathSource, keyStatus: result.keyStatus,
+        config, options: result.options, blockers: result.blockers, warnings: result.warnings,
         status: instance?.status || 'stopped', pid: instance?.child?.pid ?? null, startedAt: instance?.startedAt ?? null,
         activePort: instance?.activePort ?? null,
         logs: (this.logs.get(id) || []).slice(-120) };
@@ -262,8 +307,11 @@ class ServerManager {
   }
   async chooseFolder(id, dialogWindow, dialog) {
     profileFor(id);
-    const result = await dialog.showOpenDialog(dialogWindow, { title: `Select ${profileFor(id).title} game folder`, properties: ['openDirectory'], defaultPath: await this.gamePath(id) || this.data.root });
+    const suggested = await this.gamePath(id) || this.data.root;
+    const result = await dialog.showOpenDialog(dialogWindow, { title: `Select ${profileFor(id).title} game folder`, properties: ['openDirectory'], ...(suggested ? { defaultPath: suggested } : {}) });
     if (result.canceled || !result.filePaths[0]) return false;
+    const inspected = await inspectGameFolder(id, result.filePaths[0]);
+    if (!inspected.installed) throw new Error(`No ${profileFor(id).short} multiplayer game executable was found in that folder. Choose the actual game installation.`);
     if (this.instances.get(id)?.status === 'starting') throw new Error('Wait for this server to finish starting before changing its game folder.');
     await this.updateSettings(data => {
       if (this.instances.get(id)?.status === 'starting') throw new Error('Wait for this server to finish starting before changing its game folder.');
@@ -272,7 +320,7 @@ class ServerManager {
     await this.broadcastState(); return true;
   }
   async chooseRoot(dialogWindow, dialog) {
-    const result = await dialog.showOpenDialog(dialogWindow, { title: 'Select the GameServers scripts folder', properties: ['openDirectory'], defaultPath: this.data.root });
+    const result = await dialog.showOpenDialog(dialogWindow, { title: 'Select the folder containing your private legacy launch scripts (optional)', properties: ['openDirectory'], ...(this.data.root ? { defaultPath: this.data.root } : {}) });
     if (result.canceled || !result.filePaths[0]) return false;
     if ([...this.instances.values()].some(instance => instance.status === 'starting')) throw new Error('Wait for servers to finish starting before changing the scripts folder.');
     await this.updateSettings(data => {
@@ -519,9 +567,9 @@ class ServerManager {
       const chosen = options.selectedMaps.length ? options.selectedMaps : maps;
       if (chosen.some(m => !maps.includes(m))) throw new Error('A selected map is no longer installed. Update the map selection.');
       if (!chosen.length) throw new Error('No installed multiplayer maps found.');
-      const key = profile.executable === 'plutonium' ? (await this.launcher(id)).key : '';
-      launchKey = key;
-      if (profile.executable === 'plutonium' && !key) throw new Error('Server key missing from the existing launcher.');
+      const key = profile.executable === 'plutonium' ? await this.keyStore?.get(id) : '';
+      launchKey = key || '';
+      if (profile.executable === 'plutonium' && !key) throw new Error('Plutonium server key is not available. Paste it on this game\'s Overview.');
       const rotation = rotationText(profile, chosen, options.mode, options.shuffle);
       if (instance.cancelled) throw new Error('Launch cancelled.');
       await writeRotation(path.join(gamePath, profile.rotation), rotation);

@@ -1,7 +1,7 @@
 const path = require('node:path');
 
-// Only public, non-secret data belongs here. Plutonium keys stay in the user's
-// legacy launchers and are read in memory when a server is started.
+// Only public, non-secret data belongs here. Plutonium keys are stored
+// separately with Electron safeStorage and never belong in profiles.
 /**
  * @typedef {Object} GameProfile
  * @property {string} id

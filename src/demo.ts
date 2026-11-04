@@ -15,17 +15,29 @@ const definitions: [GameId, string, string, string, Game['family'], string, numb
   ['mw3', 'Modern Warfare 3', 'MW3', 'Call of Duty', 'mw', 'Plutonium IW5', 27016],
   ['bo2', 'Black Ops II', 'BO2', 'Call of Duty', 'bo', 'Plutonium T6', 4976],
 ];
-const snapshot: Snapshot = { root: 'C:\\Example\\GameServers', games: definitions.map(([id, title, short, subtitle, family, engine, port]) => ({
+const detected = new Set<GameId>(['cod4', 'bo1', 'mw3']);
+// Only presence is modeled in this browser fixture; no actual key string is kept.
+const fakeKeyPresence = new Set<GameId>(['bo1']);
+const snapshot: Snapshot = { root: '', games: definitions.map(([id, title, short, subtitle, family, engine, port]) => ({
   ...base, id, title, short, subtitle, family, engine, config: { ...base.config },
-  gamePath: `C:\\Example\\SteamLibrary\\steamapps\\common\\${title}`,
-  configPath: `C:\\Example\\SteamLibrary\\steamapps\\common\\${title}\\main\\server.cfg`,
+  installed: detected.has(id), pathSource: detected.has(id) ? 'steam' : 'none',
+  keyStatus: id === 'cod4' || id === 'mw2' ? 'not-required' : fakeKeyPresence.has(id) ? 'stored' : 'missing',
+  gamePath: detected.has(id) ? `C:\\Example\\SteamLibrary\\steamapps\\common\\${title}` : '',
+  configPath: detected.has(id) ? `C:\\Example\\SteamLibrary\\steamapps\\common\\${title}\\main\\server.cfg` : '',
   options: { ...base.options, port, lan: id !== 'bo1' },
+  blockers: detected.has(id) ? id === 'mw3' ? ['A Plutonium server key is required.'] : [] : ['Game folder not found.'],
   warnings: id === 'bo1' ? ['The existing BO1 launch profile does not use -lan. Add the LAN firewall rule from the Overview tab to restrict network access.'] : [],
 })) };
 const pool = ['mp_crash', 'mp_crossfire', 'mp_backlot', 'mp_bloc', 'mp_bog', 'mp_broadcast', 'mp_chinatown', 'mp_creek', 'mp_killhouse', 'mp_pipeline', 'mp_shipment', 'mp_showdown', 'mp_strike', 'mp_vacant', 'mp_cargoship', 'mp_citystreets', 'mp_convoy', 'mp_countdown', 'mp_farm', 'mp_overgrown'];
 const subscribers = new Set<(event: ManagerEvent) => void>();
 const emit = () => subscribers.forEach(listener => listener({ type: 'state', snapshot: structuredClone(snapshot) }));
 const find = (id: GameId) => snapshot.games.find(game => game.id === id)!;
+function updateDemoReadiness(id: GameId) {
+  const game = find(id);
+  game.keyStatus = id === 'cod4' || id === 'mw2' ? 'not-required' : fakeKeyPresence.has(id) ? 'stored' : 'missing';
+  game.blockers = !game.installed ? ['Game folder not found.'] : game.keyStatus === 'missing' ? ['A Plutonium server key is required.'] : [];
+  emit();
+}
 const demoFields: ConfigField[] = [
   { key: 'sv_hostname', sourceKey: 'sv_hostname', label: 'Server name', section: 'Server & access', type: 'text' },
   { key: 'sv_maxclients', sourceKey: 'sv_maxclients', label: 'Player slots', section: 'Server & access', type: 'integer', min: 2, max: 64 },
@@ -47,9 +59,15 @@ export function createDemoManager(): ManagerApi {
   return {
     snapshot: async () => structuredClone(snapshot),
     maps: async (id): Promise<MapData> => ({ maps: pool, modes: id === 'mw3' ? [{ value: 'DOM_default', label: 'DOM' }] : [{ value: 'dom', label: 'Domination' }, { value: 'tdm', label: 'Team Deathmatch' }, { value: 'dm', label: 'Free for All' }] }),
-    start: async id => { const game = find(id); game.status = 'running'; game.pid = 4108; game.startedAt = new Date().toISOString(); game.logs = [{ at: new Date().toISOString(), level: 'info', message: `Started ${game.engine} with the selected map rotation.` }]; emit(); },
+    start: async id => { const game = find(id); if (!game.installed || game.blockers.length) throw new Error('Resolve the setup checks before starting.'); game.status = 'running'; game.pid = 4108; game.startedAt = new Date().toISOString(); game.logs = [{ at: new Date().toISOString(), level: 'info', message: `Started ${game.engine} with the selected map rotation.` }]; emit(); },
     stop: async id => { const game = find(id); game.status = 'stopped'; game.pid = null; emit(); },
-    chooseFolder: async () => false, chooseRoot: async () => false, openConfig: async () => false,
+    chooseFolder: async id => { const game = find(id); game.installed = true; game.pathSource = 'manual'; game.gamePath = `C:\\Example\\SelectedGames\\${game.title}`; game.configPath = `${game.gamePath}\\main\\server.cfg`; updateDemoReadiness(id); return true; },
+    chooseRoot: async () => { snapshot.root = 'C:\\Example\\OptionalScripts'; emit(); return true; },
+    rescanInstallations: async () => { emit(); },
+    saveKey: async (id, key) => { if (!key.trim()) throw new Error('A key is required.'); fakeKeyPresence.add(id); updateDemoReadiness(id); },
+    removeKey: async id => { fakeKeyPresence.delete(id); updateDemoReadiness(id); },
+    importKey: async id => { if (!snapshot.root || id !== 'mw3') return false; fakeKeyPresence.add(id); updateDemoReadiness(id); return true; },
+    openKeyPage: async () => {}, openEngineGuide: async () => {}, openConfig: async () => false,
     document: async (id, target, mode) => demoDocument(id, target, mode),
     previewSettings: async (id, target, mode, values) => ({ token: '0'.repeat(64), changed: true, changes: Object.entries(values).map(([key, after]) => ({ key, label: key, before: demoDocument(id, target, mode).values[key] ?? '(not set)', after, duplicates: 1 })) }),
     commitSettings: async (id, target, mode, values) => { if (target === 'base') Object.assign(find(id).config, values); emit(); return demoDocument(id, target, mode); },

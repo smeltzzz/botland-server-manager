@@ -8,6 +8,8 @@ coverage/
 # Private local preferences and diagnostics.
 settings.json
 settings.json.*
+keys.json
+keys.json.*
 *.bak-*
 .env
 .env.*

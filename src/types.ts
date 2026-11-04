@@ -10,6 +10,9 @@ export interface Game {
   engine: string;
   configPath: string;
   gamePath: string;
+  installed: boolean;
+  pathSource: 'manual' | 'steam' | 'none';
+  keyStatus: 'not-required' | 'stored' | 'missing' | 'unavailable';
   config: Record<string, string>;
   options: { port: number; mode: string; shuffle: boolean; selectedMaps: string[]; gamePath: string; lan: boolean };
   blockers: string[];
@@ -37,6 +40,12 @@ export interface ManagerApi {
   stop(id: GameId): Promise<void>;
   chooseFolder(id: GameId): Promise<boolean>;
   chooseRoot(): Promise<boolean>;
+  rescanInstallations(): Promise<void>;
+  saveKey(id: GameId, key: string): Promise<void>;
+  removeKey(id: GameId): Promise<void>;
+  importKey(id: GameId): Promise<boolean>;
+  openKeyPage(): Promise<void>;
+  openEngineGuide(id: GameId): Promise<void>;
   document(id: GameId, target: ConfigTarget, mode?: string): Promise<ConfigDocument>;
   previewSettings(id: GameId, target: ConfigTarget, mode: string, values: Record<string, string>, expectedPath?: string): Promise<ConfigPreview>;
   commitSettings(id: GameId, target: ConfigTarget, mode: string, values: Record<string, string>, token: string, expectedPath?: string): Promise<ConfigDocument>;

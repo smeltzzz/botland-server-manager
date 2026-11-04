@@ -2,19 +2,19 @@
 
 Windows desktop app for configuring and launching six Call of Duty bot servers. The existing batch and PowerShell scripts are **not modified** by the app. botLANd launches the installed executables directly and generates each game's live map-rotation config when you click Start.
 
-> **Pre-1.0 setup:** This release still requires your own installed games, compatible server engines, Bot Warfare mods, existing configs, and legacy server launch scripts. It does not install any of those or provide a one-click first-run setup yet. Do not copy private launch scripts into this repository.
+> **Pre-1.0 setup:** You still need your own installed games, compatible server engines, Bot Warfare mods, and existing server configs. The app now finds Steam libraries and guides setup, but it does not install engines, mods, or create missing configs yet. Legacy launch scripts are optional and used only when you explicitly import a key. Do not copy private launch scripts into this repository.
 
 ## Requirements
 
 - Windows 10 or later; owned Steam installs of the games you want to host.
-- Compatible engines already set up: Cod4R/IW3x for CoD4, IW4x for MW2, and [Plutonium](https://plutonium.pw/docs/install/) for WaW, BO1, MW3, and BO2. Follow the respective engine's official installation guide. botLANd does not distribute game or engine files.
+- Compatible engines already set up: [Cod4R/IW3x DedRun](https://iw3x.com/setup#hosting) for CoD4 (not legacy CoD4x), [IW4x](https://github.com/iw4x/iw4x-client) for MW2, and [Plutonium](https://plutonium.pw/docs/install/) for WaW, BO1, MW3, and BO2. Follow each engine's setup guide. botLANd does not distribute game or engine files.
 - The matching Bot Warfare mod from [ineedbots](https://github.com/ineedbots), already installed for each game you want to host. In-app installation is planned for 1.0.
-- For this release, the corresponding legacy server-script folders and configs; Plutonium titles need your own server keys in the private launch scripts. Keep these scripts and keys outside the repository.
+- Existing server configs for the game you want to host; Plutonium titles also need your own server key. Paste a key in the app to save it encrypted for your Windows account. Existing private launch scripts are only needed if you choose to import keys from them.
 
 ## What works
 
 - Dashboard with setup checks, per-game controls, running status and live output.
-- Select the game install folder and the folder containing the six server-script folders.
+- Detect games in your Steam libraries (with a per-game Browse fallback), confirm compatible engine files, and follow an in-app setup checklist. Select a private scripts folder only if you want to import an existing key.
 - Guided, game-specific Bot Warfare settings based on the six ineedbots repositories. BO2's 0–3 difficulty scale and 0–1 fill modes are separate from the other titles; BO1 exposes its native `bot_difficulty` setting.
 - Edit server, bot and match settings in the existing configs. MW3 `.dsr` and BO2 `gamesettings/*.cfg` files have their own mode-rule editors. A searchable advanced view exposes existing directives, masking secret values.
 - Preview individual changes before saving. Every changed config gets a byte-for-byte timestamped backup; unrecognized settings, comments, includes and line endings are retained. Saves are refused if a file changed after preview.
@@ -23,7 +23,7 @@ Windows desktop app for configuring and launching six Call of Duty bot servers. 
 - Flip each server between **LAN only** and **Public** with a per-game switch on the game page (the dashboard cards show the current visibility). The switch only changes the launch arguments — CoD4 `dedicated 1→2`, MW2 `sv_lanonly 1→0`, and Plutonium's `-lan` flag present or absent — and applies at the next start. Public mode removes the LAN restriction; it does not guarantee a listing in every game's server browser. Players joining from outside the local network additionally need the UDP port opened or forwarded in the network router's settings — the firewall rule and the app can only cover this PC.
 - Manage the matching **Windows Firewall rule** per server from the Overview tab (one UAC prompt per create/update/remove). The rule allows inbound UDP for the chosen port, scoped to the local subnet in LAN mode and to any address in Public mode. botLANd only ever touches the single rule named `botLANd <Game> UDP` and leaves every other rule alone. A firewall rule applies immediately — even mid-match — and unlike the launch switch, it takes effect on already-running servers. While a server is running, its rule targets the port that server was launched with; after changing the port, update the rule once the server restarts. Rule status is read with the NetSecurity PowerShell cmdlets, so it works on any Windows display language. For BO1 the firewall rule is the real LAN guard, because its launch profile cannot pass `-lan`, so BO1's rule is always scoped to the local subnet.
 - Launch and stop only processes started by this app. It checks for a UDP port already in use (IPv4 and IPv6 listeners; if Windows' `netstat` cannot be run, the server still starts and the game reports any bind failure) and requires confirmation before stopping servers on app exit.
-- Plutonium server keys are read **in memory** from the original launchers and never stored in the app's preferences or intentionally printed to the UI.
+- Plutonium server keys are stored separately from ordinary preferences using Electron `safeStorage` (Windows user encryption/DPAPI). The app shows only whether a key is present, not its value. An optional import button reads an existing private launcher once without editing it. If encryption is unavailable, the app refuses to save or use keys rather than falling back to plaintext.
 
 ## Run locally
 
@@ -34,21 +34,22 @@ Windows desktop app for configuring and launching six Call of Duty bot servers. 
 
 For a browser-only **design preview** during development, open the Vite URL without Electron. It uses simulated servers; start/stop in that preview does not launch a game. The Electron desktop window uses the real local installations.
 
-The packaged app initially looks for server scripts under `GameServers` in your Documents folder. Use **Change folder** in the lower left to point it to your own scripts folder. Existing game paths are read from the matching legacy `.bat` launchers until you select a different folder. Existing saved preferences take precedence; the app migrates settings from the old capitalization of its user-data folder without overwriting current settings.
+On first launch, the app detects Steam libraries from your Windows user registry and `steamapps/libraryfolders.vdf`, then checks each game's multiplayer files and compatible engine. Use **Browse game folder** if your install is elsewhere; a saved folder takes precedence over detection. The scripts location in the sidebar is optional and only used by **Import from legacy launcher**. Existing saved preferences take precedence; the app migrates settings from the old capitalization of its user-data folder without overwriting current settings.
 
 ## Important notes
 
-- The original `.bat` files still contain plaintext Plutonium keys; this app does not remove or rotate them. Keep those launchers private and rotate keys if they have been shared. The game executable still receives the key through its command line, as it does with the existing launchers.
+- If you have old `.bat` launchers, they may still contain plaintext Plutonium keys. Importing a key does not remove or rotate it in the original script. Keep those launchers private and rotate keys if shared. The game executable still receives the key on its command line (visible to local process inspection), as Plutonium requires.
 - Stopping uses Windows `taskkill /T /F` against the process started by botLANd and its descendants. It is not an in-game graceful shutdown. Other servers are never intentionally targeted.
 - Existing generated rotation files are replaced on start. If you need to preserve a hand-edited rotation, copy it elsewhere first.
 - BO1's existing launch pattern lacks Plutonium's `-lan` argument, so it always launches public; add the LAN firewall rule from the Overview tab to actually restrict it. Never assume a server is private solely because it runs on your own PC.
 - The IW5 launcher and botLANd both pass `-lan` and use UDP 27016 by default. For a LAN client, connect to the server's private IP and port; no router port forwarding is needed. Review all existing Windows Firewall rules before relying on LAN-only access: other inbound rules may still allow access from public networks.
 - Config changes and launch options take effect on the next start, not in a running match. Installed maps and game mode support differ between games; map lists are checked again at launch.
-- MW3/IW5 uses the game folder selected in the UI (or the path from `5-MW3-Server/!start_mp_server.bat`), `admin/server.cfg`, the selected `admin/*.dsr`, and Bot Warfare's `mods/bots/z_svr_bots.iwd` in either that game folder or Plutonium IW5 storage. `server.cfg` must actively `exec server_live.cfg`; botLANd generates that rotation on Start. PE architecture alone is not a reliable compatibility test; an executable can still fail at launch for other reasons. Restore missing runtime files from a compatible installation rather than copying DLLs from an unrelated game.
+- CoD4 uses **Cod4R/IW3x DedRun**, not the retired CoD4x executable. The app launches `Cod4R-DedRun.exe -nogui` from the chosen game folder, uses the full Bot Warfare `mods/mp_bots` mod instead of the guide's example bridge mod, and executes the existing `main/botserver.cfg` and generated rotation. For a public listing, follow the [IW3x hosting guide](https://iw3x.com/setup#hosting) for firewall and master-server tokens; never share those tokens.
+- MW3/IW5 uses the detected or selected game folder, `admin/server.cfg`, the selected `admin/*.dsr`, and Bot Warfare's `mods/bots/z_svr_bots.iwd` in either that game folder or Plutonium IW5 storage. `server.cfg` must actively `exec server_live.cfg`; botLANd generates that rotation on Start. PE architecture alone is not a reliable compatibility test; an executable can still fail at launch for other reasons. Restore missing runtime files from a compatible installation rather than copying DLLs from an unrelated game.
 - The game-specific fields are based on upstream documentation; settings absent from your installed config are shown as defaults until you explicitly edit them. BO2 `gts` and MW3 `gameOpt` rules are only edited in their real mode files; the BO2 include directives and comments remain untouched.
 - Secret values in the advanced editor are masked in the UI and change preview. Replacing a secret still stores it in the game's plaintext config and its backup, as required by those game servers; keep those files private.
 - The status cards track processes started by this app. A server started from a batch file is not adopted; a port check will block starting a second server on the same UDP port.
-- The console is a per-session, in-memory view. Bot installation/update, automatic restart and secure migration of legacy keys are not yet included.
+- The console is a per-session, in-memory view. Bot installation/update and automatic restart are not yet included; an existing launcher key can now be imported into encrypted storage on demand.
 
 ## Credits and legal
 
