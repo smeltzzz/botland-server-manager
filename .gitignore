@@ -1,0 +1,28 @@
+node_modules/
+dist/
+release/
+coverage/
+*.log
+*.tsbuildinfo
+
+# Private local preferences and diagnostics.
+settings.json
+settings.json.*
+*.bak-*
+.env
+.env.*
+!.env.example
+*.local
+*.tmp
+*.temp
+*.dmp
+*.heapsnapshot
+*.cpuprofile
+screenshots/
+*.screenshot.png
+
+# OS and editor files.
+.DS_Store
+Thumbs.db
+.vscode/
+.idea/

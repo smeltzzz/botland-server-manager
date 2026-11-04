@@ -1,0 +1,66 @@
+{
+  "name": "botland-server-manager",
+  "version": "0.2.7",
+  "private": true,
+  "description": "A local desktop manager for Call of Duty bot servers",
+  "main": "electron/main.cjs",
+  "scripts": {
+    "dev": "concurrently -k \"vite --host 127.0.0.1 --strictPort\" \"wait-on http://127.0.0.1:5173 && electron .\"",
+    "build": "tsc --noEmit && vite build",
+    "lint": "eslint src electron scripts tests vite.config.ts eslint.config.mjs",
+    "format": "prettier --write",
+    "format:check": "prettier --check .prettierrc.json eslint.config.mjs .github",
+    "test": "node --test tests/*.test.cjs",
+    "prune:release": "node scripts/prune-release.cjs",
+    "dist:win": "npm run build && electron-builder --win nsis portable && npm run prune:release"
+  },
+  "dependencies": {
+    "lucide-react": "^0.468.0",
+    "react": "^18.3.1",
+    "react-dom": "^18.3.1"
+  },
+  "devDependencies": {
+    "@eslint/js": "^10.0.1",
+    "@types/node": "^22.15.0",
+    "@types/react": "^18.3.18",
+    "@types/react-dom": "^18.3.5",
+    "@vitejs/plugin-react": "^4.5.0",
+    "concurrently": "^9.2.0",
+    "electron": "^45.2.2",
+    "electron-builder": "^26.0.12",
+    "eslint": "^10.14.0",
+    "eslint-config-prettier": "^10.1.8",
+    "globals": "^16.5.0",
+    "prettier": "^3.9.10",
+    "typescript": "^5.8.3",
+    "typescript-eslint": "^8.72.1",
+    "vite": "^6.3.0",
+    "wait-on": "^8.0.3"
+  },
+  "build": {
+    "appId": "local.botland.servermanager",
+    "productName": "botLANd Server Manager",
+    "directories": {
+      "output": "release"
+    },
+    "files": [
+      "dist/**/*",
+      "electron/**/*",
+      "build/icon.png",
+      "src/assets/OFL.txt",
+      "LICENSE",
+      "package.json"
+    ],
+    "win": {
+      "icon": "build/icon.ico",
+      "target": [
+        "nsis",
+        "portable"
+      ]
+    },
+    "nsis": {
+      "oneClick": false,
+      "allowToChangeInstallationDirectory": true
+    }
+  }
+}

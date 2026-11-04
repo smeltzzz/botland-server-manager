@@ -1,0 +1,39 @@
+name: Bug report
+description: Report a reproducible problem with botLANd
+labels: [bug]
+body:
+  - type: markdown
+    attributes:
+      value: 'Do not post server keys, private launchers, game configs, logs containing secrets, or personal paths. For security issues use the private process in SECURITY.md.'
+  - type: input
+    id: version
+    attributes:
+      label: botLANd version
+      placeholder: 0.2.7
+    validations:
+      required: true
+  - type: dropdown
+    id: game
+    attributes:
+      label: Game
+      options: [CoD4, WaW, MW2, BO1, MW3, BO2, Not game-specific]
+    validations:
+      required: true
+  - type: textarea
+    id: reproduction
+    attributes:
+      label: Steps to reproduce
+      description: Use synthetic paths and redact any keys.
+    validations:
+      required: true
+  - type: textarea
+    id: expected
+    attributes:
+      label: Expected versus actual behavior
+    validations:
+      required: true
+  - type: textarea
+    id: environment
+    attributes:
+      label: Environment and diagnostics (redacted)
+      description: Windows version, engine version, relevant error messages. No secrets or private configs.
