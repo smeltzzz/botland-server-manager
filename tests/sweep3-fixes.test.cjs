@@ -140,11 +140,13 @@ test('a renderer that cannot receive events does not crash the main process', as
     isPackaged: false, quit() {}, requestSingleInstanceLock: () => true,
   };
   const sandbox = {
-    module: { exports: {} }, __dirname: path.join(__dirname, '..', 'electron'),
+    module: { exports: {} }, process, __dirname: path.join(__dirname, '..', 'electron'),
     require: name => name === 'electron' ? { app, dialog: { showErrorBox() {} }, BrowserWindow: FakeWindow, ipcMain: { handle() {} }, shell: {}, session: fakeSession }
       : name === './manager.cjs' ? { ServerManager: class { constructor(_settings, callback) { notify = callback; return fakeManager; } } }
         : name === './key-store.cjs' ? { KeyStore: class {} }
-          : name.startsWith('./') ? require(path.join(__dirname, '..', 'electron', name)) : require(name),
+          : name === './botwarfare-source.cjs' ? { BotWarfareSource: class {} }
+            : name === './botwarfare-install.cjs' ? { BotWarfareInstaller: class {} }
+              : name.startsWith('./') ? require(path.join(__dirname, '..', 'electron', name)) : require(name),
   };
   vm.runInNewContext(source, sandbox);
   await new Promise(resolve => setImmediate(resolve));

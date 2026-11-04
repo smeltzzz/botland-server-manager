@@ -1,6 +1,6 @@
 // Browser-only design preview. This module is loaded only by the Vite dev server
 // when the Electron preload is absent; packaged builds never use these fixtures.
-import type { ConfigDocument, ConfigField, Game, GameId, ManagerApi, ManagerEvent, MapData, Snapshot } from './types';
+import type { BotStatus, ConfigDocument, ConfigField, Game, GameId, ManagerApi, ManagerEvent, MapData, Snapshot } from './types';
 
 const base: Pick<Game, 'options' | 'config' | 'blockers' | 'warnings' | 'logs' | 'status' | 'pid' | 'startedAt'> = {
   options: { port: 28961, mode: 'dom', shuffle: true, selectedMaps: [], gamePath: '', lan: true },
@@ -18,8 +18,8 @@ const definitions: [GameId, string, string, string, Game['family'], string, numb
 const detected = new Set<GameId>(['cod4', 'bo1', 'mw3']);
 // Only presence is modeled in this browser fixture; no actual key string is kept.
 const fakeKeyPresence = new Set<GameId>(['bo1']);
-const snapshot: Snapshot = { root: '', games: definitions.map(([id, title, short, subtitle, family, engine, port]) => ({
-  ...base, id, title, short, subtitle, family, engine, config: { ...base.config },
+const snapshot: Snapshot = { root: '', updatesEnabled: true, updates: { cod4: { status: 'checked', latest: { tag: 'v2.1.0' }, updateAvailable: true } }, games: definitions.map(([id, title, short, subtitle, family, engine, port]) => ({
+  ...base, id, title, short, subtitle, family, engine, modBusy: false, config: { ...base.config },
   installed: detected.has(id), pathSource: detected.has(id) ? 'steam' : 'none',
   keyStatus: id === 'cod4' || id === 'mw2' ? 'not-required' : fakeKeyPresence.has(id) ? 'stored' : 'missing',
   gamePath: detected.has(id) ? `C:\\Example\\SteamLibrary\\steamapps\\common\\${title}` : '',
@@ -32,6 +32,16 @@ const pool = ['mp_crash', 'mp_crossfire', 'mp_backlot', 'mp_bloc', 'mp_bog', 'mp
 const subscribers = new Set<(event: ManagerEvent) => void>();
 const emit = () => subscribers.forEach(listener => listener({ type: 'state', snapshot: structuredClone(snapshot) }));
 const find = (id: GameId) => snapshot.games.find(game => game.id === id)!;
+const botRepos: Record<GameId, string> = { cod4: 'iw3', waw: 't4', mw2: 'iw4', bo1: 't5', mw3: 'iw5', bo2: 't6' };
+const demoManifest = (id: GameId, ref: string, channel: 'stable' | 'development' = 'stable'): NonNullable<BotStatus['manifest']> => ({
+  channel, ref, refType: channel === 'stable' ? 'tag' : 'commit', sha256: 'a'.repeat(64), date: '2026-10-20T12:00:00.000Z', repo: `https://github.com/ineedbots/${botRepos[id]}_bot_warfare`, patches: [],
+});
+const botStatuses: Record<GameId, BotStatus> = Object.fromEntries(definitions.map(([id]) => [id, {
+  state: id === 'cod4' ? 'installed' : id === 'bo1' ? 'unknown' : 'not-installed', targetPath: '',
+  manifest: id === 'cod4' ? demoManifest(id, 'v2.0.0') : null,
+  versions: id === 'cod4' ? [{ versionId: 'demo-previous', date: '2026-09-01T12:00:00.000Z', manifest: { ref: 'v1.9.0', channel: 'stable' } }] : [],
+  channel: 'stable', source: { supported: true, ref: 'v2.1.0', notes: 'Demo release summary. No download occurs in browser preview.', status: 'Sample release available' },
+}])) as Record<GameId, BotStatus>;
 function updateDemoReadiness(id: GameId) {
   const game = find(id);
   game.keyStatus = id === 'cod4' || id === 'mw2' ? 'not-required' : fakeKeyPresence.has(id) ? 'stored' : 'missing';
@@ -64,6 +74,34 @@ export function createDemoManager(): ManagerApi {
     chooseFolder: async id => { const game = find(id); game.installed = true; game.pathSource = 'manual'; game.gamePath = `C:\\Example\\SelectedGames\\${game.title}`; game.configPath = `${game.gamePath}\\main\\server.cfg`; updateDemoReadiness(id); return true; },
     chooseRoot: async () => { snapshot.root = 'C:\\Example\\OptionalScripts'; emit(); return true; },
     rescanInstallations: async () => { emit(); },
+    createStarterConfig: async id => { const game = find(id); if (!game.installed) throw new Error('Choose a game folder first.'); game.config.sv_hostname = `botLANd ${game.short} Server`; emit(); return game.configPath; },
+    botStatus: async id => structuredClone({ ...botStatuses[id], targetPath: `${find(id).gamePath}\\mods\\bots` }),
+    botAction: async (id, operation, versionId) => {
+      const game = find(id);
+      const bot = botStatuses[id];
+      if (!game.installed || game.status !== 'stopped' || game.modBusy) throw new Error('Stop the server and choose a game folder first.');
+      if (operation === 'update' && bot.state !== 'installed') throw new Error('No managed version to update.');
+      if (operation === 'restore' && !bot.versions.some(version => version.versionId === versionId)) throw new Error('Choose a previous managed version.');
+      game.modBusy = true; emit();
+      try {
+        if ((operation === 'update' || operation === 'reinstall') && bot.manifest) bot.versions.unshift({ versionId: `demo-${Date.now()}`, date: bot.manifest.date, manifest: { ref: bot.manifest.ref, channel: bot.manifest.channel } });
+        if (operation === 'restore') {
+          const version = bot.versions.find(entry => entry.versionId === versionId)!;
+          bot.manifest = demoManifest(id, version.manifest?.ref || 'previous', version.manifest?.channel === 'development' ? 'development' : 'stable');
+        } else if (operation === 'remove') bot.manifest = null;
+        else bot.manifest = demoManifest(id, bot.source.ref || 'v2.1.0', bot.channel);
+        bot.state = operation === 'remove' ? 'not-installed' : 'installed';
+        snapshot.updates[id] = { status: 'checked', latest: { tag: 'v2.1.0' }, updateAvailable: false };
+      } finally { game.modBusy = false; emit(); }
+    },
+    setBotChannel: async (id, channel) => {
+      if (channel === 'development' && id !== 'cod4' && id !== 'bo2') throw new Error('Development builds are not available for this game.');
+      botStatuses[id].channel = channel;
+      botStatuses[id].source = { supported: true, ref: channel === 'stable' ? 'v2.1.0' : 'abcdef1234567890', notes: 'Demo release summary. No download occurs in browser preview.', status: 'Sample release available' };
+      emit();
+    },
+    checkBotUpdates: async () => { snapshot.updates.cod4 = { status: 'checked', latest: { tag: 'v2.1.0' }, updateAvailable: botStatuses.cod4.manifest?.ref !== 'v2.1.0' }; emit(); },
+    setUpdateChecks: async enabled => { snapshot.updatesEnabled = enabled; emit(); },
     saveKey: async (id, key) => { if (!key.trim()) throw new Error('A key is required.'); fakeKeyPresence.add(id); updateDemoReadiness(id); },
     removeKey: async id => { fakeKeyPresence.delete(id); updateDemoReadiness(id); },
     importKey: async id => { if (!snapshot.root || id !== 'mw3') return false; fakeKeyPresence.add(id); updateDemoReadiness(id); return true; },

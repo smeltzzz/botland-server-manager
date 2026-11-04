@@ -7,6 +7,8 @@ Notable changes to botLANd Server Manager are recorded here. This project follow
 - Begin the public-repository foundation: licensing, contribution and security guidance, automated checks, and code-quality tooling.
 - Detect installed Steam games and compatible server engines, with a manual game-folder fallback and first-run checklist.
 - Remove the legacy launcher requirement for starting servers. Plutonium keys can be saved with Electron safeStorage or explicitly imported from a private launcher.
+- Create missing starter base configs without overwriting existing files, including required MW3/BO2 rotation execs.
+- Add opt-in Bot Warfare install/update/reinstall/remove/restore for all six games, with official-source ZIP validation, Cod4R clientid patch, per-file backups/rollback, preserved user-edited waypoints, and release-update checks.
 
 ## 0.2.7
 

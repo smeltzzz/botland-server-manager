@@ -7,12 +7,15 @@ const path = require('node:path');
 const { app, BrowserWindow, ipcMain, safeStorage } = require('electron');
 const { ServerManager } = require('../electron/manager.cjs');
 const { KeyStore } = require('../electron/key-store.cjs');
+const { BotWarfareInstaller } = require('../electron/botwarfare-install.cjs');
 
 // Use the platform's normal compositor for screenshots.
 app.whenReady().then(async () => {
   const root = '';
+  const source = { resolveSource: async () => ({ supported: false, ref: null, notes: '', status: 'offline' }) };
+  const installer = new BotWarfareInstaller({ source, localAppData: process.env.LOCALAPPDATA });
   const manager = new ServerManager(path.join(app.getPath('userData'), 'settings.json'), () => {}, root,
-    { keyStore: new KeyStore(path.join(app.getPath('userData'), 'keys.json'), safeStorage) });
+    { keyStore: new KeyStore(path.join(app.getPath('userData'), 'keys.json'), safeStorage), modSource: source, modInstaller: installer });
   await manager.initialize();
   await manager.rescanInstallations();
   ipcMain.handle('manager:action', async (_event, action, payload) => {
@@ -21,6 +24,7 @@ app.whenReady().then(async () => {
     if (action === 'document') return manager.document(payload.id, payload.target, payload.mode);
     if (action === 'artwork') return manager.artwork(payload.id, payload.kind);
     if (action === 'firewallStatus') return manager.firewallStatus(payload.id);
+    if (action === 'botStatus') return manager.botStatus(payload.id);
     throw new Error('Visual smoke test is read-only.');
   });
   const win = new BrowserWindow({ width: 1380, height: 860, show: true, backgroundColor: '#1B1A19',

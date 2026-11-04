@@ -11,6 +11,8 @@ const { schemaFor, sourceRepos } = require('./schema.cjs');
 const { artworkFor, loadImage } = require('./artwork.cjs');
 const { scanMaps, modeOptions, rotationText, writeRotation } = require('./maps.cjs');
 const { detectSteamGames, inspectGameFolder } = require('./detection.cjs');
+const { createStarterConfig: writeStarterConfig } = require('./starter-config.cjs');
+const { SOURCES } = require('./botwarfare-source.cjs');
 const exec = promisify(execFile);
 const safeName = /^[a-z0-9_]+$/i;
 async function exists(file) { try { await fs.access(file); return true; } catch { return false; } }
@@ -37,16 +39,21 @@ async function peMachine(file) {
 
 class ServerManager {
   /** @param {string} settingsPath @param {(event: object) => void} notify @param {string} initialRoot
-   * @param {{keyStore?: import('./key-store.cjs').KeyStore, detectInstallations?: typeof detectSteamGames}} [services] */
+   * @param {{keyStore?: import('./key-store.cjs').KeyStore, detectInstallations?: typeof detectSteamGames,
+   * modSource?: import('./botwarfare-source.cjs').BotWarfareSource, modInstaller?: import('./botwarfare-install.cjs').BotWarfareInstaller}} [services] */
   constructor(settingsPath, notify, initialRoot, services = {}) {
     this.settingsPath = settingsPath;
     this.notify = notify;
-    this.data = { root: initialRoot, games: {} };
+    this.data = { root: initialRoot, games: {}, updatesEnabled: true };
     this.keyStore = services.keyStore;
     this.detectInstallations = services.detectInstallations || detectSteamGames;
     // Explicitly refreshed at app startup; standalone test managers stay isolated
     // from the developer's real Steam library and game installations.
     this.detected = null;
+    this.modSource = services.modSource;
+    this.modInstaller = services.modInstaller;
+    this.modBusy = new Set();
+    this.botUpdates = {};
     this.instances = new Map();
     this.logs = new Map();
     this.persistQueue = Promise.resolve();
@@ -68,6 +75,7 @@ class ServerManager {
       return backup;
     }
     if (typeof stored.root === 'string' && stored.root) this.data.root = stored.root;
+    if (typeof stored.updatesEnabled === 'boolean') this.data.updatesEnabled = stored.updatesEnabled;
     if (isPlainObject(stored.games)) {
       for (const id of order) {
         const entry = stored.games[id];
@@ -159,6 +167,85 @@ class ServerManager {
     await this.broadcastState();
     return true;
   }
+  botChannel(id) {
+    profileFor(id);
+    return this.data.games?.[id]?.botChannel === 'development' ? 'development' : 'stable';
+  }
+  async setBotChannel(id, channel) {
+    profileFor(id);
+    if (!['stable', 'development'].includes(channel)) throw new Error('Unknown Bot Warfare channel.');
+    if (channel === 'development' && !['cod4', 'bo2'].includes(id)) {
+      throw new Error('A verified development build is not available for this game. Use stable.');
+    }
+    await this.updateSettings(data => { data.games[id] = { ...data.games[id], botChannel: channel }; });
+    await this.broadcastState();
+  }
+  async setUpdateChecks(enabled) {
+    if (typeof enabled !== 'boolean') throw new Error('Update checks must be on or off.');
+    await this.updateSettings(data => { data.updatesEnabled = enabled; });
+    if (!enabled) this.botUpdates = {};
+    await this.broadcastState();
+    if (enabled) this.checkBotUpdates(false).catch(() => {});
+  }
+  async checkBotUpdates(force = false) {
+    if (!this.modSource || !this.modInstaller || (!this.data.updatesEnabled && !force)) return;
+    const installed = {};
+    await Promise.all(order.map(async id => {
+      try {
+        const gamePath = await this.gamePath(id);
+        if (!gamePath || !(await inspectGameFolder(id, gamePath)).installed) return;
+        const status = await this.modInstaller.status(id, gamePath);
+        if (status.manifest) installed[id] = status.manifest;
+      } catch { /* A missing install must not block the other update checks. */ }
+    }));
+    try {
+      const updates = await this.modSource.checkUpdates({ installed, force });
+      // Turning checks off while an earlier request is in flight must not
+      // repopulate its badges after the user disabled them.
+      if (!force && !this.data.updatesEnabled) return;
+      this.botUpdates = updates;
+    } catch { /* An offline or rate-limited update check never interrupts startup. */ }
+    await this.broadcastState();
+  }
+  async botStatus(id) {
+    const profile = profileFor(id);
+    const gamePath = await this.gamePath(id);
+    if (!gamePath || !(await inspectGameFolder(id, gamePath)).installed) throw new Error(`Select an installed ${profile.short} game folder first.`);
+    if (!this.modInstaller || !this.modSource) throw new Error('Bot Warfare installer is unavailable.');
+    const [status, resolved] = await Promise.all([
+      this.modInstaller.status(id, gamePath),
+      this.data.updatesEnabled ? this.modSource.resolveSource(id, this.botChannel(id)) : Promise.resolve(null),
+    ]);
+    const source = resolved ? { supported: resolved.supported, ref: resolved.ref, notes: resolved.notes, status: resolved.status }
+      : { supported: this.botChannel(id) === 'stable' || ['cod4', 'bo2'].includes(id),
+        ref: this.botChannel(id) === 'stable' ? SOURCES[id].tag || SOURCES[id].commit : null,
+        notes: 'Update checks are off. Use Check now to see upstream release notes.', status: 'disabled' };
+    return { ...status, channel: this.botChannel(id), source };
+  }
+  async botAction(id, operation, versionId) {
+    profileFor(id);
+    if (!['install', 'update', 'reinstall', 'remove', 'restore'].includes(operation)) throw new Error('Unknown Bot Warfare action.');
+    if (!this.modInstaller) throw new Error('Bot Warfare installer is unavailable.');
+    if (this.modBusy.has(id) || this.instances.has(id)) throw new Error('Stop this server before changing Bot Warfare.');
+    // Reserve the game synchronously. start() checks this set before spawning,
+    // closing the race between a download and a server starting mid-install.
+    this.modBusy.add(id);
+    try {
+      await this.broadcastState();
+      const gamePath = await this.gamePath(id);
+      if (!gamePath || !(await inspectGameFolder(id, gamePath)).installed) throw new Error('Select an installed game folder first.');
+      const status = await this.modInstaller.status(id, gamePath);
+      if (operation === 'install' && status.state === 'installed') throw new Error('Bot Warfare is already managed. Use Update or Reinstall.');
+      if (operation === 'update' && status.state !== 'installed') throw new Error('Install Bot Warfare before updating it.');
+      if (operation === 'remove') await this.modInstaller.remove(id, gamePath);
+      else if (operation === 'restore') await this.modInstaller.restore(id, gamePath, versionId);
+      else await this.modInstaller.install(id, gamePath, this.botChannel(id));
+      if (this.botUpdates[id]) this.botUpdates[id] = { ...this.botUpdates[id], updateAvailable: false };
+    } finally {
+      this.modBusy.delete(id);
+      await this.broadcastState().catch(() => {});
+    }
+  }
   async check(id) {
     const profile = profileFor(id);
     const options = this.options(id);
@@ -175,7 +262,7 @@ class ServerManager {
         ? `${profile.short} multiplayer files were not found in ${gamePath}. Choose the folder containing the game executable.`
         : `${profile.short} was not found in your Steam libraries. Choose its installed game folder to continue.`);
     } else {
-      if (!await exists(configPath)) blockers.push(`Server config missing at ${configPath}. Create a starter config (coming in the next update) or restore your existing server config.`);
+      if (!await exists(configPath)) blockers.push(`Server config missing at ${configPath}. Use Create starter config on this game's Overview, or restore your existing server config.`);
       if (profile.id === 'cod4' && !await exists(path.join(gamePath, profile.executable))) blockers.push(`Cod4R/IW3x DedRun missing at ${path.join(gamePath, profile.executable)}. Follow the IW3x hosting guide to install it; stock CoD4x is not supported.`);
       if (profile.id === 'mw2' && !await exists(path.join(gamePath, profile.executable))) blockers.push(`IW4x executable missing at ${path.join(gamePath, profile.executable)}. Install IW4x in the selected MW2 game folder.`);
       if (profile.id === 'mw3') {
@@ -202,9 +289,21 @@ class ServerManager {
         if (!await exists(storageArchive) && (!gamePath || !await exists(gameArchive))) blockers.push('IW5 Bot Warfare archive missing: mods\\bots\\z_svr_bots.iwd. Install the mod in the game folder or Plutonium IW5 storage.');
       } else if (id === 'waw' || id === 'bo1') {
         const storageCode = id === 'waw' ? 't4' : 't5';
-        if (!await exists(path.join(process.env.LOCALAPPDATA || '', 'Plutonium', 'storage', storageCode, ...profile.mod.split('/')))) warnings.push('Bot mod folder was not found in Plutonium storage.');
+        const modFiles = id === 'waw' ? ['z_svr_bots.iwd'] : ['mod.ff', 'mp_bots.iwd'];
+        const storageMod = path.join(process.env.LOCALAPPDATA || '', 'Plutonium', 'storage', storageCode, ...profile.mod.split('/'));
+        const gameMod = gamePath ? path.join(gamePath, ...profile.mod.split('/')) : '';
+        for (const name of modFiles) {
+          if (!await exists(path.join(storageMod, name)) && (!gameMod || !await exists(path.join(gameMod, name)))) {
+            blockers.push(`${profile.short} Bot Warfare ${name} is missing from ${storageMod}. Install the upstream mod before starting a bot server.`);
+          }
+        }
       }
-      if (id === 'bo2' && !await exists(path.join(process.env.LOCALAPPDATA || '', 'Plutonium', 'storage', 't6', 'scripts', 'mp', 'bots.gsc'))) warnings.push('T6 Bot Warfare script not found in Plutonium storage.');
+      if (id === 'bo2') {
+        const scripts = path.join(process.env.LOCALAPPDATA || '', 'Plutonium', 'storage', 't6', 'scripts', 'mp');
+        for (const name of ['bots.gsc', 'bots_adapter_pt6.gsc']) {
+          if (!await exists(path.join(scripts, name))) blockers.push(`T6 Bot Warfare ${name} is missing from ${scripts}. Install the upstream scripts before starting a bot server.`);
+        }
+      }
     }
     // Without a game folder configPath is relative to the working directory, which must never be read.
     if ((id === 'mw3' || id === 'bo2') && gamePath && await exists(configPath)) {
@@ -238,12 +337,12 @@ class ServerManager {
       return { id, title: profile.title, short: profile.short, subtitle: profile.subtitle, family: profile.family, engine: profile.engine,
         configPath: result.gamePath ? path.join(result.gamePath, profile.config) : '',
         gamePath: result.gamePath, installed: result.installed, pathSource: result.pathSource, keyStatus: result.keyStatus,
-        config, options: result.options, blockers: result.blockers, warnings: result.warnings,
+        modBusy: this.modBusy.has(id), config, options: result.options, blockers: result.blockers, warnings: result.warnings,
         status: instance?.status || 'stopped', pid: instance?.child?.pid ?? null, startedAt: instance?.startedAt ?? null,
         activePort: instance?.activePort ?? null,
         logs: (this.logs.get(id) || []).slice(-120) };
     }));
-    return { root: this.data.root, games };
+    return { root: this.data.root, games, updatesEnabled: this.data.updatesEnabled, updates: this.botUpdates };
   }
   // Snapshots are built asynchronously and can finish out of order. A snapshot
   // that finishes after a newer one has been sent is stale and is dropped.
@@ -328,6 +427,14 @@ class ServerManager {
       data.root = result.filePaths[0];
     });
     await this.broadcastState(); return true;
+  }
+  async createStarterConfig(id) {
+    profileFor(id);
+    const gamePath = await this.gamePath(id);
+    if (!(await inspectGameFolder(id, gamePath)).installed) throw new Error('Select an installed game folder before creating a starter config.');
+    const file = await writeStarterConfig(id, gamePath);
+    await this.broadcastState();
+    return file;
   }
   async configTarget(id, target = 'base', mode) {
     const profile = profileFor(id);
@@ -545,6 +652,7 @@ class ServerManager {
   async start(id) {
     const profile = profileFor(id);
     if (this.instances.has(id)) throw new Error('This server is already starting or running.');
+    if (this.modBusy.has(id)) throw new Error('Wait for the Bot Warfare change to finish before starting this server.');
     const instance = { status: 'starting', child: null, startedAt: null, activePort: null, cancelled: false, stopPromise: null };
     instance.launchDone = new Promise(resolve => { instance.resolveLaunch = resolve; });
     this.instances.set(id, instance);

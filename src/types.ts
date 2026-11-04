@@ -13,6 +13,7 @@ export interface Game {
   installed: boolean;
   pathSource: 'manual' | 'steam' | 'none';
   keyStatus: 'not-required' | 'stored' | 'missing' | 'unavailable';
+  modBusy: boolean;
   config: Record<string, string>;
   options: { port: number; mode: string; shuffle: boolean; selectedMaps: string[]; gamePath: string; lan: boolean };
   blockers: string[];
@@ -23,7 +24,10 @@ export interface Game {
   activePort?: number | null;
   logs: LogEntry[];
 }
-export interface Snapshot { root: string; games: Game[] }
+export interface BotManifest { channel: string; ref: string; refType: 'tag' | 'commit'; sha256: string; date: string; repo: string; patches: string[] }
+export interface BotStatus { state: 'installed' | 'unknown' | 'not-installed'; targetPath: string; manifest: BotManifest | null; versions: { versionId: string; date: string; manifest: { ref: string; channel: string } | null }[]; channel: 'stable' | 'development'; source: { supported: boolean; ref: string | null; notes: string; status: string } }
+export interface BotUpdate { status: string; latest: { tag?: string; commit?: string; developmentCommit?: string | null }; updateAvailable: boolean | null }
+export interface Snapshot { root: string; games: Game[]; updatesEnabled: boolean; updates: Partial<Record<GameId, BotUpdate>> }
 export interface MapData { maps: string[]; modes: { value: string; label: string }[] }
 export type ConfigTarget = 'base' | 'mode';
 export interface ConfigField { key: string; sourceKey: string; section: string; label: string; hint?: string; type: 'text' | 'integer' | 'decimal' | 'select'; choices?: { value: string; label: string }[]; min?: number; max?: number; maxLength?: number; default?: string; presentOnly?: boolean; allowEmpty?: boolean; dependsOn?: { key: string; value: string } }
@@ -41,6 +45,12 @@ export interface ManagerApi {
   chooseFolder(id: GameId): Promise<boolean>;
   chooseRoot(): Promise<boolean>;
   rescanInstallations(): Promise<void>;
+  createStarterConfig(id: GameId): Promise<string>;
+  botStatus(id: GameId): Promise<BotStatus>;
+  botAction(id: GameId, operation: 'install' | 'update' | 'reinstall' | 'remove' | 'restore', versionId?: string): Promise<void>;
+  setBotChannel(id: GameId, channel: 'stable' | 'development'): Promise<void>;
+  checkBotUpdates(): Promise<void>;
+  setUpdateChecks(enabled: boolean): Promise<void>;
   saveKey(id: GameId, key: string): Promise<void>;
   removeKey(id: GameId): Promise<void>;
   importKey(id: GameId): Promise<boolean>;

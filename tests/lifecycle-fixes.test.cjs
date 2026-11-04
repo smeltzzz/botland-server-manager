@@ -285,6 +285,7 @@ test('window close and before-quit stay blocked while stopAll is pending', async
   let resolveStop;
   let running = true;
   let window;
+  let startupError = '';
   const stopDone = new Promise(resolve => { resolveStop = resolve; });
   const fakeManager = { initialize: async () => {}, rescanInstallations: async () => {}, hasRunning: () => running, stopAll: () => stopDone };
   class FakeWindow {
@@ -303,16 +304,19 @@ test('window close and before-quit stay blocked while stopAll is pending', async
     getPath: name => name === 'appData' ? __dirname : path.join(__dirname, 'BotLANd Server Manager'),
     isPackaged: false, quit: () => { quits++; }, requestSingleInstanceLock: () => true,
   };
-  const dialog = { showMessageBoxSync: () => { prompts++; return 1; }, showErrorBox: () => {} };
+  const dialog = { showMessageBoxSync: () => { prompts++; return 1; }, showErrorBox: (_title, message) => { startupError = message; } };
   const sandbox = {
-    module: { exports: {} }, __dirname: path.join(__dirname, '..', 'electron'),
+    module: { exports: {} }, process, __dirname: path.join(__dirname, '..', 'electron'),
     require: name => name === 'electron' ? { app, dialog, BrowserWindow: FakeWindow, ipcMain: { handle() {} }, shell: {}, session: fakeSession }
       : name === './manager.cjs' ? { ServerManager: class { constructor() { return fakeManager; } } }
         : name === './key-store.cjs' ? { KeyStore: class {} }
-          : name.startsWith('./') ? require(path.join(__dirname, '..', 'electron', name)) : require(name),
+          : name === './botwarfare-source.cjs' ? { BotWarfareSource: class {} }
+            : name === './botwarfare-install.cjs' ? { BotWarfareInstaller: class {} }
+              : name.startsWith('./') ? require(path.join(__dirname, '..', 'electron', name)) : require(name),
   };
   vm.runInNewContext(source, sandbox);
   await new Promise(resolve => setImmediate(resolve));
+  assert.ok(window, startupError);
   const firstClose = { prevented: false, preventDefault() { this.prevented = true; } };
   window.handlers.close(firstClose);
   assert.equal(firstClose.prevented, true);
@@ -427,10 +431,12 @@ test('a second app instance hands off to the first and never opens a window', as
       whenReady: () => { readyCalls++; return new Promise(() => {}); }, on: (name, handler) => { handlers[name] = handler; },
     };
     vm.runInNewContext(source, {
-      module: { exports: {} }, __dirname: path.join(__dirname, '..', 'electron'),
+      module: { exports: {} }, process, __dirname: path.join(__dirname, '..', 'electron'),
       require: name => name === 'electron' ? { app, dialog: {}, BrowserWindow: class {}, ipcMain: { handle() {} }, shell: {}, session: fakeSession }
         : name === './key-store.cjs' ? { KeyStore: class {} }
-          : name.startsWith('./') ? require(path.join(__dirname, '..', 'electron', name)) : require(name),
+          : name === './botwarfare-source.cjs' ? { BotWarfareSource: class {} }
+            : name === './botwarfare-install.cjs' ? { BotWarfareInstaller: class {} }
+              : name.startsWith('./') ? require(path.join(__dirname, '..', 'electron', name)) : require(name),
     });
     assert.equal(quits, primary ? 0 : 1);
     assert.equal(readyCalls, primary ? 1 : 0);

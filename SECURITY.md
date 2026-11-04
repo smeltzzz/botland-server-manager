@@ -13,3 +13,5 @@ Security fixes target the latest release. Versions before 1.0 are in active deve
 ## Threat model note
 
 Plutonium keys saved in botLANd are encrypted for the current Windows user with Electron `safeStorage` and kept separate from ordinary preferences. Legacy private launch scripts are read only after an explicit key-import request; importing does not remove their plaintext contents. Plutonium still requires the key on the game process command line, so keep launchers, process diagnostics, and screenshots private.
+
+Bot Warfare downloads happen only after a user action and use the official ineedbots GitHub repositories and GitHub's release-asset CDN. Archives are size-limited, hash checked, and rejected for unsafe ZIP paths. Existing unmanaged files are backed up before replacement; edited waypoints and unrelated files are preserved. Updates publish individual files with in-process rollback. A system crash mid-update is not yet a single atomic directory swap; inspect the retained backup/staging files before retrying if that happens.

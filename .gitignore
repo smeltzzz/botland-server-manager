@@ -10,6 +10,11 @@ settings.json
 settings.json.*
 keys.json
 keys.json.*
+botwarfare-sources.json
+botwarfare-sources.json.*
+botland-install.json
+.botland-stage-*/
+.botland-versions-*/
 *.bak-*
 .env
 .env.*

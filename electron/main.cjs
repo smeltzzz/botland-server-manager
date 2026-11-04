@@ -4,6 +4,8 @@ const { constants } = require('node:fs');
 const { app, BrowserWindow, dialog, ipcMain, safeStorage, session, shell } = require('electron');
 const { ServerManager } = require('./manager.cjs');
 const { KeyStore } = require('./key-store.cjs');
+const { BotWarfareSource } = require('./botwarfare-source.cjs');
+const { BotWarfareInstaller } = require('./botwarfare-install.cjs');
 const { profileFor } = require('./profiles.cjs');
 const { sourceRepos } = require('./schema.cjs');
 
@@ -37,11 +39,14 @@ async function migrateSettings() {
 async function createWindow() {
   const defaultRoot = app.isPackaged ? '' : path.resolve(__dirname, '..', '..');
   await migrateSettings();
+  const modSource = new BotWarfareSource({ userData: app.getPath('userData') });
+  const modInstaller = new BotWarfareInstaller({ source: modSource, localAppData: process.env.LOCALAPPDATA,
+    isRunning: id => manager?.instances.has(id) || false });
   manager = new ServerManager(path.join(app.getPath('userData'), 'settings.json'), data => {
     // Server output can arrive while the renderer is reloading or gone; sending to a
     // disposed frame throws and must not crash the main process or end a stream handler.
     try { if (window && !window.isDestroyed()) window.webContents.send('manager:event', data); } catch { /* Renderer unavailable. */ }
-  }, defaultRoot, { keyStore: new KeyStore(path.join(app.getPath('userData'), 'keys.json'), safeStorage) });
+  }, defaultRoot, { keyStore: new KeyStore(path.join(app.getPath('userData'), 'keys.json'), safeStorage), modSource, modInstaller });
   const recoveredSettings = await manager.initialize();
   await manager.rescanInstallations();
   window = new BrowserWindow({
@@ -62,6 +67,8 @@ async function createWindow() {
   window.webContents.on('will-navigate', event => event.preventDefault());
   if (app.isPackaged) await window.loadFile(path.join(__dirname, '..', 'dist', 'index.html'));
   else await window.loadURL('http://127.0.0.1:5173');
+  // Metadata checks run in the background and never delay the first window.
+  manager.checkBotUpdates?.().catch(() => {});
   if (recoveredSettings) {
     dialog.showMessageBox(window, {
       type: 'warning', title: 'Settings were reset',
@@ -117,6 +124,12 @@ if (primaryInstance) app.whenReady().then(() => {
       case 'chooseFolder': return manager.chooseFolder(id, window, dialog);
       case 'chooseRoot': return manager.chooseRoot(window, dialog);
       case 'rescanInstallations': return manager.rescanInstallations();
+      case 'createStarterConfig': return manager.createStarterConfig(id);
+      case 'botStatus': return manager.botStatus(id);
+      case 'botAction': return manager.botAction(id, payload.operation, payload.versionId);
+      case 'setBotChannel': return manager.setBotChannel(id, payload.channel);
+      case 'checkBotUpdates': return manager.checkBotUpdates(true);
+      case 'setUpdateChecks': return manager.setUpdateChecks(payload.enabled);
       case 'saveKey': return manager.saveKey(id, payload.key);
       case 'removeKey': return manager.removeKey(id);
       case 'importKey': return manager.importKey(id);
