@@ -81,7 +81,7 @@ jobs:
             $hash = (Get-FileHash -Algorithm SHA256 -LiteralPath $_.FullName).Hash.ToLowerInvariant()
             "$hash  $($_.Name)"
           } | Set-Content -Encoding ascii release/SHA256SUMS.txt
-      - uses: actions/attest-build-provenance@v2
+      - uses: actions/attest-build-provenance@v4
         with:
           subject-path: 'release/*.exe'
       - uses: actions/upload-artifact@v4
