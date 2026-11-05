@@ -8,6 +8,7 @@ const { BotWarfareSource } = require('./botwarfare-source.cjs');
 const { BotWarfareInstaller } = require('./botwarfare-install.cjs');
 const { SessionLogs } = require('./session-logs.cjs');
 const { discoverConnectAddresses } = require('./connect-address.cjs');
+const { formatDiagnostics } = require('./diagnostics.cjs');
 const { profileFor } = require('./profiles.cjs');
 const { sourceRepos } = require('./schema.cjs');
 
@@ -53,7 +54,7 @@ async function createWindow() {
   const recoveredSettings = await manager.initialize();
   await manager.rescanInstallations();
   window = new BrowserWindow({
-    width: 1380, height: 860, minWidth: 980, minHeight: 680,
+    width: 1380, height: 860, minWidth: 640, minHeight: 600,
     backgroundColor: '#1B1A19', autoHideMenuBar: true, show: false,
     icon: path.join(__dirname, '..', 'build', 'icon.png'),
     webPreferences: { preload: path.join(__dirname, 'preload.cjs'), contextIsolation: true, nodeIntegration: false, sandbox: true },
@@ -104,6 +105,10 @@ if (primaryInstance) app.whenReady().then(() => {
     const id = payload.id;
     switch (action) {
       case 'snapshot': return manager.snapshot();
+      case 'copyDiagnostics': {
+        clipboard.writeText(formatDiagnostics(await manager.snapshot(), app.getVersion(), process.platform, process.arch));
+        return true;
+      }
       case 'maps': return manager.maps(id);
       case 'start': return manager.start(id);
       case 'stop': return manager.stop(id);

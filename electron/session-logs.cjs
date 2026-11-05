@@ -9,7 +9,9 @@ const MARKER = '[truncated]';
 // A malformed opening quote consumes the rest of the line rather than exposing
 // the second half of a secret with spaces.
 const value = String.raw`(?:"(?:\\.|[^"\\\r\n])*"|'(?:\\.|[^'\\\r\n])*'|"[^\r\n]*|'[^\r\n]*|[^\s;,]+)`;
-const name = String.raw`[a-z0-9_.-]*(?:guid|token|key|secret|passwd|password)[a-z0-9_.-]*`;
+const name = String.raw`[a-z0-9_.-]*(?:guid|token|key|secret|passwd|password|auth|rcon)[a-z0-9_.-]*`;
+// A header may have a scheme followed by a credential, so redact to end of line.
+const authorization = /(\b(?:Proxy-)?Authorization[ \t]*:[ \t]*)[^\r\n]*/gi;
 const assignment = new RegExp(String.raw`(\b${name}[ \t]*(?:=|:)[ \t]*)${value}`, 'gi');
 const setCommand = new RegExp(String.raw`(\b\+?set[ \t]+${name}[ \t]+)${value}`, 'gi');
 const sessionName = /^session-\d{8}T\d{9}Z-[a-f0-9-]{36}\.jsonl$/;
@@ -18,7 +20,7 @@ const sessionName = /^session-\d{8}T\d{9}Z-[a-f0-9-]{36}\.jsonl$/;
 function redactLog(text, key = '') {
   try {
     let safe = String(text);
-    safe = safe.replace(assignment, '$1[REDACTED]').replace(setCommand, '$1[REDACTED]');
+    safe = safe.replace(authorization, '$1[REDACTED]').replace(assignment, '$1[REDACTED]').replace(setCommand, '$1[REDACTED]');
     return typeof key === 'string' && key ? safe.replaceAll(key, '[REDACTED]') : safe;
   } catch { throw new Error('Could not redact log.'); }
 }

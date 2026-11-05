@@ -48,6 +48,7 @@ export interface FirewallStatus { name: string; port: number; state: FirewallSta
 export type ManagerEvent = { type: 'state'; snapshot: Snapshot } | { type: 'log'; id: GameId; entry: LogEntry };
 export interface ManagerApi {
   snapshot(): Promise<Snapshot>;
+  copyDiagnostics(): Promise<boolean>;
   maps(id: GameId): Promise<MapData>;
   start(id: GameId): Promise<void>;
   stop(id: GameId): Promise<void>;
@@ -60,7 +61,7 @@ export interface ManagerApi {
   rescanOrphans(): Promise<void>;
   listConfigBackups(id: GameId, target: ConfigTarget, mode: string): Promise<ConfigBackup[]>;
   previewConfigRestore(id: GameId, target: ConfigTarget, mode: string, backupId: string): Promise<ConfigRestorePreview>;
-  restoreConfigBackup(id: GameId, target: ConfigTarget, mode: string, backupId: string, token: string): Promise<void>;
+  restoreConfigBackup(id: GameId, target: ConfigTarget, mode: string, backupId: string, token: string): Promise<{ backupId: string }>;
   pruneConfigBackups(id: GameId, target: ConfigTarget, mode: string, ids: string[]): Promise<{ removed: number }>;
   botStatus(id: GameId): Promise<BotStatus>;
   botAction(id: GameId, operation: 'install' | 'update' | 'reinstall' | 'remove' | 'restore', versionId?: string): Promise<void>;

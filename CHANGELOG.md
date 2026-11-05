@@ -2,7 +2,9 @@
 
 Notable changes to botLANd Server Manager are recorded here. This project follows [Semantic Versioning](https://semver.org/); pre-1.0 behavior may change between minor releases.
 
-## Unreleased
+## Unreleased (1.0.0 source candidate; not published)
+
+Phase 5 was explicitly accepted by the user for the local 0.9.0-rc.1 packaged build after reported second-machine testing of all six titles. The 1.0.0 binaries, CI checksums/attestations and public release are not yet complete.
 
 - Begin the public-repository foundation: licensing, contribution and security guidance, automated checks, and code-quality tooling.
 - Detect installed Steam games and compatible server engines, with a manual game-folder fallback and first-run checklist.
@@ -12,6 +14,8 @@ Notable changes to botLANd Server Manager are recorded here. This project follow
 - Add per-game connection-address Copy, source-labelled file log tailing, bounded redacted session logs, opt-in crash restart with backoff, Cod4R console-first graceful stop, read-only possible-orphan warnings, and transactional config backup restore/prune.
 - Journal Bot Warfare file changes for interrupted-update recovery and stage verified firewall replacements before removing previously marked rules.
 - Enforce the 18-player cap for MW2, MW3 and BO2 in guided config validation; document a manual Windows Firewall/UAC integration check.
+- Begin pre-1.0 polish: keyboard/focus improvements for configuration reviews, an allowlisted Copy diagnostics summary, synthetic README screenshots, and a gated release-candidate checklist. Phase 5 clean-machine acceptance remains pending.
+- Harden lifecycle and save error handling: keep running servers visible and stoppable if an installation disappears, distinguish completed actions from status-refresh failures, recover cleanly when a saved config cannot be reloaded, and show a startup error when the packaged preload bridge is missing.
 
 ## 0.2.7
 

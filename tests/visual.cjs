@@ -56,7 +56,7 @@ app.whenReady().then(async () => {
   await capture('botland-dashboard.png');
   if (summary.detected) {
     const expected = await win.webContents.executeJavaScript("document.querySelector('.server-card h3').textContent");
-    await win.webContents.executeJavaScript("document.querySelector('.server-card').click()");
+    await win.webContents.executeJavaScript("document.querySelector('.server-card .card-open').click()");
     await waitFor('.detail-hero');
     const heading = await win.webContents.executeJavaScript("document.querySelector('.detail-hero h1').textContent");
     if (heading !== expected) throw new Error(`Unexpected game detail: ${heading}`);

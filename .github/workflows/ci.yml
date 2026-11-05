@@ -23,8 +23,11 @@ jobs:
       - run: npm ci
       - run: npm test
       - run: npm run build
+      - name: Smoke built renderer with synthetic data
+        run: .\node_modules\.bin\electron.cmd tests\packaged-smoke.cjs
       - run: npm run lint
-      - run: npm run format:check
+      - name: Check workflow and tooling formatting
+        run: npm run format:check
       - run: npm audit --audit-level=high
       - name: Scan full Git history for secrets
         shell: pwsh
@@ -39,6 +42,9 @@ jobs:
           if ($LASTEXITCODE -ne 0) { throw 'Gitleaks found a secret or could not complete the scan' }
 
   windows-release:
+    # Phase 5 was explicitly accepted for the local 0.9.0-rc.1 build; see
+    # docs/clean-machine-verification.md. Tagging and publishing still require
+    # a separate owner decision after the source and final artifact checks.
     if: startsWith(github.ref, 'refs/tags/v')
     needs: verify
     runs-on: windows-latest
@@ -53,12 +59,26 @@ jobs:
           node-version: '22'
           cache: npm
       - run: npm ci
-      - run: npm run dist:win
-      - name: Write SHA-256 checksums
+      - name: Require tag and package version to agree
         shell: pwsh
         run: |
-          Get-ChildItem release -Filter '*.exe' | Sort-Object Name | ForEach-Object {
-            $hash = (Get-FileHash -Algorithm SHA256 $_.FullName).Hash.ToLowerInvariant()
+          $package = Get-Content package.json -Raw | ConvertFrom-Json
+          if ($env:GITHUB_REF_NAME -cne "v$($package.version)") { throw 'Release tag does not match package.json version' }
+      - run: npm run dist:win
+      - name: Check exact release EXEs and write SHA-256 checksums
+        shell: pwsh
+        run: |
+          $package = Get-Content package.json -Raw | ConvertFrom-Json
+          $version = $package.version
+          $name = $package.build.productName
+          $expected = @("$name Setup $version.exe", "$name $version.exe")
+          $found = @(Get-ChildItem release -File -Filter '*.exe' | Sort-Object Name)
+          if ($found.Count -ne 2) { throw 'Expected exactly one installer and one portable EXE' }
+          foreach ($exe in $found) {
+            if ($expected -notcontains $exe.Name -or $exe.Length -eq 0) { throw "Unexpected or empty release EXE: $($exe.Name)" }
+          }
+          $found | ForEach-Object {
+            $hash = (Get-FileHash -Algorithm SHA256 -LiteralPath $_.FullName).Hash.ToLowerInvariant()
             "$hash  $($_.Name)"
           } | Set-Content -Encoding ascii release/SHA256SUMS.txt
       - uses: actions/attest-build-provenance@v2

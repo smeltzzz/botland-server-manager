@@ -34,6 +34,15 @@ test('redactLog masks a supplied key and generic quoted, unquoted and set assign
   assert.equal((safe.match(/\[REDACTED\]/g) || []).length >= 9, true);
   assert.equal(redactLog('normal output'), 'normal output');
   assert.equal(redactLog('key=hidden').includes('hidden'), false);
+  const additional = ['auth-value', 'rcon-value', 'bearer-value', 'basic-value'];
+  const extra = redactLog([
+    `set sv_auth ${additional[0]}`,
+    `rcon: ${additional[1]}`,
+    `Authorization: Bearer ${additional[2]}`,
+    `Proxy-Authorization: Basic ${additional[3]}`,
+  ].join('\n'));
+  for (const secret of additional) assert.equal(extra.includes(secret), false);
+  assert.equal(extra.includes('Authorization: [REDACTED]'), true);
   // The manager joins output chunks into a complete line before calling addLog.
   const chunks = ['server reports ', key.slice(0, 9), key.slice(9)];
   assert.equal(redactLog(chunks.join(''), key).includes(key), false);

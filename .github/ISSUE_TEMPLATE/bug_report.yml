@@ -9,7 +9,7 @@ body:
     id: version
     attributes:
       label: botLANd version
-      placeholder: 0.2.7
+      placeholder: 1.0.0
     validations:
       required: true
   - type: dropdown

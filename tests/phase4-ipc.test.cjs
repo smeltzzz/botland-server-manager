@@ -4,6 +4,7 @@ const fs = require('node:fs/promises');
 const path = require('node:path');
 const vm = require('node:vm');
 
+const packageVersion = require('../package.json').version;
 const electronDir = path.join(__dirname, '..', 'electron');
 const gameIds = new Set(['cod4', 'waw', 'mw2', 'bo1', 'mw3', 'bo2']);
 const backupMethods = ['listConfigBackups', 'previewConfigRestore', 'restoreConfigBackup', 'pruneConfigBackups'];
@@ -46,6 +47,8 @@ async function ipcFixture() {
       calls.push(['rescanOrphans']);
       return Promise.resolve('orphans-scanned');
     },
+    async snapshot() { return manager.diagnosticSnapshot; },
+    diagnosticSnapshot: { games: [] },
   };
   for (const method of backupMethods) {
     manager[method] = (...args) => {
@@ -80,6 +83,7 @@ async function ipcFixture() {
   const electron = {
     app: {
       isPackaged: false,
+      getVersion: () => packageVersion,
       requestSingleInstanceLock: () => true,
       whenReady: () => Promise.resolve(),
       on() {},
@@ -117,10 +121,11 @@ async function ipcFixture() {
         return { candidates: addresses.map(address => ({ connectAddress: `${address}:${port}` })) };
       },
     },
+    './diagnostics.cjs': require('../electron/diagnostics.cjs'),
     './profiles.cjs': { profileFor },
     './schema.cjs': { sourceRepos: {} },
   };
-  const sandbox = { module: { exports: {} }, __dirname: electronDir, process: { env: { LOCALAPPDATA: 'unused' } }, require(request) {
+  const sandbox = { module: { exports: {} }, __dirname: electronDir, process: { platform: 'win32', arch: 'x64', env: { LOCALAPPDATA: 'unused' } }, require(request) {
     if (!Object.hasOwn(mocks, request)) throw new Error(`Unexpected module import: ${request}`);
     return mocks[request];
   } };
@@ -138,12 +143,13 @@ async function ipcFixture() {
 test('Phase 4 bridge methods have matching ManagerApi declarations', async () => {
   const types = await fs.readFile(path.join(__dirname, '..', 'src', 'types.ts'), 'utf8');
   for (const signature of [
+    'copyDiagnostics\\(\\): Promise<boolean>',
     'copyConnectAddress\\(id: GameId, address: string\\): Promise<boolean>',
     'setAutoRestart\\(id: GameId, enabled: boolean\\): Promise<void>',
     'rescanOrphans\\(\\): Promise<void>',
     'listConfigBackups\\(id: GameId, target: ConfigTarget, mode: string\\): Promise<ConfigBackup\\[\\]>',
     'previewConfigRestore\\(id: GameId, target: ConfigTarget, mode: string, backupId: string\\): Promise<ConfigRestorePreview>',
-    'restoreConfigBackup\\(id: GameId, target: ConfigTarget, mode: string, backupId: string, token: string\\): Promise<void>',
+    'restoreConfigBackup\\(id: GameId, target: ConfigTarget, mode: string, backupId: string, token: string\\): Promise<\\{ backupId: string \\}>',
     'pruneConfigBackups\\(id: GameId, target: ConfigTarget, mode: string, ids: string\\[\\]\\): Promise<\\{ removed: number \\}>',
   ]) assert.match(types, new RegExp(`^  ${signature};$`, 'm'));
 });
@@ -189,6 +195,45 @@ test('copyConnectAddress rejects non-running, invalid ids and invalid address ty
   }
   assert.deepEqual(writes, []);
   assert.deepEqual(discoveries, []);
+});
+
+test('copyDiagnostics copies a bounded allowlist from main, never renderer text or sensitive snapshot fields', async () => {
+  const { api, manager, writes, invocations, handler, validEvent, window } = await ipcFixture();
+  const secret = 'SYNTHETIC_PRIVATE_SENTINEL';
+  manager.diagnosticSnapshot = {
+    root: `C:\\Private\\${secret}`,
+    games: [
+      { id: 'cod4', installed: true, status: 'running', blockers: [`${secret} blocker`], warnings: [],
+        logs: [{ message: secret }], config: { rcon_password: secret }, gamePath: secret,
+        keyStatus: secret, connect: { candidates: [{ address: secret }] }, pid: 1234, activePort: 28962 },
+      { id: 'bo2', installed: true, status: secret, blockers: [], warnings: [secret] },
+      { id: secret, installed: true, status: 'running' },
+    ],
+    updates: { cod4: { status: secret } },
+  };
+  assert.equal(await api.copyDiagnostics(), true);
+  assert.deepEqual(invocations.at(-1), ['manager:action', 'copyDiagnostics', undefined]);
+  assert.equal(writes.length, 1);
+  assert.equal(writes[0].includes(`App version: ${packageVersion}`), true);
+  assert.match(writes[0], /CoD4: installed=yes; status=running; blockers=1; warnings=0/);
+  assert.match(writes[0], /BO2: installed=yes; status=unknown; blockers=0; warnings=1/);
+  assert.doesNotMatch(writes[0], /SYNTHETIC_PRIVATE_SENTINEL|Private|28962|1234|rcon_password/);
+  assert.ok(writes[0].length < 1000);
+  assert.equal(await handler(validEvent(), 'copyDiagnostics', { text: secret }), true);
+  assert.equal(writes[1], writes[0]);
+  await assert.rejects(handler({ sender: {}, senderFrame: window.webContents.mainFrame }, 'copyDiagnostics', {}), /Invalid window/);
+  await assert.rejects(handler({ sender: window.webContents, senderFrame: {} }, 'copyDiagnostics', {}), /Invalid window/);
+  assert.equal(writes.length, 2);
+});
+
+test('diagnostics format is fixed-size for missing or malformed snapshots', () => {
+  const { formatDiagnostics } = require('../electron/diagnostics.cjs');
+  const empty = formatDiagnostics(null, packageVersion, 'win32', 'x64');
+  assert.match(empty, /WaW: installed=no; status=unknown; blockers=0; warnings=0/);
+  const many = formatDiagnostics({ games: [{ id: 'mw2', installed: 'true', status: 'running', blockers: Array(10000).fill('private'), warnings: 'private' }] }, packageVersion, 'win32', 'x64');
+  assert.match(many, /MW2: installed=no; status=running; blockers=999; warnings=0/);
+  assert.doesNotMatch(many, /private/);
+  assert.ok(many.length < 1000);
 });
 
 test('backup bridge forwards exact arguments and the validated manager owns backup errors', async () => {

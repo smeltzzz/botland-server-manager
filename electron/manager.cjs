@@ -598,8 +598,14 @@ class ServerManager {
     const { file, mode: selectedMode } = await this.configTarget(id, target, mode);
     this.assertConfigPath(file, expectedPath);
     await saveConfig(file, values, { id, target, mode: selectedMode, token });
-    await this.broadcastState();
-    return this.document(id, target, selectedMode);
+    // The file is already committed. A failed notification or reload must not
+    // turn that successful write into a reported save failure.
+    await this.broadcastState().catch(() => {});
+    try {
+      return await this.document(id, target, selectedMode);
+    } catch {
+      throw new Error('The configuration was saved, but it could not be reloaded. Reopen Configuration to refresh it before making more changes.');
+    }
   }
   async listConfigBackups(id, target = 'base', mode) {
     const { file } = await this.configTarget(id, target, mode);

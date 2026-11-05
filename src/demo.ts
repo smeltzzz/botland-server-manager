@@ -43,6 +43,9 @@ function demoConnect(game: Game) {
   game.connect = { primaryAddress: candidates.length === 1 ? candidates[0].address : null, ambiguous: candidates.length > 1, candidates };
 }
 const botRepos: Record<GameId, string> = { cod4: 'iw3', waw: 't4', mw2: 'iw4', bo1: 't5', mw3: 'iw5', bo2: 't6' };
+const demoModeValues = new Map<string, Record<string, string>>();
+const modeKey = (id: GameId, mode: string) => `${id}:${mode}`;
+const demoModeDefaults = { timelimit: '5', scorelimit: '200', hardcoremode: '0' };
 const demoManifest = (id: GameId, ref: string, channel: 'stable' | 'development' = 'stable'): NonNullable<BotStatus['manifest']> => ({
   channel, ref, refType: channel === 'stable' ? 'tag' : 'commit', sha256: 'a'.repeat(64), date: '2026-10-20T12:00:00.000Z', repo: `https://github.com/ineedbots/${botRepos[id]}_bot_warfare`, patches: [],
 });
@@ -70,15 +73,23 @@ const demoFields: ConfigField[] = [
   { key: 'scr_dom_timelimit', sourceKey: 'scr_dom_timelimit', label: 'Time limit', section: 'Match rules', type: 'integer', min: 0, max: 120 },
 ];
 function demoDocument(id: GameId, target: 'base' | 'mode', mode?: string): ConfigDocument {
-  const values = target === 'base' ? { ...find(id).config } : { timelimit: '5', scorelimit: '200', hardcoremode: '0' };
+  const game = find(id);
+  const selectedMode = mode || game.options.mode;
+  const values = target === 'base' ? { ...game.config } : { ...demoModeDefaults, ...demoModeValues.get(modeKey(id, selectedMode)) };
   const fields = target === 'base' ? demoFields : [{ key: 'timelimit', sourceKey: 'timelimit', label: 'Time limit', section: 'Match rules', type: 'integer' as const, min: 0, max: 120 }];
-  return { path: find(id).configPath, target, mode: mode || find(id).options.mode, sourceRepo: `https://github.com/ineedbots/${id}_bot_warfare`, values, fields,
+  const path = target === 'base'
+    ? game.configPath
+    : id === 'mw3'
+      ? `${game.gamePath}\\admin\\${selectedMode}.dsr`
+      : `${game.gamePath}\\main\\gamesettings\\${selectedMode}.cfg`;
+  return { path, target, mode: selectedMode, sourceRepo: `https://github.com/ineedbots/${id}_bot_warfare`, values, fields,
     entries: Object.entries(values).map(([key, value]) => ({ key, value, masked: false, hasValue: true, count: 1 })) };
 }
 export function createDemoManager(): ManagerApi {
   document.documentElement.dataset.demo = 'true';
   return {
     snapshot: async () => structuredClone(snapshot),
+    copyDiagnostics: async () => false, // Browser preview never writes to the clipboard.
     maps: async (id): Promise<MapData> => ({ maps: pool, modes: id === 'mw3' ? [{ value: 'DOM_default', label: 'DOM' }] : [{ value: 'dom', label: 'Domination' }, { value: 'tdm', label: 'Team Deathmatch' }, { value: 'dm', label: 'Free for All' }] }),
     start: async id => { const game = find(id); if (!game.installed || game.blockers.length) throw new Error('Resolve the setup checks before starting.'); game.status = 'running'; game.pid = 4108; game.startedAt = new Date().toISOString(); game.restart = { ...game.restart, attempts: 0, nextAttemptAt: null, cutOff: false }; demoConnect(game); game.logs = [{ at: new Date().toISOString(), level: 'info', source: 'manager', message: `Started ${game.engine} with the selected map rotation.` }, { at: new Date().toISOString(), level: 'info', source: 'stdout', message: 'Demo server output (no game process launched).' }]; emit(); },
     stop: async id => { const game = find(id); game.status = 'stopped'; game.pid = null; game.connect = { primaryAddress: null, ambiguous: false, candidates: [] }; game.restart.nextAttemptAt = null; emit(); },
@@ -126,13 +137,32 @@ export function createDemoManager(): ManagerApi {
     openKeyPage: async () => {}, openEngineGuide: async () => {}, openConfig: async () => false,
     document: async (id, target, mode) => demoDocument(id, target, mode),
     previewSettings: async (id, target, mode, values) => ({ token: '0'.repeat(64), changed: true, changes: Object.entries(values).map(([key, after]) => ({ key, label: key, before: demoDocument(id, target, mode).values[key] ?? '(not set)', after, duplicates: 1 })) }),
-    commitSettings: async (id, target, mode, values) => { if (target === 'base') Object.assign(find(id).config, values); emit(); return demoDocument(id, target, mode); },
+    commitSettings: async (id, target, mode, values) => {
+      if (target === 'base') Object.assign(find(id).config, values);
+      else demoModeValues.set(modeKey(id, mode), { ...demoDocument(id, target, mode).values, ...values });
+      emit();
+      return demoDocument(id, target, mode);
+    },
     artwork: async () => null, openDocs: async () => {}, chooseArtwork: async () => false, resetArtwork: async () => null, openDocument: async () => false,
     firewallStatus: async id => ({ name: `botLANd ${find(id).short} UDP`, port: find(id).options.port, state: 'missing' }),
     firewallApply: async id => ({ name: `botLANd ${find(id).short} UDP`, port: find(id).options.port, state: id === 'bo1' || find(id).options.lan ? 'lan' : 'any' }),
     firewallRemove: async id => ({ name: `botLANd ${find(id).short} UDP`, port: find(id).options.port, state: 'missing' }),
-    // Mirror the real manager: BO1 has no LAN launch path and always stays public.
-    saveOptions: async (id, values) => { Object.assign(find(id).options, values, id === 'bo1' ? { lan: false } : {}); emit(); },
+    // Mirror the real manager's validation: a browser preview must not confirm
+    // options that the desktop app would reject.
+    saveOptions: async (id, values) => {
+      const game = find(id);
+      if (!values || typeof values !== 'object' || Array.isArray(values) || Object.keys(values).some(key => !['port', 'mode', 'shuffle', 'selectedMaps', 'lan'].includes(key))) throw new Error('Invalid server options.');
+      if ('port' in values && (!Number.isInteger(values.port) || (values.port as number) < 1024 || (values.port as number) > 65535)) throw new Error('Port must be between 1024 and 65535.');
+      if ('mode' in values && !(id === 'mw3' ? ['DOM_default'] : ['dom', 'tdm', 'dm']).includes(values.mode as string)) throw new Error('This game mode is not available in the installation.');
+      if ('shuffle' in values && typeof values.shuffle !== 'boolean') throw new Error('Invalid shuffle option.');
+      if ('lan' in values && typeof values.lan !== 'boolean') throw new Error('Invalid visibility option.');
+      if ('selectedMaps' in values) {
+        if (!Array.isArray(values.selectedMaps) || values.selectedMaps.some(map => typeof map !== 'string' || !pool.includes(map)) || new Set(values.selectedMaps).size !== values.selectedMaps.length) throw new Error('Map selection contains missing or duplicate maps.');
+        if (id === 'bo2' && values.selectedMaps.length === 1) throw new Error('Black Ops II needs at least two maps.');
+      }
+      Object.assign(game.options, values, id === 'bo1' ? { lan: false } : {});
+      emit();
+    },
     subscribe: listener => { subscribers.add(listener); return () => { subscribers.delete(listener); }; },
   };
 }

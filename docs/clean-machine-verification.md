@@ -29,9 +29,24 @@ Repeat on the second machine for each game separately. Before each Start, confir
 
 For each title record: detected install, engine, key status (present/absent only), Bot Warfare version and SHA-256, config/starter result, preflight, port bound, local client connected, **bots observed in-game by the user**, Stop/port released, and any blockers. Redact hostnames, IPs, GUIDs, passwords, tokens and local paths before sharing. A broken step needs a reproducible fix and a second-machine rerun.
 
-### Status as of 2026-11-04
+### Earlier current-PC-only record (before outside testing, 2026-11-04)
 
 - **Current PC only:** all six game installs and engines detected; existing Bot Warfare files and configs pass preflight. WaW, BO1, MW3 and BO2 keys were explicitly imported to encrypted per-user storage with the user's permission; values were not displayed or logged.
 - **Current PC only:** CoD4 (UDP 28962), WaW (28963), MW2 (28964), BO1 (28961), MW3 (27016) and BO2 (4976) each bound their port and stayed up briefly when launched by the manager. Each was stopped by the manager and the ports were free afterward. This does **not** establish client connectivity, public listing, or bots joining.
-- **Packaging smoke:** a temporary unpacked Windows build completed outside `release/`. Its `app.asar` contains the Electron main process, installer module, renderer, MIT license, and production `fflate` dependency. The NSIS/portable install journey has not been run on a second machine.
-- **Pending:** no second PC or VM is available yet. Packaged install journey, real in-game bot joins for the current build, and real firewall/UAC integration are not signed off. Phase 5 is not accepted until the user confirms the second-machine results.
+- **Packaging smoke on the current PC:** a temporary unpacked Windows build completed outside `release/`. A later isolated local `0.9.0-rc.1` build produced both unsigned NSIS and portable EXEs without pruning `release/`; its `app.asar` contains the Electron main process, diagnostics module, renderer, MIT license and production `fflate` dependency. The packaged EXEs have not been installed or run on a second machine, and this is not a CI-attested release.
+- **At that time, pending:** no second PC or VM was available. Packaged install journey, in-game bot joins and real firewall/UAC integration were not yet signed off. This historical local-only record did not establish Phase 5 acceptance.
+
+### User-reported Phase 5 acceptance (2026-11-04)
+
+The user subsequently confirmed that a **separate Windows PC/VM** tested the **local unsigned 0.9.0-rc.1 packaged build**: the install/portable journey, client connections and **bots visibly joining matches in all six titles**, guided edit/backup and Stop/port-release checks, and real firewall/UAC checks. The user explicitly accepted Phase 5 based on those results. This records the user's attestation; no keys, launcher files, logs, IPs, private paths, or independent test artifacts were collected in this repository.
+
+| Title | Second-machine bot-join outcome |
+|---|---|
+| CoD4 (Cod4R/IW3x target) | Passed, as confirmed by the user |
+| WaW | Passed, as confirmed by the user |
+| MW2 | Passed, as confirmed by the user |
+| BO1 | Passed, as confirmed by the user |
+| MW3 | Passed, as confirmed by the user |
+| BO2 | Passed, as confirmed by the user |
+
+This acceptance applies to the tested **0.9.0-rc.1 local build**. A later isolated local **1.0.0 source candidate** produced unsigned NSIS and portable EXEs, but they have not been installed on a second machine or produced by tagged CI. No CI attestations, signing or public distribution have been completed. The owner approved carrying Phase 5 acceptance across the version-only runtime delta that had been reviewed after the 0.9.0-rc.1 build. The current source candidate also contains post-acceptance lifecycle and error-handling fixes: running servers remain visible and stoppable when an installation disappears, completed actions are distinguished from status-refresh failures, and a saved config that cannot be reloaded is reported without inviting a duplicate save. These changes do not alter launch commands or networking behavior, but the affected UI and config-save journeys have not been rerun on a second machine. That carry-over is not approval of the final 1.0.0 bytes. Rerun the affected checks before publishing 1.0.0.

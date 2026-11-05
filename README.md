@@ -2,7 +2,15 @@
 
 Windows desktop app for configuring and launching six Call of Duty bot servers. The existing batch and PowerShell scripts are **not modified** by the app. botLANd launches the installed executables directly and generates each game's live map-rotation config when you click Start.
 
-> **Pre-1.0 setup:** You need your own installed games and compatible server engines. The app detects Steam libraries, can create a missing base server config, and can install Bot Warfare on request. It does not install games or engines. Legacy launch scripts are optional and used only when you explicitly import a key. Do not copy private launch scripts into this repository.
+> **Setup requirement:** You need your own installed games and compatible server engines. The app detects Steam libraries, can create a missing base server config, and can install Bot Warfare on request. It does not install games or engines. Legacy launch scripts are optional and used only when you explicitly import a key. Do not copy private launch scripts into this repository.
+
+## Preview
+
+These screenshots use the **browser-only synthetic demo**: example paths, statuses, version and any process IDs are fixtures. No games or servers were started, and the images are not evidence of clean-machine verification or bots joining a match.
+
+![Demo dashboard with detected and not-installed game groups](docs/images/dashboard-demo.png)
+
+![Demo CoD4 configuration editor with guided server and bot settings](docs/images/configuration-demo.png)
 
 ## Requirements
 
@@ -30,6 +38,7 @@ Windows desktop app for configuring and launching six Call of Duty bot servers. 
 - Opt in to auto-restart per game (off by default). Unexpected exits retry after 2, 4, 8, 16, then 30 seconds; after repeated crashes in ten minutes, restart stops until you click Start. Deliberate Stop or shutdown never retries. Cod4R receives `quit` on its owned console pipe first, with the original force-stop fallback; other engines have no verified graceful protocol.
 - Tail known engine log locations while a managed server runs, alongside captured stdout/stderr. New lines only: existing files start at EOF. Log entries are source-labelled; bounded per-session JSONL files are retained under the app's Windows user-data folder (up to 1 MiB each, ten files per game). Key/password/GUID redaction is best effort; server output can still contain private information. Review these files before sharing.
 - Plutonium server keys are stored separately from ordinary preferences using Electron `safeStorage` (Windows user encryption/DPAPI). The app shows only whether a key is present, not its value. An optional import button reads an existing private launcher once without editing it. If encryption is unavailable, the app refuses to save or use keys rather than falling back to plaintext.
+- **Copy diagnostics** on the dashboard copies a small, allowlisted summary of app version, platform and per-game installed/status/blocker/warning counts. It excludes paths, IPs, keys, config values and logs; review even this summary before sharing. The browser-only demo does not change the clipboard.
 
 ## Run locally
 
@@ -38,7 +47,7 @@ Windows desktop app for configuring and launching six Call of Duty bot servers. 
 3. Run `npm test` and `npm run build` to validate changes.
 4. Run `npm run dist:win` for NSIS and portable Windows executables under `release/`. After both executables are built successfully, the command removes older versioned botLANd installers, portable EXEs and their blockmaps from that folder. These unsigned local builds may trigger a Windows SmartScreen prompt.
 
-For a browser-only **design preview** during development, open the Vite URL without Electron. It uses simulated servers; start/stop in that preview does not launch a game. The Electron desktop window uses the real local installations.
+For a browser-only **design preview** during development, open the Vite URL without Electron. It uses simulated servers; start/stop in that preview does not launch a game. The Electron desktop window uses the real local installations. After building, `node_modules\.bin\electron.cmd tests\packaged-smoke.cjs` checks the built renderer at a narrow window width using only synthetic IPC data; it never touches installed games or starts a server. The separate optional `tests/visual.cjs` reads the real local setup without launching games.
 
 On first launch, the app detects Steam libraries from your Windows user registry and `steamapps/libraryfolders.vdf`, then checks each game's multiplayer files and compatible engine. Use **Browse game folder** if your install is elsewhere; a saved folder takes precedence over detection. The scripts location in the sidebar is optional and only used by **Import from legacy launcher**. Existing saved preferences take precedence; the app migrates settings from the old capitalization of its user-data folder without overwriting current settings.
 
@@ -57,9 +66,13 @@ On first launch, the app detects Steam libraries from your Windows user registry
 - Status cards track processes started by this app. A server started from a batch file is not adopted; a port check blocks starting a second server on the same UDP port. Orphan warnings are diagnostic only, not proof of the spawning application.
 - Bot Warfare operations are explicit and disabled while the matching server is starting or running. Updates publish files individually, with a durable transaction journal and recovery on the next status/action after interruption. Corrupt or conflicting journals fail closed for manual inspection; Windows may not durably sync directory entries on sudden power loss.
 
-## Verification
+## Verification and release candidates
 
-The [clean-machine checklist](docs/clean-machine-verification.md) records which local smoke checks passed and which second-PC/VM and in-game bot-join checks remain pending. A bound UDP port alone does not establish that bots entered a match.
+The [clean-machine record](docs/clean-machine-verification.md#user-reported-phase-5-acceptance-2026-11-04) includes the user's explicit Phase 5 acceptance: the local 0.9.0-rc.1 packaged build was reported tested on a separate Windows PC/VM, with all six titles joined and bots observed in-game, plus real firewall/UAC checks. This is a user attestation; no private test artifacts were collected here. The [outside-tester plan](docs/outside-tester-plan.md) remains available for regressions; the [release-candidate checklist](docs/release-candidate-checklist.md) and [1.0 release checklist](docs/release-1.0-checklist.md) describe the remaining artifact and publication gates. A bound UDP port alone never establishes a bot-join pass.
+
+The current source identifies as a **1.0.0 candidate**, not a published 1.0.0 release. Its final CI installer/portable build, checksums, attestations and repository owner approval are still outstanding. The owner approved carrying Phase 5 acceptance across the version-only runtime delta reviewed after 0.9.0-rc.1. The current candidate also includes lifecycle and error-handling fixes that do not change launch commands or networking, but the affected UI and config-save journeys have not been rerun on a second machine. Phase 5 carry-over does not mean the final 1.0.0 binary was installed on another machine; rerun the affected checks before publishing.
+
+Windows builds are **unsigned**; SignPath/code signing is not configured, so SmartScreen may warn. For tagged CI artifacts, follow the release-candidate checklist to compare SHA-256 checksums and verify GitHub build provenance for each EXE. Neither check is a code signature or a substitute for clean-machine testing; local builds do not have CI attestations.
 
 ## Credits and legal
 

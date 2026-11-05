@@ -4,6 +4,7 @@ const { contextBridge, ipcRenderer } = require('electron');
 const invoke = (action, payload) => ipcRenderer.invoke('manager:action', action, payload);
 contextBridge.exposeInMainWorld('manager', {
   snapshot: () => invoke('snapshot'),
+  copyDiagnostics: () => invoke('copyDiagnostics'),
   maps: (id) => invoke('maps', { id }),
   start: (id) => invoke('start', { id }),
   stop: (id) => invoke('stop', { id }),
