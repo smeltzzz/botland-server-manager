@@ -349,8 +349,6 @@ class ServerManager {
           if (![0x14c, 0x8664].includes(await peMachine(path.join(gamePath, 'iw5mp.exe')))) blockers.push('MW3 multiplayer executable has an unsupported PE architecture.');
         } catch { blockers.push('MW3 multiplayer executable is missing or invalid. Select a working MW3 game folder.'); }
         if (!await exists(path.join(gamePath, 'mss32.dll'))) blockers.push('MW3 game runtime mss32.dll is missing. Restore compatible MW3 game files; do not copy a DLL from another game.');
-        const modes = await modeOptions(profile, gamePath);
-        if (!modes.some(mode => mode.value === options.mode)) blockers.push(`IW5 mode recipe missing: admin\\${options.mode}.dsr. Install the IW5 server configs or choose an installed mode.`);
       }
       if (profile.id === 'cod4' && !await exists(path.join(gamePath, 'mods', 'mp_bots', 'z_svr_bots.iwd'))) blockers.push(`CoD4 Bot Warfare missing at ${path.join(gamePath, 'mods', 'mp_bots', 'z_svr_bots.iwd')}. Install the ineedbots IW3 mod in the Cod4R mod folder.`);
       if (profile.id === 'mw2' && !await exists(path.join(gamePath, 'userraw', 'z_svr_bots.iwd'))) blockers.push(`MW2 Bot Warfare missing at ${path.join(gamePath, 'userraw', 'z_svr_bots.iwd')}. Install the ineedbots IW4 mod in IW4x userraw.`);
@@ -381,6 +379,20 @@ class ServerManager {
           if (!await exists(path.join(scripts, name))) blockers.push(`T6 Bot Warfare ${name} is missing from ${scripts}. Install the upstream scripts before starting a bot server.`);
         }
       }
+    }
+    if (installed) {
+      const [available, modes] = await Promise.all([scanMaps(profile, gamePath), modeOptions(profile, gamePath)]);
+      if (!modes.some(mode => mode.value === options.mode)) {
+        blockers.push(profile.id === 'mw3'
+          ? `IW5 mode recipe missing: admin\\${options.mode}.dsr. Install the IW5 server configs or choose an installed mode.`
+          : profile.id === 'bo2'
+            ? `T6 multiplayer ruleset missing: main\\gamesettings\\${options.mode}.cfg must declare set_gametype ${options.mode}. Install a matching mode file or choose an installed mode.`
+            : `The saved ${profile.short} mode is unavailable. Choose an installed mode.`);
+      }
+      if (!available.length) blockers.push(`No playable multiplayer maps found for ${profile.short}. Verify the game installation and multiplayer map files.`);
+      if (id === 'bo2' && available.length < 2) blockers.push('BO2 requires at least two installed multiplayer maps. Verify the game installation.');
+      if (options.selectedMaps.some(name => !available.includes(name))) blockers.push('Saved map selection contains maps no longer installed. Review Maps & modes.');
+      if (id === 'bo2' && options.selectedMaps.length === 1) blockers.push('BO2 requires at least two selected maps. Review Maps & modes.');
     }
     // Without a game folder configPath is relative to the working directory, which must never be read.
     if ((id === 'mw3' || id === 'bo2') && gamePath && await exists(configPath)) {

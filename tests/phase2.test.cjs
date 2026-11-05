@@ -34,6 +34,8 @@ async function cod4(root, name) {
   await put(path.join(folder, 'Cod4R-DedRun.exe'));
   await put(path.join(folder, 'main', 'botserver.cfg'), 'set sv_hostname "Synthetic CoD4"\n');
   await put(path.join(folder, 'mods', 'mp_bots', 'z_svr_bots.iwd'));
+  await put(path.join(folder, 'zone', 'english', 'mp_crash.ff'));
+  await put(path.join(folder, 'zone', 'english', 'mp_crash_load.ff'));
   return folder;
 }
 function detection(games = {}) {
@@ -148,6 +150,8 @@ test('rescans replace reordered suggestions while preserving snapshot order and 
   await put(path.join(mw2, 'iw4x.exe'));
   await put(path.join(mw2, 'userraw', 'serverlan.cfg'), 'set sv_hostname "Synthetic MW2"\n');
   await put(path.join(mw2, 'userraw', 'z_svr_bots.iwd'));
+  await put(path.join(mw2, 'zone', 'english', 'mp_rust.ff'));
+  await put(path.join(mw2, 'zone', 'english', 'mp_rust_load.ff'));
   let next = detection({ mw2: found(mw2), cod4: found(first) });
   let calls = 0;
   const events = [];

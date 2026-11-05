@@ -57,6 +57,10 @@ On first launch, the app detects Steam libraries from your Windows user registry
 - Status cards track processes started by this app. A server started from a batch file is not adopted; a port check blocks starting a second server on the same UDP port. Orphan warnings are diagnostic only, not proof of the spawning application.
 - Bot Warfare operations are explicit and disabled while the matching server is starting or running. Updates publish files individually, with a durable transaction journal and recovery on the next status/action after interruption. Corrupt or conflicting journals fail closed for manual inspection; Windows may not durably sync directory entries on sudden power loss.
 
+## Verification
+
+The [clean-machine checklist](docs/clean-machine-verification.md) records which local smoke checks passed and which second-PC/VM and in-game bot-join checks remain pending. A bound UDP port alone does not establish that bots entered a match.
+
 ## Credits and legal
 
 botLANd is an independent community project, not affiliated with or endorsed by Activision, Plutonium, or the Bot Warfare authors. Game titles and trademarks belong to their respective owners. You must provide your own licensed game and engine installations.
