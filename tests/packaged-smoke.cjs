@@ -111,6 +111,29 @@ app.whenReady().then(async () => {
     assert.equal(dashboard.cards, 1);
     assert.equal(dashboard.missing, 5);
     assert.ok(dashboard.scrollWidth <= dashboard.width, 'Dashboard must not clip at a 640-DIP window');
+    const cardAccessibility = await win.webContents.executeJavaScript(`(() => {
+      const card = document.querySelector('.server-card');
+      return { role: card?.getAttribute('role'), tabIndex: card?.tabIndex, label: card?.getAttribute('aria-label') };
+    })()`);
+    assert.equal(cardAccessibility.role, 'group');
+    assert.equal(cardAccessibility.tabIndex, 0);
+    assert.match(cardAccessibility.label, /Press Enter or Space to manage/);
+    await win.webContents.executeJavaScript(`(() => {
+      const card = document.querySelector('.server-card');
+      card.focus();
+      card.dispatchEvent(new KeyboardEvent('keydown', { key: 'Enter', bubbles: true }));
+    })()`);
+    await waitFor(win, '.detail-tabs');
+    await win.webContents.executeJavaScript("document.querySelector('.sidebar > .nav-item').click()");
+    await waitFor(win, '.server-card');
+    await win.webContents.executeJavaScript(`(() => {
+      const card = document.querySelector('.server-card');
+      card.focus();
+      card.dispatchEvent(new KeyboardEvent('keydown', { key: ' ', bubbles: true }));
+    })()`);
+    await waitFor(win, '.detail-tabs');
+    await win.webContents.executeJavaScript("document.querySelector('.sidebar > .nav-item').click()");
+    await waitFor(win, '.server-card');
     failSnapshotOnce = true;
     await win.webContents.executeJavaScript("document.querySelector('.server-card .primary-button').click()");
     await waitFor(win, '.notice');
