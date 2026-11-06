@@ -1,18 +1,18 @@
 # Contributing
 
-Thanks for helping improve botLANd. This repository is maintained with direct commits to `main`; pull requests are not used. Before starting work, search existing issues and describe the change you propose.
+botLANd is maintained with direct commits to `main`; pull requests are not used. Before starting work, search existing issues and describe the change you propose.
 
 ## Development
 
-- Use Windows and Node.js 22 or later. From this repository root, run `npm ci`, `npm test`, and `npm run build`. Run `npm run lint` and `npm run format:check` when available.
+- Use Windows and Node.js 22 or later. From this repository root, run `npm ci`, then `npm run dev` for the desktop development build.
+- Run `npm run build`, `npm run lint`, and `npm run format:check` before committing.
 - Keep changes limited to this app. Do not include game installs, Plutonium/engine files, downloaded Bot Warfare mods, or private launch scripts.
-- Use temporary fixtures for tests. Never use a live game install as a test target, and do not start game servers from automated tests.
 - Preserve transactional config saves, byte-for-byte backups, and secret masking. New Electron IPC actions need matching preload, main-process, and renderer API changes.
-- Add or update tests for behavior changes. Describe any manual verification in your commit message or issue.
+- Do not commit generated `dist/` or `release/` output.
 
 ## Protect private data
 
-Legacy launcher scripts may contain plaintext Plutonium keys. Never commit them, game configs, logs, secrets, personal paths, or screenshots that expose private data. Use synthetic placeholders in issues and tests. Do not paste keys into issues or commits. If you suspect a vulnerability, follow [SECURITY.md](SECURITY.md) instead of opening a public issue.
+Legacy launcher scripts may contain plaintext Plutonium keys. Never commit them, game configs, logs, secrets, personal paths, or screenshots that expose private data. Use synthetic placeholders in issues and screenshots. Do not paste keys into issues or commits. If you suspect a vulnerability, follow [SECURITY.md](SECURITY.md) instead of opening a public issue.
 
 ## Licensing
 
