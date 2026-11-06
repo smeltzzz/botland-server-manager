@@ -45,6 +45,14 @@ test('parses nested KeyValues, comments, escaped slashes and both library layout
   assert.equal(parsed.libraryfolders['1'].apps['7940'], '1');
   assert.throws(() => parseVdf('"libraryfolders" { "1" "unterminated'), /Unterminated/);
   assert.throws(() => parseVdf('"libraryfolders" { "1" "a"'), /Unclosed/);
+});
+
+// parseSteamPath delegates to safeDirectory, which uses the host's path rules and
+// therefore only accepts drive/UNC paths where path.isAbsolute does. The app ships
+// for Windows, but keeping this assertion platform-gated lets the suite stay green
+// on other hosts instead of reporting a false failure.
+const windowsPaths = path.isAbsolute('C:\\Steam');
+test('registry SteamPath parsing accepts only absolute local paths', { skip: !windowsPaths && 'Windows path semantics' }, () => {
   assert.equal(parseSteamPath('  SteamPath   REG_SZ   relative\\path\r\n'), '');
   assert.equal(parseSteamPath('  SteamPath   REG_SZ   "C:\\Steam Folder"\r\n'), 'C:\\Steam Folder');
   assert.equal(parseSteamPath('  Other   REG_SZ   C:\\Steam\r\n'), '');
