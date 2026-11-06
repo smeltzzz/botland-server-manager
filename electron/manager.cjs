@@ -436,7 +436,7 @@ class ServerManager {
         activePort: instance?.activePort ?? null,
         connect: instance?.status === 'running' && instance.activePort
           ? discoverConnectAddresses(instance.activePort, this.networkInterfaces)
-          : { primaryAddress: null, primary: null, ambiguous: false, candidates: [] },
+          : { primaryAddress: null, ambiguous: false, candidates: [] },
         orphan: (() => {
           const orphan = this.orphans.get(id);
           const owned = [...this.instances.values()].some(value => value.child?.pid && value.child.pid === orphan?.pid);
