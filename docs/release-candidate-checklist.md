@@ -1,6 +1,8 @@
 # Release-candidate checklist (pre-1.0)
 
-A release candidate is for **outside testing**, not itself a 1.0 release. Use the [outside-tester plan](outside-tester-plan.md) for regressions and redacted results. The [clean-machine verification record](clean-machine-verification.md#user-reported-phase-5-acceptance-2026-11-04) now includes the user's explicit Phase 5 acceptance for the local 0.9.0-rc.1 build. That acceptance does not verify a later 1.0.0 binary or replace CI, checksum, provenance, or public-release checks.
+A release candidate is for **outside testing**, not itself a 1.0 release. Use the [outside-tester plan](outside-tester-plan.md) for regressions and redacted results. The [clean-machine verification record](clean-machine-verification.md#user-reported-phase-5-acceptance-2026-11-04) includes the user's explicit Phase 5 acceptance for the local 0.9.0-rc.1 build. That acceptance does not verify a later 1.0.0 binary or replace CI, checksum, provenance, or public-release checks.
+
+> **1.0.0 status (2026-11-05):** 1.0.0 was published after the owner accepted the CI-verified artifacts without a second-machine rerun. This checklist remains for future release candidates; see the [1.0 release record](release-1.0-checklist.md) for what was completed and waived.
 
 ## Prepare the candidate
 

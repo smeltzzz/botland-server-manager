@@ -2,9 +2,9 @@
 
 Notable changes to botLANd Server Manager are recorded here. This project follows [Semantic Versioning](https://semver.org/); pre-1.0 behavior may change between minor releases.
 
-## Unreleased (1.0.0 source candidate; not published)
+## 1.0.0 (2026-11-05)
 
-Phase 5 was explicitly accepted by the user for the local 0.9.0-rc.1 packaged build after reported second-machine testing of all six titles. The 1.0.0 binaries, CI checksums/attestations and public release are not yet complete.
+Phase 5 was explicitly accepted by the user for the local 0.9.0-rc.1 packaged build after reported second-machine testing of all six titles. The 1.0.0 installer and portable EXE were built by tagged CI from commit `fabe21c3a124dbfd7d5ca9ad2d4e28d9b17656c7`, matched `SHA256SUMS.txt`, passed GitHub build-provenance verification, and were published in the [GitHub release](https://github.com/smeltzzz/botland-server-manager/releases/tag/v1.0.0). The owner authorized publication of the CI-verified artifacts without a second-machine rerun of the post-acceptance lifecycle and config-save changes; those paths are covered by automated tests and the synthetic packaged smoke, not by a clean-machine pass.
 
 - Begin the public-repository foundation: licensing, contribution and security guidance, automated checks, and code-quality tooling.
 - Detect installed Steam games and compatible server engines, with a manual game-folder fallback and first-run checklist.
