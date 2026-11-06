@@ -2,6 +2,34 @@
 
 Notable changes to botLANd Server Manager are recorded here. This project follows [Semantic Versioning](https://semver.org/).
 
+## Unreleased
+
+Full-pass error, bug, UI and UX sweep; see [`docs/sweep-5-plan.md`](docs/sweep-5-plan.md).
+
+### Fixed
+
+- Possible-unmanaged-process warnings no longer print "PID null". When the owning process
+  cannot be identified (the two address families disagree, or one query failed), the
+  warning now says so plainly and the snapshot type admits a missing PID.
+- Dashboard server cards respond to a click again. The cards were styled as clickable and
+  every control inside them stopped event propagation, but the card itself had no handler,
+  so clicking the artwork, title or body did nothing.
+- A renderer exception now shows a recovery screen with a reload button instead of leaving
+  a blank window.
+- The connect-address panel asks you to choose an interface when several are available
+  instead of claiming no address exists.
+- A map search with no matches no longer suggests checking your game folder.
+- Cover and header artwork can be reset independently, so restoring Steam art for one no
+  longer discards a custom image chosen for the other.
+- The browser preview uses each title's real game mode names (CoD4/MW2 `war`, WaW/BO1
+  `tdm`, IW5 ruleset names) instead of one shared list.
+
+### Changed
+
+- The test suite also runs on non-Windows developer checkouts: config-fixture cleanup no
+  longer leaves `LOCALAPPDATA` set to the literal string `undefined`, and the Windows path
+  and registry assertions are pinned or platform-gated instead of failing off Windows.
+
 ## 1.0.0 (2026-11-05)
 
 First public release.

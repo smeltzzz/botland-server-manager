@@ -2,6 +2,7 @@ const test = require('node:test');
 const assert = require('node:assert/strict');
 const fs = require('node:fs/promises');
 const path = require('node:path');
+const os = require('node:os');
 const crypto = require('node:crypto');
 const { ServerManager } = require('../electron/manager.cjs');
 const { KeyStore } = require('../electron/key-store.cjs');
@@ -10,7 +11,9 @@ const { order, profiles, launcherPath } = require('../electron/profiles.cjs');
 // All paths, including the Plutonium bootstrapper/storage checks, stay in this
 // sandbox. Detection is injected: these tests never query Steam or the registry.
 async function fixture(work) {
-  const base = path.join(process.env.LOCALAPPDATA, 'Temp', 'opencode');
+  // %LOCALAPPDATA% is the Windows per-user temp root; fall back to the OS temp
+  // directory so the suite also runs on a developer's non-Windows checkout.
+  const base = path.join(process.env.LOCALAPPDATA || os.tmpdir(), 'Temp', 'opencode');
   await fs.mkdir(base, { recursive: true });
   const root = await fs.mkdtemp(path.join(base, 'botland-phase2-'));
   const previous = process.env.LOCALAPPDATA;
@@ -19,7 +22,10 @@ async function fixture(work) {
     await fs.mkdir(process.env.LOCALAPPDATA, { recursive: true });
     return await work(root);
   } finally {
-    process.env.LOCALAPPDATA = previous;
+    // Assigning undefined stores the string "undefined", which would leave every
+    // later test in this file with a relative LOCALAPPDATA root.
+    if (previous === undefined) delete process.env.LOCALAPPDATA;
+    else process.env.LOCALAPPDATA = previous;
     await fs.rm(root, { recursive: true, force: true });
   }
 }

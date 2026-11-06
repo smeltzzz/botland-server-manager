@@ -26,13 +26,27 @@ const snapshot: Snapshot = { root: '', updatesEnabled: true, updates: { cod4: { 
   keyStatus: id === 'cod4' || id === 'mw2' ? 'not-required' : fakeKeyPresence.has(id) ? 'stored' : 'missing',
   gamePath: detected.has(id) ? `C:\\Example\\SteamLibrary\\steamapps\\common\\${title}` : '',
   configPath: detected.has(id) ? `C:\\Example\\SteamLibrary\\steamapps\\common\\${title}\\main\\server.cfg` : '',
-  options: { ...base.options, port, lan: id !== 'bo1' },
+  // Match the real per-title defaults: IW5 uses .dsr ruleset names, not gametypes.
+  options: { ...base.options, port, mode: id === 'mw3' ? 'DOM_default' : 'dom', lan: id !== 'bo1' },
   connect: { ...base.connect, candidates: [] }, restart: { ...base.restart },
   orphan: id === 'mw3' ? { pid: 8124, port, reason: 'Sample preview: an unverified listener uses this port.' } : null,
   blockers: detected.has(id) ? id === 'mw3' ? ['A Plutonium server key is required.'] : [] : ['Game folder not found.'],
   warnings: id === 'bo1' ? ['The existing BO1 launch profile does not use -lan. Add the LAN firewall rule from the Overview tab to restrict network access.'] : [],
 })) };
 const pool = ['mp_crash', 'mp_crossfire', 'mp_backlot', 'mp_bloc', 'mp_bog', 'mp_broadcast', 'mp_chinatown', 'mp_creek', 'mp_killhouse', 'mp_pipeline', 'mp_shipment', 'mp_showdown', 'mp_strike', 'mp_vacant', 'mp_cargoship', 'mp_citystreets', 'mp_convoy', 'mp_countdown', 'mp_farm', 'mp_overgrown'];
+// Mirror electron/maps.cjs modeOptions: IW3/IW4 call team deathmatch "war",
+// T4/T5 call it "tdm", and IW5/T6 read their mode names from installed files.
+function demoModes(id: GameId): MapData['modes'] {
+  if (id === 'mw3') return [{ value: 'DOM_default', label: 'DOM' }];
+  if (id === 'cod4' || id === 'mw2') return [
+    { value: 'dom', label: 'Domination' }, { value: 'war', label: 'Team Deathmatch' },
+    { value: 'dm', label: 'Free for All' }, { value: 'sd', label: 'Search & Destroy' },
+  ];
+  return [
+    { value: 'dom', label: 'Domination' }, { value: 'tdm', label: 'Team Deathmatch' },
+    { value: 'dm', label: 'Free for All' }, { value: 'sd', label: 'Search & Destroy' },
+  ];
+}
 const subscribers = new Set<(event: ManagerEvent) => void>();
 const emit = () => subscribers.forEach(listener => listener({ type: 'state', snapshot: structuredClone(snapshot) }));
 const find = (id: GameId) => snapshot.games.find(game => game.id === id)!;
@@ -90,7 +104,7 @@ export function createDemoManager(): ManagerApi {
   return {
     snapshot: async () => structuredClone(snapshot),
     copyDiagnostics: async () => false, // Browser preview never writes to the clipboard.
-    maps: async (id): Promise<MapData> => ({ maps: pool, modes: id === 'mw3' ? [{ value: 'DOM_default', label: 'DOM' }] : [{ value: 'dom', label: 'Domination' }, { value: 'tdm', label: 'Team Deathmatch' }, { value: 'dm', label: 'Free for All' }] }),
+    maps: async (id): Promise<MapData> => ({ maps: pool, modes: demoModes(id) }),
     start: async id => { const game = find(id); if (!game.installed || game.blockers.length) throw new Error('Resolve the setup checks before starting.'); game.status = 'running'; game.pid = 4108; game.startedAt = new Date().toISOString(); game.restart = { ...game.restart, attempts: 0, nextAttemptAt: null, cutOff: false }; demoConnect(game); game.logs = [{ at: new Date().toISOString(), level: 'info', source: 'manager', message: `Started ${game.engine} with the selected map rotation.` }, { at: new Date().toISOString(), level: 'info', source: 'stdout', message: 'Demo server output (no game process launched).' }]; emit(); },
     stop: async id => { const game = find(id); game.status = 'stopped'; game.pid = null; game.connect = { primaryAddress: null, ambiguous: false, candidates: [] }; game.restart.nextAttemptAt = null; emit(); },
     copyConnectAddress: async (id, address) => { const game = find(id); return game.status === 'running' && game.connect.candidates.some(candidate => candidate.connectAddress === address); },
@@ -153,7 +167,7 @@ export function createDemoManager(): ManagerApi {
       const game = find(id);
       if (!values || typeof values !== 'object' || Array.isArray(values) || Object.keys(values).some(key => !['port', 'mode', 'shuffle', 'selectedMaps', 'lan'].includes(key))) throw new Error('Invalid server options.');
       if ('port' in values && (!Number.isInteger(values.port) || (values.port as number) < 1024 || (values.port as number) > 65535)) throw new Error('Port must be between 1024 and 65535.');
-      if ('mode' in values && !(id === 'mw3' ? ['DOM_default'] : ['dom', 'tdm', 'dm']).includes(values.mode as string)) throw new Error('This game mode is not available in the installation.');
+      if ('mode' in values && !demoModes(id).some(mode => mode.value === values.mode)) throw new Error('This game mode is not available in the installation.');
       if ('shuffle' in values && typeof values.shuffle !== 'boolean') throw new Error('Invalid shuffle option.');
       if ('lan' in values && typeof values.lan !== 'boolean') throw new Error('Invalid visibility option.');
       if ('selectedMaps' in values) {

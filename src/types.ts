@@ -3,7 +3,9 @@ export type GameStatus = 'stopped' | 'starting' | 'running' | 'stopping' | 'rest
 export interface LogEntry { at: string; level: string; message: string; source?: 'manager' | 'stdout' | 'stderr' | 'file' }
 export interface ConnectCandidate { adapter: string; address: string; scope: string; label: string; connectAddress: string }
 export interface ConnectAddresses { primaryAddress: string | null; ambiguous: boolean; candidates: ConnectCandidate[] }
-export interface OrphanCandidate { pid: number; port: number; reason: string }
+// The PID is unknown when the two address families disagree or one query failed;
+// a null PID still means "this port looks occupied", so the warning must survive.
+export interface OrphanCandidate { pid: number | null; port: number; reason: string }
 export interface RestartState { enabled: boolean; attempts: number; nextAttemptAt: string | null; cutOff: boolean }
 export interface ConfigBackup { id: string; date: string; bytes: number }
 export interface ConfigRestorePreview { token: string; summary: { changed: boolean; currentBytes: number; backupBytes: number; contents: string } }
