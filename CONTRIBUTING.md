@@ -1,6 +1,6 @@
 # Contributing
 
-Thanks for helping improve botLANd. Before opening a pull request, search existing issues and describe the change you propose.
+Thanks for helping improve botLANd. This repository is maintained with direct commits to `main`; pull requests are not used. Before starting work, search existing issues and describe the change you propose.
 
 ## Development
 
@@ -8,11 +8,11 @@ Thanks for helping improve botLANd. Before opening a pull request, search existi
 - Keep changes limited to this app. Do not include game installs, Plutonium/engine files, downloaded Bot Warfare mods, or private launch scripts.
 - Use temporary fixtures for tests. Never use a live game install as a test target, and do not start game servers from automated tests.
 - Preserve transactional config saves, byte-for-byte backups, and secret masking. New Electron IPC actions need matching preload, main-process, and renderer API changes.
-- Add or update tests for behavior changes. Describe any manual verification in your PR.
+- Add or update tests for behavior changes. Describe any manual verification in your commit message or issue.
 
 ## Protect private data
 
-Legacy launcher scripts may contain plaintext Plutonium keys. Never commit them, game configs, logs, secrets, personal paths, or screenshots that expose private data. Use synthetic placeholders in issues and tests. Do not paste keys into issue comments or PRs. If you suspect a vulnerability, follow [SECURITY.md](SECURITY.md) instead of opening a public issue.
+Legacy launcher scripts may contain plaintext Plutonium keys. Never commit them, game configs, logs, secrets, personal paths, or screenshots that expose private data. Use synthetic placeholders in issues and tests. Do not paste keys into issues or commits. If you suspect a vulnerability, follow [SECURITY.md](SECURITY.md) instead of opening a public issue.
 
 ## Licensing
 
