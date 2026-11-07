@@ -12,10 +12,22 @@ const safeKey = /^[a-z_][a-z0-9_.]*$/i;
 function isSecret(key) { return secretName.test(key); }
 function decode(buffer) {
   if (buffer.subarray(0, 3).equals(Buffer.from([0xef, 0xbb, 0xbf]))) return { text: buffer.subarray(3).toString('utf8'), encoding: 'utf8', bom: true };
+  if (buffer.subarray(0, 2).equals(Buffer.from([0xff, 0xfe]))) {
+    return { text: new TextDecoder('utf-16le', { fatal: true }).decode(buffer.subarray(2)), encoding: 'utf16le', bom: true };
+  }
+  if (buffer.subarray(0, 2).equals(Buffer.from([0xfe, 0xff]))) {
+    return { text: new TextDecoder('utf-16be', { fatal: true }).decode(buffer.subarray(2)), encoding: 'utf16be', bom: true };
+  }
   try { return { text: new TextDecoder('utf-8', { fatal: true }).decode(buffer), encoding: 'utf8', bom: false }; }
   catch { return { text: buffer.toString('latin1'), encoding: 'latin1', bom: false }; }
 }
 function encode(text, original) {
+  if (original.encoding === 'utf16le' || original.encoding === 'utf16be') {
+    let bytes = Buffer.from(text, 'utf16le');
+    if (original.encoding === 'utf16be') bytes = bytes.swap16();
+    const bom = original.bom ? Buffer.from(original.encoding === 'utf16le' ? [0xff, 0xfe] : [0xfe, 0xff]) : Buffer.alloc(0);
+    return Buffer.concat([bom, bytes]);
+  }
   const bytes = Buffer.from(text, original.encoding);
   return original.bom ? Buffer.concat([Buffer.from([0xef, 0xbb, 0xbf]), bytes]) : bytes;
 }
@@ -223,8 +235,23 @@ async function saveConfig(file, values, opts = {}) {
 function parseLauncher(text) {
   const variables = {};
   for (const line of text.split(/\r?\n/)) {
-    const match = line.match(/^\s*set\s+"?([a-zA-Z][a-zA-Z0-9_]*)=([^"\r\n]*)"?\s*$/i);
-    if (match) variables[match[1].toLowerCase()] = match[2].trim();
+    // Accept the common batch forms: set "KEY=VALUE", set KEY=VALUE,
+    // set KEY = VALUE and set KEY="VALUE". Values may contain '='.
+    const match = line.match(/^\s*set\s+(.+?)\s*$/i);
+    if (!match) continue;
+    let body = match[1];
+    if (body.length >= 2 && body.startsWith('"') && body.endsWith('"') && body.indexOf('"', 1) === body.length - 1) {
+      body = body.slice(1, -1);
+    }
+    const equals = body.indexOf('=');
+    if (equals <= 0) continue;
+    const key = body.slice(0, equals).trim();
+    if (!/^[a-zA-Z][a-zA-Z0-9_]*$/.test(key)) continue;
+    let value = body.slice(equals + 1).trim();
+    if (value.length >= 2 && ((value.startsWith('"') && value.endsWith('"')) || (value.startsWith("'") && value.endsWith("'")))) {
+      value = value.slice(1, -1);
+    }
+    variables[key.toLowerCase()] = value;
   }
   return variables;
 }

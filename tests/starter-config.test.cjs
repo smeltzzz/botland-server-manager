@@ -121,6 +121,19 @@ test('existing configs are never changed and concurrent creation has exactly one
   assert.deepEqual(await fs.readdir(path.dirname(raceFile)), ['server.cfg']);
 });
 
+test('filesystems without hard-link support fall back to an exclusive copy', async t => {
+  const dir = await temporary(t);
+  const gamePath = path.join(dir, 'cod4');
+  await fs.mkdir(gamePath);
+  const originalLink = fs.link;
+  fs.link = async () => { const error = new Error('hard links are not supported'); error.code = 'EPERM'; throw error; };
+  try {
+    const file = await createStarterConfig('cod4', gamePath);
+    assert.equal(await fs.readFile(file, 'utf8'), starterText('cod4'));
+  } finally { fs.link = originalLink; }
+  assert.deepEqual(await fs.readdir(path.join(gamePath, 'main')), ['botserver.cfg']);
+});
+
 test('a failed atomic publish does not leave a partial config or staging file', async t => {
   const dir = await temporary(t);
   const gamePath = path.join(dir, 'cod4');

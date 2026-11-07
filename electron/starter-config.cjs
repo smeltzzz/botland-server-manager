@@ -63,7 +63,22 @@ async function createStarterConfig(id, gamePath) {
     await handle.sync();
     await handle.close();
     handle = undefined;
-    await fs.link(staged, file);
+    try {
+      await fs.link(staged, file);
+    } catch (error) {
+      // Some game libraries sit on exFAT/FAT, which cannot create hard links.
+      // Fall back to an exclusive copy; EACCES still means a real permissions
+      // failure and must not be treated as a filesystem limitation.
+      if (!['EPERM', 'ENOTSUP', 'EOPNOTSUPP', 'EXDEV', 'EINVAL'].includes(error?.code)) throw error;
+      try {
+        await fs.copyFile(staged, file, fs.constants.COPYFILE_EXCL);
+      } catch (copyError) {
+        // COPYFILE_EXCL never replaces an existing file; remove only a partial
+        // copy this call created, never a config that was already there.
+        if (copyError?.code !== 'EEXIST') await fs.rm(file, { force: true }).catch(() => {});
+        throw copyError;
+      }
+    }
     return file;
   } finally {
     if (handle) await handle.close().catch(() => {});

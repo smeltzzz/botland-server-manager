@@ -27,6 +27,19 @@ test('rejects invalid config values and unknown keys', () => {
 test('parses both quoted and unquoted launcher assignments', () => {
   assert.deepEqual(parseLauncher('set "gamepath=D:\\Games\\COD4"\r\nset key=exampleSecret\r\nset GamePort=28960\r\n'),
     { gamepath: 'D:\\Games\\COD4', key: 'exampleSecret', gameport: '28960' });
+  assert.deepEqual(parseLauncher([
+    'set GAMEPATH = "D:\\Games\\COD4"',
+    "set \"basecfg=main\\server.cfg\"",
+    'set "mod=mods/mp_bots"',
+    'set extra=a=b',
+    'rem set ignored=value',
+    'set novalue',
+  ].join('\r\n')), {
+    gamepath: 'D:\\Games\\COD4',
+    basecfg: 'main\\server.cfg',
+    mod: 'mods/mp_bots',
+    extra: 'a=b',
+  });
 });
 test('renders engine-specific rotations', () => {
   const maps = ['mp_alpha', 'mp_bravo'];

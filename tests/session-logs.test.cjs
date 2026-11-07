@@ -43,6 +43,16 @@ test('redactLog masks a supplied key and generic quoted, unquoted and set assign
   ].join('\n'));
   for (const secret of additional) assert.equal(extra.includes(secret), false);
   assert.equal(extra.includes('Authorization: [REDACTED]'), true);
+  const variants = ['seta-value', 'sets-value', 'setu-value', 'plus-seta-value', 'bare-value'];
+  const variantText = redactLog([
+    `seta rcon_password "${variants[0]}"`,
+    `sets auth_token '${variants[1]}'`,
+    `setu sv_password ${variants[2]}`,
+    `+seta key ${variants[3]}`,
+    `rcon_password "${variants[4]}"`,
+  ].join('\n'));
+  for (const secret of variants) assert.equal(variantText.includes(secret), false);
+  assert.equal((variantText.match(/\[REDACTED\]/g) || []).length >= variants.length, true);
   // The manager joins output chunks into a complete line before calling addLog.
   const chunks = ['server reports ', key.slice(0, 9), key.slice(9)];
   assert.equal(redactLog(chunks.join(''), key).includes(key), false);

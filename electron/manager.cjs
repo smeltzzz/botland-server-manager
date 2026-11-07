@@ -156,15 +156,17 @@ class ServerManager {
     const opts = this.options(id);
     return opts.gamePath || this.detected?.games?.[id]?.gamePath || '';
   }
+  ensureOrphanTimer() {
+    if (this.orphanTimer || this.shuttingDown) return;
+    this.orphanTimer = setInterval(() => { this.rescanOrphans().catch(() => {}); }, 60_000);
+    this.orphanTimer.unref?.();
+  }
   async rescanInstallations() {
     this.detected = await this.detectInstallations();
     await this.rescanOrphans();
     // Keep the read-only diagnostic off the snapshot path. Only a real startup
     // installation scan installs this unref'd periodic refresh.
-    if (!this.orphanTimer && !this.shuttingDown) {
-      this.orphanTimer = setInterval(() => { this.rescanOrphans().catch(() => {}); }, 60_000);
-      this.orphanTimer.unref?.();
-    }
+    this.ensureOrphanTimer();
     await this.broadcastState();
   }
   async rescanOrphans() {
@@ -627,7 +629,12 @@ class ServerManager {
   }
   async artwork(id, kind) {
     profileFor(id);
-    return artworkFor(id, kind, this.data.games[id]?.artwork?.[kind]);
+    // Steam artwork lives under the Steam client install, which detection may
+    // find outside Program Files (custom library or non-default install).
+    const steamCache = this.detected?.steamPath
+      ? path.join(this.detected.steamPath, 'appcache', 'librarycache')
+      : '';
+    return artworkFor(id, kind, this.data.games[id]?.artwork?.[kind], steamCache ? [steamCache] : []);
   }
   async chooseArtwork(id, kind, dialogWindow, dialog) {
     profileFor(id);
@@ -1058,7 +1065,11 @@ class ServerManager {
     await Promise.allSettled([...this.instances.keys()].map(id => this.stop(id)));
     // The UI remains open after a failed stop; allow a later manual Start while
     // retaining noRestart on the surviving children from this quit attempt.
-    if (this.hasRunning()) this.shuttingDown = false;
+    if (this.hasRunning()) {
+      this.shuttingDown = false;
+      // A quit that failed must not permanently disable the periodic orphan scan.
+      this.ensureOrphanTimer();
+    }
   }
   hasRunning() { return this.instances.size > 0; }
 }

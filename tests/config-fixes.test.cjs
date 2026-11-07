@@ -3,7 +3,7 @@ const assert = require('node:assert/strict');
 const fs = require('node:fs/promises');
 const path = require('node:path');
 const os = require('node:os');
-const { parseConfig, updateConfigText, previewConfig, saveConfig } = require('../electron/config.cjs');
+const { parseConfig, updateConfigText, readConfig, readDocument, previewConfig, saveConfig } = require('../electron/config.cjs');
 const { scanMaps, modeOptions } = require('../electron/maps.cjs');
 const { profiles } = require('../electron/profiles.cjs');
 
@@ -163,6 +163,33 @@ test('Latin-1 config files refuse characters they cannot store instead of corrup
     const reviewed = await previewConfig(utf8, { sv_hostname: 'Star \u2605' }, { id: 'cod4' });
     await saveConfig(utf8, { sv_hostname: 'Star \u2605' }, { id: 'cod4', token: reviewed.token });
     assert.equal(await fs.readFile(utf8, 'utf8'), 'set sv_hostname "Star \u2605"\n');
+  });
+});
+
+test('UTF-16 configs are decoded, validated and saved in their original endianness', async () => {
+  await temporaryDirectory('botland-utf16-', async dir => {
+    const text = 'set sv_hostname "Old"\r\nset sv_maxclients "18"\r\n';
+    const snapshot = encoding => {
+      const bytes = Buffer.from(text, 'utf16le');
+      if (encoding === 'utf16be') bytes.swap16();
+      return Buffer.concat([Buffer.from(encoding === 'utf16le' ? [0xff, 0xfe] : [0xfe, 0xff]), bytes]);
+    };
+    for (const encoding of ['utf16le', 'utf16be']) {
+      const file = path.join(dir, `${encoding}.cfg`);
+      await fs.writeFile(file, snapshot(encoding));
+      assert.deepEqual(await readConfig(file, { id: 'cod4' }), { sv_hostname: 'Old', sv_maxclients: '18' });
+      const document = await readDocument(file, { id: 'cod4' });
+      assert.equal(document.entries.find(entry => entry.key === 'sv_hostname').value, 'Old');
+      const preview = await previewConfig(file, { sv_hostname: 'Star \u2605' }, { id: 'cod4' });
+      assert.equal(preview.changed, true);
+      await saveConfig(file, { sv_hostname: 'Star \u2605' }, { id: 'cod4', token: preview.token });
+      const expectedText = text.replace('"Old"', '"Star \u2605"');
+      const expectedBytes = Buffer.from(expectedText, 'utf16le');
+      if (encoding === 'utf16be') expectedBytes.swap16();
+      assert.deepEqual(await fs.readFile(file), Buffer.concat([
+        Buffer.from(encoding === 'utf16le' ? [0xff, 0xfe] : [0xfe, 0xff]), expectedBytes,
+      ]));
+    }
   });
 });
 

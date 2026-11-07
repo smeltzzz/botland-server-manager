@@ -251,6 +251,10 @@ test('failed stopAll leaves the app usable but cannot retry a surviving child', 
   await manager.stopAll();
   assert.equal(manager.hasRunning(), true);
   assert.equal(manager.shuttingDown, false);
+  // The failed quit must leave the periodic orphan diagnostic running.
+  assert.ok(manager.orphanTimer);
+  clearInterval(manager.orphanTimer);
+  manager.orphanTimer = null;
   spawned[0].proc.finish(1);
   assert.equal(timers.pending, 0);
   assert.equal(manager.hasRunning(), false);

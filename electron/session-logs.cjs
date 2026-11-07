@@ -13,14 +13,16 @@ const name = String.raw`[a-z0-9_.-]*(?:guid|token|key|secret|passwd|password|aut
 // A header may have a scheme followed by a credential, so redact to end of line.
 const authorization = /(\b(?:Proxy-)?Authorization[ \t]*:[ \t]*)[^\r\n]*/gi;
 const assignment = new RegExp(String.raw`(\b${name}[ \t]*(?:=|:)[ \t]*)${value}`, 'gi');
-const setCommand = new RegExp(String.raw`(\b\+?set[ \t]+${name}[ \t]+)${value}`, 'gi');
+const setCommand = new RegExp(String.raw`(\b\+?set(?:a|s|u)?[ \t]+${name}[ \t]+)${value}`, 'gi');
+// A quoted console command can be echoed without `set` (e.g. `rcon_password "x"`).
+const bareCommand = new RegExp(String.raw`(\b${name}[ \t]+)(?:"(?:\\.|[^"\\\r\n])*"|'(?:\\.|[^'\\\r\n])*'|"[^\r\n]*|'[^\r\n]*)`, 'gi');
 const sessionName = /^session-\d{8}T\d{9}Z-[a-f0-9-]{36}\.jsonl$/;
 
 // The complete server line must be supplied by the caller; no unredacted chunk is written.
 function redactLog(text, key = '') {
   try {
     let safe = String(text);
-    safe = safe.replace(authorization, '$1[REDACTED]').replace(assignment, '$1[REDACTED]').replace(setCommand, '$1[REDACTED]');
+    safe = safe.replace(authorization, '$1[REDACTED]').replace(assignment, '$1[REDACTED]').replace(setCommand, '$1[REDACTED]').replace(bareCommand, '$1[REDACTED]');
     return typeof key === 'string' && key ? safe.replaceAll(key, '[REDACTED]') : safe;
   } catch { throw new Error('Could not redact log.'); }
 }

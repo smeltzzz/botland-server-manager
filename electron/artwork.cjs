@@ -5,8 +5,9 @@ const { profileFor } = require('./profiles.cjs');
 // Images are loaded from the user's own Steam cache, never shipped with the app.
 const appIds = { cod4: '7940', waw: '10090', mw2: '10180', bo1: '42700', mw3: '42690', bo2: '202970' };
 const fileNames = { hero: 'library_hero.jpg', cover: 'library_600x900.jpg' };
-function cacheRoots() {
+function cacheRoots(extraRoots = []) {
   return [...new Set([
+    ...extraRoots.filter(root => typeof root === 'string' && root),
     process.env['PROGRAMFILES(X86)'] && path.join(process.env['PROGRAMFILES(X86)'], 'Steam', 'appcache', 'librarycache'),
     process.env.PROGRAMFILES && path.join(process.env.PROGRAMFILES, 'Steam', 'appcache', 'librarycache'),
     'C:\\Program Files (x86)\\Steam\\appcache\\librarycache',
@@ -28,14 +29,14 @@ async function loadImage(file) {
     return mime ? `data:${mime};base64,${bytes.toString('base64')}` : null;
   } catch { return null; }
 }
-async function artworkFor(id, kind, override) {
+async function artworkFor(id, kind, override, extraRoots = []) {
   profileFor(id);
   if (!Object.hasOwn(fileNames, kind)) throw new Error('Unknown artwork type.');
   if (typeof override === 'string') {
     const image = await loadImage(override);
     if (image) return image;
   }
-  for (const root of cacheRoots()) {
+  for (const root of cacheRoots(extraRoots)) {
     const folder = path.join(root, appIds[id]);
     const image = await loadImage(path.join(folder, fileNames[kind]));
     if (image) return image;

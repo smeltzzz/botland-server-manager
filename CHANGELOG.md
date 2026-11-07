@@ -2,6 +2,17 @@
 
 Notable changes to botLANd Server Manager are recorded here. This project follows [Semantic Versioning](https://semver.org/).
 
+## 1.1.0 (2026-11-06)
+
+Bug-fix and polish release.
+
+- Redact secrets printed with `seta`, `sets`, `setu`, `+seta` and quoted bare console commands in session logs, not just `set` and `+set`.
+- Read and save UTF-16LE/UTF-16BE configs while preserving their BOM, byte order and line endings.
+- Create missing starter configs on game folders formatted without hard-link support, such as exFAT and FAT.
+- Re-arm periodic possible-orphan scanning when a quit-time stop cannot stop every server.
+- Find Steam artwork when Steam is installed outside the default Program Files location.
+- Accept `set KEY = VALUE` and quoted launcher assignments in addition to the original legacy syntax.
+
 ## 1.0.0 (2026-11-05)
 
 First public release.
