@@ -69,6 +69,17 @@ async function createWindow() {
   });
   window.webContents.setWindowOpenHandler(() => ({ action: 'deny' }));
   window.webContents.on('will-navigate', event => event.preventDefault());
+  window.webContents.on('will-prevent-unload', event => {
+    const choice = dialog.showMessageBoxSync(window, {
+      type: 'warning', buttons: ['Keep editing', 'Discard changes'], defaultId: 0, cancelId: 0,
+      title: 'Unsaved changes', message: 'Discard your unsaved changes?',
+      detail: 'Your configuration or rotation edits have not been saved.',
+    });
+    if (choice === 1) { event.preventDefault(); return; }
+    // A quit that was waiting on this dialog must not bypass the running-server
+    // check if the user keeps editing and later starts another server.
+    quitAfterStop = false;
+  });
   if (app.isPackaged) await window.loadFile(path.join(__dirname, '..', 'dist', 'index.html'));
   else await window.loadURL('http://127.0.0.1:5173');
   // Metadata checks run in the background and never delay the first window.

@@ -157,6 +157,12 @@ app.whenReady().then(async () => {
         } else if (++attempts > 100) { clearInterval(timer); reject(new Error('Review focus did not return')); }
       }, 50);
     })`);
+    const guardedClose = await win.webContents.executeJavaScript(`(() => {
+      const event = new Event('beforeunload', { cancelable: true });
+      window.dispatchEvent(event);
+      return event.defaultPrevented;
+    })()`);
+    assert.equal(guardedClose, true, 'Unsaved configuration edits must guard window close');
 
     // A running server whose install disappears must keep a visible Stop control
     // and remain counted as live.

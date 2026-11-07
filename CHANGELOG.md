@@ -12,6 +12,7 @@ Bug-fix and polish release.
 - Re-arm periodic possible-orphan scanning when a quit-time stop cannot stop every server.
 - Find Steam artwork when Steam is installed outside the default Program Files location.
 - Accept `set KEY = VALUE` and quoted launcher assignments in addition to the original legacy syntax.
+- Prompt before closing the window when a configuration or rotation draft has unsaved edits.
 
 ## 1.0.0 (2026-11-05)
 

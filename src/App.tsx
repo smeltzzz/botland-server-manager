@@ -285,6 +285,18 @@ export default function App() {
   const missingMode = !!game && !!maps && !maps.modes.some(option => option.value === game.options.mode);
   const savedMode = game ? (missingMode ? maps?.modes[0]?.value || game.options.mode : game.options.mode) : '';
   const rotationDirty = !!game && !!maps && !mapLoading && (portDraft !== String(game.options.port) || modeDraft !== savedMode || shuffleDraft !== game.options.shuffle || mapSelection.length !== savedMaps.length || mapSelection.some(name => !savedMaps.includes(name)));
+  const unsavedDraft = (tab === 'configuration' && configDirty) || (tab === 'rotation' && rotationDirty);
+  useEffect(() => {
+    // Closing the window must not silently throw away a draft. The main process
+    // turns this guard into a native confirmation dialog via will-prevent-unload.
+    if (!unsavedDraft) return;
+    const guard = (event: BeforeUnloadEvent) => {
+      event.preventDefault();
+      event.returnValue = '';
+    };
+    window.addEventListener('beforeunload', guard);
+    return () => window.removeEventListener('beforeunload', guard);
+  }, [unsavedDraft]);
   function resetRotationDrafts() {
     if (!game) return;
     setPortDraft(String(game.options.port));

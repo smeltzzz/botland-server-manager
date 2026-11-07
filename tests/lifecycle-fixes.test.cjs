@@ -335,6 +335,72 @@ test('window close and before-quit stay blocked while stopAll is pending', async
   assert.equal(quits, 1);
 });
 
+test('window close asks before discarding an unsaved draft', async t => {
+  const dir = await temporary(t);
+  const source = await fs.readFile(path.join(__dirname, '..', 'electron', 'main.cjs'), 'utf8');
+  const handlers = {};
+  let window;
+  let response = 0;
+  const prompts = [];
+  const fakeManager = {
+    instances: new Map(),
+    initialize: async () => {},
+    rescanInstallations: async () => {},
+    checkBotUpdates: async () => {},
+    hasRunning: () => false,
+    stopAll: async () => {},
+  };
+  class FakeWindow {
+    constructor() {
+      window = this;
+      this.handlers = {};
+      this.webContents = {
+        mainFrame: {}, send() {}, setWindowOpenHandler() {},
+        on: (name, handler) => { this.handlers[name] = handler; },
+      };
+    }
+    once() {}
+    on(name, handler) { this.handlers[name] = handler; }
+    isDestroyed() { return false; }
+    loadURL() { return Promise.resolve(); }
+  }
+  const app = {
+    whenReady: () => Promise.resolve(), on: (name, handler) => { handlers[name] = handler; },
+    getPath: name => name === 'appData' ? path.join(dir, 'appdata') : path.join(dir, 'userdata'),
+    isPackaged: false, quit() {}, requestSingleInstanceLock: () => true,
+  };
+  let startupError = '';
+  const dialog = {
+    showMessageBoxSync: (_parent, options) => { prompts.push(options); return response; },
+    showErrorBox: (_title, message) => { startupError = message; },
+  };
+  const sandbox = {
+    module: { exports: {} }, process, __dirname: path.join(__dirname, '..', 'electron'),
+    require: name => name === 'electron' ? { app, dialog, BrowserWindow: FakeWindow, ipcMain: { handle() {} }, shell: {}, session: fakeSession }
+      : name === './manager.cjs' ? { ServerManager: class { constructor() { return fakeManager; } } }
+        : name === './key-store.cjs' ? { KeyStore: class {} }
+          : name === './botwarfare-source.cjs' ? { BotWarfareSource: class {} }
+            : name === './botwarfare-install.cjs' ? { BotWarfareInstaller: class {} }
+              : name.startsWith('./') ? require(path.join(__dirname, '..', 'electron', name)) : require(name),
+  };
+  vm.runInNewContext(source, sandbox);
+  for (let attempt = 0; attempt < 100 && !window; attempt++) await new Promise(resolve => setTimeout(resolve, 10));
+  assert.ok(window, startupError);
+  const guard = window.handlers['will-prevent-unload'];
+  assert.equal(typeof guard, 'function');
+
+  const keep = { prevented: false, preventDefault() { this.prevented = true; } };
+  guard(keep);
+  assert.equal(keep.prevented, false, 'Keeping the draft must leave the unload blocked');
+  response = 1;
+  const discard = { prevented: false, preventDefault() { this.prevented = true; } };
+  guard(discard);
+  assert.equal(discard.prevented, true, 'Discarding the draft must allow the unload');
+  assert.equal(prompts.length, 2);
+  assert.equal(prompts[0].buttons.join('|'), 'Keep editing|Discard changes');
+  assert.match(prompts[0].message, /unsaved/i);
+});
+
 test('configuration review and commit reject a changed game folder even for identical files', async t => {
   const dir = await temporary(t);
   const first = path.join(dir, 'first');
