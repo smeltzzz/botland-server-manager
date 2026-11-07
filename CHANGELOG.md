@@ -2,9 +2,11 @@
 
 Notable changes to botLANd Server Manager are recorded here. This project follows [Semantic Versioning](https://semver.org/).
 
-## 1.1.0 (2026-11-06)
+## 1.1.0 (2026-11-07)
 
-Bug-fix and polish release.
+Bug-fix and polish release. Full-pass error, bug, UI and UX sweep; see [`docs/sweep-5-plan.md`](docs/sweep-5-plan.md).
+
+### Fixed
 
 - Redact secrets printed with `seta`, `sets`, `setu`, `+seta` and quoted bare console commands in session logs, not just `set` and `+set`.
 - Read and save UTF-16LE/UTF-16BE configs while preserving their BOM, byte order and line endings.
@@ -13,6 +15,27 @@ Bug-fix and polish release.
 - Find Steam artwork when Steam is installed outside the default Program Files location.
 - Accept `set KEY = VALUE` and quoted launcher assignments in addition to the original legacy syntax.
 - Prompt before closing the window when a configuration or rotation draft has unsaved edits.
+- Possible-unmanaged-process warnings no longer print "PID null". When the owning process
+  cannot be identified (the two address families disagree, or one query failed), the
+  warning now says so plainly and the snapshot type admits a missing PID.
+- Dashboard server cards respond to a click again. The cards were styled as clickable and
+  every control inside them stopped event propagation, but the card itself had no handler,
+  so clicking the artwork, title or body did nothing.
+- A renderer exception now shows a recovery screen with a reload button instead of leaving
+  a blank window.
+- The connect-address panel asks you to choose an interface when several are available
+  instead of claiming no address exists.
+- A map search with no matches no longer suggests checking your game folder.
+- Cover and header artwork can be reset independently, so restoring Steam art for one no
+  longer discards a custom image chosen for the other.
+- The browser preview uses each title's real game mode names (CoD4/MW2 `war`, WaW/BO1
+  `tdm`, IW5 ruleset names) instead of one shared list.
+
+### Changed
+
+- The test suite also runs on non-Windows developer checkouts: config-fixture cleanup no
+  longer leaves `LOCALAPPDATA` set to the literal string `undefined`, and the Windows path
+  and registry assertions are pinned or platform-gated instead of failing off Windows.
 
 ## 1.0.0 (2026-11-05)
 

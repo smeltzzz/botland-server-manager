@@ -249,7 +249,10 @@ export default function ConfigWorkspace({ game, maps, refreshRevision, onDirtyCh
       return updated;
     });
     if (field.type === 'select') return <select value={value} disabled={busy || !!restoreReview} onChange={event => setValue(event.target.value)}>{!field.choices?.some(item => item.value === value) && <option value={value}>{value || 'Not set'}</option>}{field.choices?.map(item => <option value={item.value} key={item.value}>{item.label}</option>)}</select>;
-    return <input type={field.type === 'text' ? 'text' : 'number'} step={field.type === 'decimal' ? '0.1' : '1'} min={field.min} max={game.id === 'mw3' && field.key === 'sv_maxclients' ? 18 : field.max} maxLength={field.maxLength} value={value} disabled={busy || !!restoreReview} onChange={event => setValue(event.target.value)} />;
+    // MW2, MW3 and BO2 cap player slots at 18 (the schema and save path enforce
+    // the same cap), so the guided input must not offer a higher value.
+    const slotCap = ['mw2', 'mw3', 'bo2'].includes(game.id) && field.key === 'sv_maxclients' ? 18 : field.max;
+    return <input type={field.type === 'text' ? 'text' : 'number'} step={field.type === 'decimal' ? '0.1' : '1'} min={field.min} max={slotCap} maxLength={field.maxLength} value={value} disabled={busy || !!restoreReview} onChange={event => setValue(event.target.value)} />;
   }
   return <div className="config-layout">
     <section className="panel config-main">

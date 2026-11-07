@@ -58,22 +58,32 @@ test('redacts Plutonium keys from renderer log events', () => {
   assert.ok(!JSON.stringify(manager.logs.get('bo2')).includes('sample-secret-value'));
 });
 test('uses the correct direct executable and LAN arguments for each title', () => {
-  const manager = new ServerManager('unused', () => {}, 'unused');
-  const root = 'D:\\Games\\Installed Game';
-  for (const id of ['cod4', 'waw', 'mw2', 'bo1', 'mw3', 'bo2']) {
-    const command = manager.buildCommand(profiles[id], root, profiles[id].defaultPort, profiles[id].defaultMode, 'example-key');
-    assert.equal(command.args.includes('+set'), true);
-    assert.equal(command.args.includes(String(profiles[id].defaultPort)), true);
-    assert.equal(command.args.includes('example-key'), !['cod4', 'mw2'].includes(id));
-    assert.ok(path.isAbsolute(command.file));
-    if (id === 'mw2') assert.equal(command.argv0, 'iw4x.exe');
-    for (const lan of [true, false]) {
-      const built = manager.buildCommand(profiles[id], root, profiles[id].defaultPort, profiles[id].defaultMode, 'example-key', lan);
-      const argAfter = name => { const index = built.args.indexOf(name); return index === -1 ? null : built.args[index + 1]; };
-      assert.equal(built.args.includes('-lan'), lan && !['cod4', 'mw2', 'bo1'].includes(id));
-      if (id === 'cod4') assert.equal(argAfter('dedicated'), lan ? '1' : '2');
-      if (id === 'mw2') assert.equal(argAfter('sv_lanonly'), lan ? '1' : '0');
+  // The Plutonium launcher path is derived from %LOCALAPPDATA%. Pin it so the
+  // assertion does not depend on the host shell, and restore it either way.
+  const previousLocalAppData = process.env.LOCALAPPDATA;
+  process.env.LOCALAPPDATA = 'C:\\Users\\botland\\AppData\\Local';
+  try {
+    const manager = new ServerManager('unused', () => {}, 'unused');
+    const root = 'D:\\Games\\Installed Game';
+    for (const id of ['cod4', 'waw', 'mw2', 'bo1', 'mw3', 'bo2']) {
+      const command = manager.buildCommand(profiles[id], root, profiles[id].defaultPort, profiles[id].defaultMode, 'example-key');
+      assert.equal(command.args.includes('+set'), true);
+      assert.equal(command.args.includes(String(profiles[id].defaultPort)), true);
+      assert.equal(command.args.includes('example-key'), !['cod4', 'mw2'].includes(id));
+      // The launcher path is Windows-formatted on every host; assert Windows semantics.
+      assert.ok(path.win32.isAbsolute(command.file), command.file);
+      if (id === 'mw2') assert.equal(command.argv0, 'iw4x.exe');
+      for (const lan of [true, false]) {
+        const built = manager.buildCommand(profiles[id], root, profiles[id].defaultPort, profiles[id].defaultMode, 'example-key', lan);
+        const argAfter = name => { const index = built.args.indexOf(name); return index === -1 ? null : built.args[index + 1]; };
+        assert.equal(built.args.includes('-lan'), lan && !['cod4', 'mw2', 'bo1'].includes(id));
+        if (id === 'cod4') assert.equal(argAfter('dedicated'), lan ? '1' : '2');
+        if (id === 'mw2') assert.equal(argAfter('sv_lanonly'), lan ? '1' : '0');
+      }
     }
+  } finally {
+    if (previousLocalAppData === undefined) delete process.env.LOCALAPPDATA;
+    else process.env.LOCALAPPDATA = previousLocalAppData;
   }
 });
 test('persists the visibility option with per-title defaults', async () => {
