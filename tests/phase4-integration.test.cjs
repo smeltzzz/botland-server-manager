@@ -210,7 +210,7 @@ test('manager backup API stays path-bound, previewed and broadcasts restored byt
   assert.equal((await manager.listConfigBackups('cod4', 'base', 'dom')).length, 1);
 });
 
-test('firewall apply uses validated staged managed-rule lines; remove retains legacy behavior', async () => {
+test('firewall apply uses validated staged managed-rule lines; remove uses checked NetSecurity cmdlets', async () => {
   const manager = new ServerManager('unused', () => {}, 'unused');
   manager.data.games.cod4 = { port: 30001, lan: false };
   manager.instances.set('cod4', { status: 'running', activePort: 28962 });
@@ -226,5 +226,9 @@ test('firewall apply uses validated staged managed-rule lines; remove retains le
   assert.match(script, /Candidate rule was not promoted/);
   assert.doesNotMatch(script, /netsh|delete rule name/);
   await manager.firewallRemove('cod4');
-  assert.match(runs[1][0], /netsh advfirewall firewall delete rule/);
+  const removal = runs[1].join('\n');
+  assert.match(removal, /\$targetName = 'botLANd CoD4 UDP'/);
+  assert.match(removal, /Remove-NetFirewallRule -PolicyStore PersistentStore -Name/);
+  assert.match(removal, /-ErrorAction Stop/);
+  assert.doesNotMatch(removal, /netsh|\$null 2>&1/);
 });

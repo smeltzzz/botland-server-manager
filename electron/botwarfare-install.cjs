@@ -73,7 +73,7 @@ async function noLinks(file) {
     cursor = path.join(cursor, part);
     try {
       const stat = await fs.lstat(cursor);
-      if (stat.isSymbolicLink()) throw new Error('Bot Warfare target contains a symlink or junction.');
+      if (stat.isSymbolicLink()) throw new Error(`Bot Warfare target contains a symlink or junction at ${cursor}. Replace it with a real folder, or select the folder it points to.`);
     } catch (error) { if (error.code !== 'ENOENT') throw error; }
   }
 }
@@ -166,15 +166,18 @@ class BotWarfareInstaller {
   }
   async paths(id, gamePath) {
     if (typeof gamePath !== 'string' || !path.isAbsolute(gamePath)) throw new Error('Absolute game folder required.');
-    await noLinks(gamePath);
     if (!(await fs.stat(gamePath).catch(() => null))?.isDirectory()) throw new Error('Existing game folder required.');
+    // A game moved to another drive is often reached through a junction. The
+    // selected root itself is resolved once; links beneath it are still refused.
+    gamePath = await fs.realpath(gamePath);
+    await noLinks(gamePath);
     const [target, code, base] = TARGETS[id];
     let root = gamePath;
     if (target === 'plutonium') {
       if (typeof this.localAppData !== 'string' || !path.isAbsolute(this.localAppData)) {
         throw new Error('Absolute localAppData required for Plutonium.');
       }
-      root = this.localAppData;
+      root = await fs.realpath(this.localAppData).catch(() => this.localAppData);
       await noLinks(root);
       if (!(await fs.stat(root).catch(() => null))?.isDirectory()) throw new Error('Existing localAppData folder required.');
     }
@@ -248,6 +251,17 @@ class BotWarfareInstaller {
         .some(bytes => bytes !== null);
       return { state: manifest ? 'installed' : unknown ? 'unknown' : 'not-installed',
         targetPath: paths.folder, manifest, versions: versions.map(({ dir, ...entry }) => entry) };
+    });
+  }
+  // Called before a server starts. An install interrupted by a crash or quit
+  // leaves a journaled stage folder; finish or roll it back first so the game
+  // never loads a half-published mix of versions. Targets this installer cannot
+  // manage (for example a missing Plutonium storage root) have nothing to recover.
+  async prepareLaunch(id, gamePath) {
+    return this.queued(id, async () => {
+      let paths;
+      try { paths = await this.paths(id, gamePath); } catch { return; }
+      await this.recover(id, paths);
     });
   }
   async listVersions(id, gamePath) {

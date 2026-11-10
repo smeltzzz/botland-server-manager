@@ -17,7 +17,7 @@ const { discoverConnectAddresses } = require('./connect-address.cjs');
 const { findPossibleOrphans } = require('./orphan-detect.cjs');
 const { ServerLogTail } = require('./log-tail.cjs');
 const { redactLog } = require('./session-logs.cjs');
-const { buildFirewallApplyLines } = require('./firewall-rule.cjs');
+const { buildFirewallApplyLines, buildFirewallRemoveLines } = require('./firewall-rule.cjs');
 const { SOURCES } = require('./botwarfare-source.cjs');
 const exec = promisify(execFile);
 const safeName = /^[a-z0-9_]+$/i;
@@ -119,8 +119,18 @@ class ServerManager {
     const write = async () => {
       await fs.mkdir(path.dirname(this.settingsPath), { recursive: true });
       const temp = `${this.settingsPath}.${crypto.randomUUID()}.tmp`;
-      try { await fs.writeFile(temp, contents, 'utf8'); await fs.rename(temp, this.settingsPath); }
-      finally { await fs.rm(temp, { force: true }).catch(() => {}); }
+      try {
+        await fs.writeFile(temp, contents, 'utf8');
+        // Antivirus scanners and the search indexer briefly lock files on
+        // Windows; retry a replace that fails with a transient sharing error.
+        for (let attempt = 0; ; attempt++) {
+          try { await fs.rename(temp, this.settingsPath); break; }
+          catch (error) {
+            if (attempt >= 4 || !['EPERM', 'EBUSY', 'EACCES'].includes(error.code)) throw error;
+            await new Promise(resolve => setTimeout(resolve, 50 * (attempt + 1)));
+          }
+        }
+      } finally { await fs.rm(temp, { force: true }).catch(() => {}); }
     };
     const pending = this.persistQueue.then(write);
     this.persistQueue = pending.catch(() => {});
@@ -150,7 +160,22 @@ class ServerManager {
   }
   async launcher(id) {
     const file = launcherPath(this.data.root, profileFor(id));
-    try { return parseLauncher(await fs.readFile(file, 'utf8')); } catch { return {}; }
+    let bytes;
+    try { bytes = await fs.readFile(file); }
+    catch (error) {
+      // Report why the launcher could not be read without exposing its contents.
+      throw new Error(error.code === 'ENOENT'
+        ? `No private launcher was found at ${file}. Choose the legacy scripts folder that contains it, or paste the key instead.`
+        : `The private launcher at ${file} could not be read. Check its permissions, or paste the key instead.`);
+    }
+    // Decode like the config editor so UTF-16 batch files are read correctly.
+    return parseLauncher(decode(bytes).text);
+  }
+  // Plutonium storage and the bootstrapper live under %LOCALAPPDATA%. Without
+  // it, paths would resolve against the working directory and must not be used.
+  localAppData() {
+    const value = process.env.LOCALAPPDATA || '';
+    return value && path.isAbsolute(value) ? value : '';
   }
   async gamePath(id) {
     const opts = this.options(id);
@@ -207,24 +232,25 @@ class ServerManager {
     if (profileFor(id).executable !== 'plutonium') throw new Error('This game does not use a Plutonium server key.');
     if (!this.keyStore) throw new Error('Secure key storage is unavailable.');
     await this.keyStore.save(id, key);
-    await this.broadcastState();
+    // The key is stored; a failed refresh must not report the save as failed.
+    await this.broadcastState().catch(() => {});
   }
   async removeKey(id) {
     if (profileFor(id).executable !== 'plutonium') throw new Error('This game does not use a Plutonium server key.');
     if (!this.keyStore) throw new Error('Secure key storage is unavailable.');
     await this.keyStore.remove(id);
-    await this.broadcastState();
+    await this.broadcastState().catch(() => {});
   }
   async importKey(id) {
     if (profileFor(id).executable !== 'plutonium') throw new Error('This game does not use a Plutonium server key.');
     if (!this.keyStore) throw new Error('Secure key storage is unavailable.');
     // The legacy launcher is read only after an explicit click. Its contents and
     // parsed key never leave the main process or enter ordinary settings.
-    if (!this.data.root || !await exists(this.data.root)) throw new Error('Choose your private legacy scripts folder before importing a key.');
+    if (!this.data.root || !await exists(this.data.root)) throw new Error('Choose your legacy scripts folder before importing a key.');
     const key = (await this.launcher(id)).key;
-    if (!key) throw new Error('No key was found in this private launcher. Select its scripts folder or paste a key.');
+    if (!key) throw new Error('No key was found in this private launcher. Choose a different legacy scripts folder or paste the key.');
     await this.keyStore.save(id, key);
-    await this.broadcastState();
+    await this.broadcastState().catch(() => {});
     return true;
   }
   botChannel(id) {
@@ -238,7 +264,7 @@ class ServerManager {
       throw new Error('A verified development build is not available for this game. Use stable.');
     }
     await this.updateSettings(data => { data.games[id] = { ...data.games[id], botChannel: channel }; });
-    await this.broadcastState();
+    await this.broadcastState().catch(() => {});
   }
   restartState(id) {
     let state = this.restarts.get(id);
@@ -265,13 +291,13 @@ class ServerManager {
     } catch (error) { state.suppressed = false; throw error; }
     if (!enabled) this.cancelRestart(id);
     else state.suppressed = false;
-    await this.broadcastState();
+    await this.broadcastState().catch(() => {});
   }
   async setUpdateChecks(enabled) {
     if (typeof enabled !== 'boolean') throw new Error('Update checks must be on or off.');
     await this.updateSettings(data => { data.updatesEnabled = enabled; });
     if (!enabled) this.botUpdates = {};
-    await this.broadcastState();
+    await this.broadcastState().catch(() => {});
     if (enabled) this.checkBotUpdates(false).catch(() => {});
   }
   async checkBotUpdates(force = false) {
@@ -352,12 +378,14 @@ class ServerManager {
     const inspected = this.detected && gamePath ? await inspectGameFolder(id, gamePath) : null;
     const installed = inspected ? inspected.installed : Boolean(gamePath && await exists(gamePath));
     const keyStatus = await this.keyStatus(id);
+    let configMissing = false;
     if (!installed) {
       blockers.push(gamePath
         ? `${profile.short} multiplayer files were not found in ${gamePath}. Choose the folder containing the game executable.`
         : `${profile.short} was not found in your Steam libraries. Choose its installed game folder to continue.`);
     } else {
-      if (!await exists(configPath)) blockers.push(`Server config missing at ${configPath}. Use Create starter config on this game's Overview, or restore your existing server config.`);
+      configMissing = !await exists(configPath);
+      if (configMissing) blockers.push(`Server config missing at ${configPath}. Use Create starter config on this game's Overview, or restore your existing server config.`);
       if (profile.id === 'cod4' && !await exists(path.join(gamePath, profile.executable))) blockers.push(`Cod4R/IW3x DedRun missing at ${path.join(gamePath, profile.executable)}. Follow the IW3x hosting guide to install it; stock CoD4x is not supported.`);
       if (profile.id === 'mw2' && !await exists(path.join(gamePath, profile.executable))) blockers.push(`IW4x executable missing at ${path.join(gamePath, profile.executable)}. Install IW4x in the selected MW2 game folder.`);
       if (profile.id === 'mw3') {
@@ -371,7 +399,9 @@ class ServerManager {
       if (profile.id === 'cod4' && !await exists(path.join(gamePath, 'mods', 'mp_bots', 'z_svr_bots.iwd'))) blockers.push(`CoD4 Bot Warfare missing at ${path.join(gamePath, 'mods', 'mp_bots', 'z_svr_bots.iwd')}. Install the ineedbots IW3 mod in the Cod4R mod folder.`);
       if (profile.id === 'mw2' && !await exists(path.join(gamePath, 'userraw', 'z_svr_bots.iwd'))) blockers.push(`MW2 Bot Warfare missing at ${path.join(gamePath, 'userraw', 'z_svr_bots.iwd')}. Install the ineedbots IW4 mod in IW4x userraw.`);
     }
-    if (profile.executable === 'plutonium') {
+    if (profile.executable === 'plutonium' && !this.localAppData()) {
+      blockers.push('The Windows LOCALAPPDATA folder is not set for this user, so Plutonium cannot be located. Sign in with a normal Windows account or restore the LOCALAPPDATA environment variable.');
+    } else if (profile.executable === 'plutonium') {
       if (!await exists(bootstrapPath())) blockers.push(`Plutonium bootstrapper missing at ${bootstrapPath()}. Install Plutonium using its official guide; botLANd does not install it.`);
       if (keyStatus === 'missing') blockers.push(`Plutonium server key needed for ${profile.short}. Paste your key in this game's Overview, or explicitly import it from a private launcher.`);
       if (keyStatus === 'unavailable') blockers.push('Encrypted server keys cannot be read for this Windows user. Sign in with the original account and check Windows encryption. If keys.json in the app data folder is damaged, back it up before removing it, then paste fresh keys; plaintext storage is never used.');
@@ -430,14 +460,14 @@ class ServerManager {
         }
       } catch { blockers.push(`Could not read server config: ${profile.config.replaceAll('/', '\\')}`); }
     }
-    return { gamePath, installed, pathSource, keyStatus, blockers, warnings, options };
+    return { gamePath, installed, pathSource, keyStatus, configMissing, blockers, warnings, options };
   }
   async snapshot() {
     const games = await Promise.all(order.map(async id => {
       const profile = profiles[id];
       const result = await this.check(id);
       let config = {};
-      if (result.installed && !result.blockers.some(x => x.startsWith('Server config missing'))) {
+      if (result.installed && !result.configMissing) {
         try { config = await readConfig(path.join(result.gamePath, profile.config), { id, target: 'base', mode: result.options.mode }); }
         catch { if (!result.blockers.some(x => x.startsWith('Could not read server config'))) result.blockers.push(`Could not read server config: ${profile.config.replaceAll('/', '\\')}`); }
       }
@@ -450,6 +480,7 @@ class ServerManager {
       return { id, title: profile.title, short: profile.short, subtitle: profile.subtitle, family: profile.family, engine: profile.engine,
         configPath: result.gamePath ? path.join(result.gamePath, profile.config) : '',
         gamePath: result.gamePath, installed: result.installed, pathSource: result.pathSource, keyStatus: result.keyStatus,
+        configMissing: result.configMissing,
         modBusy: this.modBusy.has(id), config, options: result.options, blockers: result.blockers, warnings: result.warnings,
         status: instance?.status || 'stopped', pid: instance?.child?.pid ?? null, startedAt: instance?.startedAt ?? null,
         activePort: instance?.activePort ?? null,
@@ -477,7 +508,9 @@ class ServerManager {
     this.notify({ type: 'state', snapshot });
   }
   addLog(id, text, level = 'info', key = '', source = 'manager') {
-    const message = redactLog(text, key || this.instances.get(id)?.logKey || '').slice(0, 2000);
+    // Bound the input before redacting so very long lines cannot make the
+    // redaction patterns slow; the published message is capped at 2000 anyway.
+    const message = redactLog(String(text).slice(0, 4000), key || this.instances.get(id)?.logKey || '').slice(0, 2000);
     const entry = { at: new Date().toISOString(), level, message, source };
     const lines = this.logs.get(id) || [];
     lines.push(entry);
@@ -551,7 +584,7 @@ class ServerManager {
       changes.selectedMaps = values.selectedMaps;
     }
     await this.updateSettings(data => { data.games[id] = { ...data.games[id], ...this.options(id), ...changes }; });
-    await this.broadcastState();
+    await this.broadcastState().catch(() => {});
   }
   async chooseFolder(id, dialogWindow, dialog) {
     profileFor(id);
@@ -560,12 +593,16 @@ class ServerManager {
     if (result.canceled || !result.filePaths[0]) return false;
     const inspected = await inspectGameFolder(id, result.filePaths[0]);
     if (!inspected.installed) throw new Error(`No ${profileFor(id).short} multiplayer game executable was found in that folder. Choose the actual game installation.`);
-    if (this.instances.get(id)?.status === 'starting') throw new Error('Wait for this server to finish starting before changing its game folder.');
-    await this.updateSettings(data => {
+    const busy = () => {
       if (this.instances.get(id)?.status === 'starting') throw new Error('Wait for this server to finish starting before changing its game folder.');
+      if (this.modBusy.has(id)) throw new Error('Wait for the Bot Warfare change to finish before changing this game folder.');
+    };
+    busy();
+    await this.updateSettings(data => {
+      busy();
       data.games[id] = { ...data.games[id], ...this.options(id), gamePath: result.filePaths[0] };
     });
-    await this.broadcastState(); return true;
+    await this.broadcastState().catch(() => {}); return true;
   }
   async chooseRoot(dialogWindow, dialog) {
     const result = await dialog.showOpenDialog(dialogWindow, { title: 'Select the folder containing your private legacy launch scripts (optional)', properties: ['openDirectory'], ...(this.data.root ? { defaultPath: this.data.root } : {}) });
@@ -575,7 +612,7 @@ class ServerManager {
       if ([...this.instances.values()].some(instance => instance.status === 'starting')) throw new Error('Wait for servers to finish starting before changing the scripts folder.');
       data.root = result.filePaths[0];
     });
-    await this.broadcastState(); return true;
+    await this.broadcastState().catch(() => {}); return true;
   }
   async createStarterConfig(id) {
     profileFor(id);
@@ -800,9 +837,7 @@ class ServerManager {
   async firewallRemove(id) {
     profileFor(id);
     const name = this.firewallName(id);
-    await this.runElevated([
-      `netsh advfirewall firewall delete rule name="${name}" > $null 2>&1`,
-    ]);
+    await this.runElevated(buildFirewallRemoveLines({ name }));
     return this.firewallStatus(id);
   }
 
@@ -862,7 +897,9 @@ class ServerManager {
           return;
         }
         this.instances.delete(id);
-        this.launch(id, true).catch(() => {});
+        // Any outcome must refresh the UI; otherwise a refused retry leaves a
+        // stale "restarting" card that no longer matches a managed instance.
+        this.launch(id, true).catch(() => {}).finally(() => { this.broadcastState().catch(() => {}); });
       }).catch(() => {});
     }, delay);
     this.addLog(id, `Server exited unexpectedly. Restart attempt ${state.attempts} in ${delay / 1000}s.`, 'error');
@@ -879,6 +916,22 @@ class ServerManager {
     if (this.shuttingDown) throw new Error('The manager is shutting down.');
     if (this.instances.has(id)) throw new Error('This server is already starting or running.');
     if (this.modBusy.has(id)) throw new Error('Wait for the Bot Warfare change to finish before starting this server.');
+    if (this.modInstaller && typeof this.modInstaller.prepareLaunch === 'function') {
+      const gamePath = await this.gamePath(id);
+      if (gamePath) {
+        try { await this.modInstaller.prepareLaunch(id, gamePath); }
+        catch (error) {
+          const message = `Could not finish recovering an interrupted Bot Warfare change, so the server was not started: ${error.message}`;
+          if (retry) this.restartState(id).cutOff = true;
+          this.addLog(id, message, 'error');
+          throw new Error(message);
+        }
+      }
+      // Recovery is asynchronous; re-check what a concurrent action may have changed.
+      if (this.shuttingDown) throw new Error('The manager is shutting down.');
+      if (this.instances.has(id)) throw new Error('This server is already starting or running.');
+      if (this.modBusy.has(id)) throw new Error('Wait for the Bot Warfare change to finish before starting this server.');
+    }
     const restart = this.restartState(id);
     if (!retry) { restart.crashes = []; restart.attempts = 0; restart.cutOff = false; }
     else if (restart.cutOff || restart.suppressed || this.data.games?.[id]?.autoRestart !== true) return;
@@ -934,6 +987,8 @@ class ServerManager {
         try { await instance.logTail?.stop(); } catch { /* Best effort. */ }
         instance.logTail = null;
       }
+      // Turning automatic restart off while a retry was preparing cancels it.
+      if (retry && (restart.suppressed || this.data.games?.[id]?.autoRestart !== true)) instance.cancelled = true;
       if (instance.cancelled) throw new Error('Launch cancelled.');
       const visibility = id === 'bo1' ? 'no -lan; firewall-scoped' : options.lan === false ? 'public' : 'LAN';
       this.addLog(id, `Starting ${profile.engine} on UDP ${options.port} (${visibility}) with ${chosen.length} maps.`, 'info');
@@ -1008,7 +1063,9 @@ class ServerManager {
       await this.broadcastState().catch(() => {});
       throw error;
     } finally {
-      if (!instance.child && !instance.closed && instance.status !== 'restarting') await this.releaseSession(id, instance);
+      // A child object can exist without a PID when spawn itself failed; Node
+      // does not guarantee a 'close' for it, so release the session here.
+      if (!instance.child?.pid && !instance.closed && instance.status !== 'restarting') await this.releaseSession(id, instance);
       instance.resolveLaunch();
     }
   }
@@ -1110,6 +1167,16 @@ class ServerManager {
       this.ensureOrphanTimer();
     }
   }
+  // Undo a quit that was abandoned after stopAll(), so Start, automatic
+  // restart and the periodic orphan scan work again.
+  cancelShutdown() {
+    if (!this.shuttingDown) return;
+    this.shuttingDown = false;
+    this.ensureOrphanTimer();
+  }
   hasRunning() { return this.instances.size > 0; }
+  // A Bot Warfare change rewrites game files; quitting in the middle of it
+  // would leave recovery to the next launch.
+  hasModWork() { return this.modBusy.size > 0; }
 }
 module.exports = { ServerManager };

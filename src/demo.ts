@@ -4,7 +4,7 @@ import type { BotStatus, ConfigDocument, ConfigField, Game, GameId, ManagerApi, 
 
 const base: Pick<Game, 'options' | 'config' | 'blockers' | 'warnings' | 'logs' | 'status' | 'pid' | 'startedAt' | 'connect' | 'orphan' | 'restart'> = {
   options: { port: 28961, mode: 'dom', shuffle: true, selectedMaps: [], gamePath: '', lan: true },
-  config: { sv_hostname: 'botLANd — Domination', sv_maxclients: '18', bots_main: '1', bots_manage_fill: '14', bots_skill: '4', bots_team: 'autoassign', bots_manage_fill_mode: '0', bots_play_obj: '1', scr_dom_timelimit: '15', scr_dom_scorelimit: '200' },
+  config: { sv_hostname: 'botLANd â€” Domination', sv_maxclients: '18', bots_main: '1', bots_manage_fill: '14', bots_skill: '4', bots_team: 'autoassign', bots_manage_fill_mode: '0', bots_play_obj: '1', scr_dom_timelimit: '15', scr_dom_scorelimit: '200' },
   blockers: [], warnings: [], logs: [], status: 'stopped', pid: null, startedAt: null,
   connect: { primaryAddress: null, ambiguous: false, candidates: [] }, orphan: null,
   restart: { enabled: false, attempts: 0, nextAttemptAt: null, cutOff: false },
@@ -20,7 +20,7 @@ const definitions: [GameId, string, string, string, Game['family'], string, numb
 const detected = new Set<GameId>(['cod4', 'bo1', 'mw3']);
 // Only presence is modeled in this browser fixture; no actual key string is kept.
 const fakeKeyPresence = new Set<GameId>(['bo1']);
-const snapshot: Snapshot = { root: '', updatesEnabled: true, updates: { cod4: { status: 'checked', latest: { tag: 'v2.1.0' }, updateAvailable: true } }, games: definitions.map(([id, title, short, subtitle, family, engine, port]) => ({
+const snapshot: Snapshot = { root: '', updatesEnabled: true, updates: { cod4: { status: 'current', latest: { tag: 'v2.1.0' }, updateAvailable: true } }, games: definitions.map(([id, title, short, subtitle, family, engine, port]) => ({
   ...base, id, title, short, subtitle, family, engine, modBusy: false, config: { ...base.config },
   installed: detected.has(id), pathSource: detected.has(id) ? 'steam' : 'none',
   keyStatus: id === 'cod4' || id === 'mw2' ? 'not-required' : fakeKeyPresence.has(id) ? 'stored' : 'missing',
@@ -102,9 +102,12 @@ function demoDocument(id: GameId, target: 'base' | 'mode', mode?: string): Confi
 }
 export function createDemoManager(): ManagerApi {
   document.documentElement.dataset.demo = 'true';
+  // Remember applied rules so the preview does not "lose" them on the next refresh.
+  const firewallRules: Partial<Record<GameId, 'lan' | 'any'>> = {};
   return {
     snapshot: async () => structuredClone(snapshot),
     copyDiagnostics: async () => false, // Browser preview never writes to the clipboard.
+    setUnsavedChanges: async () => true,
     maps: async (id): Promise<MapData> => ({ maps: pool, modes: demoModes(id) }),
     start: async id => { const game = find(id); if (!game.installed || game.blockers.length) throw new Error('Resolve the setup checks before starting.'); game.status = 'running'; game.pid = 4108; game.activePort = game.options.port; game.startedAt = new Date().toISOString(); game.restart = { ...game.restart, attempts: 0, nextAttemptAt: null, cutOff: false }; demoConnect(game); game.logs = [{ at: new Date().toISOString(), level: 'info', source: 'manager', message: `Started ${game.engine} with the selected map rotation.` }, { at: new Date().toISOString(), level: 'info', source: 'stdout', message: 'Demo server output (no game process launched).' }]; emit(); },
     stop: async id => { const game = find(id); game.status = 'stopped'; game.pid = null; game.activePort = null; game.connect = { primaryAddress: null, ambiguous: false, candidates: [] }; game.restart.nextAttemptAt = null; emit(); },
@@ -135,7 +138,7 @@ export function createDemoManager(): ManagerApi {
         } else if (operation === 'remove') bot.manifest = null;
         else bot.manifest = demoManifest(id, bot.source.ref || 'v2.1.0', bot.channel);
         bot.state = operation === 'remove' ? 'not-installed' : 'installed';
-        snapshot.updates[id] = { status: 'checked', latest: { tag: 'v2.1.0' }, updateAvailable: false };
+        snapshot.updates[id] = { status: 'current', latest: { tag: 'v2.1.0' }, updateAvailable: false };
       } finally { game.modBusy = false; emit(); }
     },
     setBotChannel: async (id, channel) => {
@@ -159,9 +162,9 @@ export function createDemoManager(): ManagerApi {
       return demoDocument(id, target, mode);
     },
     artwork: async () => null, openDocs: async () => {}, chooseArtwork: async () => false, resetArtwork: async () => null, openDocument: async () => false,
-    firewallStatus: async id => ({ name: `botLANd ${find(id).short} UDP`, port: find(id).activePort ?? find(id).options.port, state: 'missing' }),
-    firewallApply: async id => ({ name: `botLANd ${find(id).short} UDP`, port: find(id).activePort ?? find(id).options.port, state: id === 'bo1' || find(id).options.lan ? 'lan' : 'any' }),
-    firewallRemove: async id => ({ name: `botLANd ${find(id).short} UDP`, port: find(id).activePort ?? find(id).options.port, state: 'missing' }),
+    firewallStatus: async id => ({ name: `botLANd ${find(id).short} UDP`, port: find(id).activePort ?? find(id).options.port, state: firewallRules[id] ?? 'missing' }),
+    firewallApply: async id => { firewallRules[id] = id === 'bo1' || find(id).options.lan ? 'lan' : 'any'; return { name: `botLANd ${find(id).short} UDP`, port: find(id).activePort ?? find(id).options.port, state: firewallRules[id] }; },
+    firewallRemove: async id => { delete firewallRules[id]; return { name: `botLANd ${find(id).short} UDP`, port: find(id).activePort ?? find(id).options.port, state: 'missing' }; },
     // Mirror the real manager's validation: a browser preview must not confirm
     // options that the desktop app would reject.
     saveOptions: async (id, values) => {

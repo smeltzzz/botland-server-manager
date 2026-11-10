@@ -5,6 +5,7 @@ const invoke = (action, payload) => ipcRenderer.invoke('manager:action', action,
 contextBridge.exposeInMainWorld('manager', {
   snapshot: () => invoke('snapshot'),
   copyDiagnostics: () => invoke('copyDiagnostics'),
+  setUnsavedChanges: (dirty) => invoke('setUnsavedChanges', { dirty }),
   maps: (id) => invoke('maps', { id }),
   start: (id) => invoke('start', { id }),
   stop: (id) => invoke('stop', { id }),

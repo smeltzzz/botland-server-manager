@@ -3,6 +3,7 @@ const { SOURCES } = require('./botwarfare-source.cjs');
 
 const MAX_ARCHIVE_BYTES = 80 * 1024 * 1024;
 const DEFAULT_TIMEOUT_MS = 30_000;
+const MAX_TOTAL_MS = 15 * 60_000;
 const MAX_REDIRECTS = 5;
 const OFFICIAL_HOSTS = new Set(['api.github.com', 'github.com', 'codeload.github.com']);
 const CDN_HOST = 'release-assets.githubusercontent.com';
@@ -80,12 +81,15 @@ function contentLength(response, maxBytes) {
  * @returns {Promise<{bytes: Buffer, sha256: string}>}
  */
 async function downloadArchive(url, { fetch: fetcher = globalThis.fetch, expectedHash, maxBytes = MAX_ARCHIVE_BYTES,
-  timeoutMs = DEFAULT_TIMEOUT_MS } = {}) {
+  timeoutMs = DEFAULT_TIMEOUT_MS, totalTimeoutMs = MAX_TOTAL_MS } = {}) {
   if (typeof fetcher !== 'function') throw new TypeError('Bot Warfare download fetch must be a function.');
   if (!Number.isSafeInteger(maxBytes) || maxBytes < 1 || maxBytes > MAX_ARCHIVE_BYTES) {
     throw new RangeError('Bot Warfare download size limit must be between 1 byte and 80 MB.');
   }
   if (!Number.isSafeInteger(timeoutMs) || timeoutMs < 1 || timeoutMs > 2_147_483_647) {
+    throw new RangeError('Invalid Bot Warfare download timeout.');
+  }
+  if (!Number.isSafeInteger(totalTimeoutMs) || totalTimeoutMs < 1 || totalTimeoutMs > 2_147_483_647) {
     throw new RangeError('Invalid Bot Warfare download timeout.');
   }
   if (expectedHash !== undefined && (typeof expectedHash !== 'string' || !/^[a-f0-9]{64}$/iu.test(expectedHash))) {
@@ -95,16 +99,27 @@ async function downloadArchive(url, { fetch: fetcher = globalThis.fetch, expecte
   const controller = new AbortController();
   let reader;
   let timer;
+  let overall;
+  let expire;
+  // timeoutMs is an idle limit: it restarts whenever a response or body chunk
+  // arrives, so large archives on slow links still finish. A separate overall
+  // cap stops a connection that trickles bytes forever.
   const timeout = new Promise((_, reject) => {
-    timer = setTimeout(() => {
+    expire = () => {
+      clearTimeout(timer);
+      clearTimeout(overall);
       controller.abort();
       try { if (reader) Promise.resolve(reader.cancel()).catch(() => {}); }
       catch { /* The timeout still wins if cancellation itself fails. */ }
       reject(timedOut());
-    }, timeoutMs);
+    };
+    timer = setTimeout(expire, timeoutMs);
+    overall = setTimeout(expire, Math.max(timeoutMs, totalTimeoutMs));
   });
+  const activity = () => { clearTimeout(timer); timer = setTimeout(expire, timeoutMs); };
   const work = (async () => {
     for (let hops = 0; hops <= MAX_REDIRECTS; hops++) {
+      activity();
       let response;
       try {
         response = await fetcher(target.href, { method: 'GET', redirect: 'manual', signal: controller.signal,
@@ -134,6 +149,7 @@ async function downloadArchive(url, { fetch: fetcher = globalThis.fetch, expecte
           try { result = await reader.read(); }
           catch { throw controller.signal.aborted ? timedOut() : offline(); }
           if (result.done) break;
+          activity();
           if (!(result.value instanceof Uint8Array)) throw new Error('Unreadable Bot Warfare download response.');
           const chunk = Buffer.from(result.value);
           size += chunk.length;
@@ -163,6 +179,7 @@ async function downloadArchive(url, { fetch: fetcher = globalThis.fetch, expecte
   try { return await Promise.race([work, timeout]); }
   finally {
     clearTimeout(timer);
+    clearTimeout(overall);
     controller.abort();
   }
 }

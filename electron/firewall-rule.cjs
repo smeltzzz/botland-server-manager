@@ -106,4 +106,25 @@ function buildFirewallApplyLines({ name, port, scope }) {
   ];
 }
 
-module.exports = { buildFirewallApplyLines };
+// Removes the local rules with exactly this botLANd display name, including
+// legacy netsh rules created before ownership markers existed. Unlike the old
+// netsh call, failures are reported instead of being discarded, and a rule
+// that is still active afterwards (for example one pushed by Group Policy)
+// is reported rather than shown as removed.
+function buildFirewallRemoveLines({ name }) {
+  if (!managedNames.has(name)) throw new Error('Unknown botLANd firewall rule.');
+  return [
+    `$targetName = '${name}'`,
+    'function Get-ExactRules($store) {',
+    '  $lookupErrors = @()',
+    '  $found = @(Get-NetFirewallRule -PolicyStore $store -DisplayName $targetName -ErrorAction SilentlyContinue -ErrorVariable lookupErrors)',
+    "  $failure = @($lookupErrors | Where-Object { $_.CategoryInfo.Category -ne 'ObjectNotFound' })",
+    '  if ($failure.Count) { throw $failure[0] }',
+    '  return @($found | Where-Object { [string]$_.DisplayName -ceq $targetName })',
+    '}',
+    'foreach ($rule in @(Get-ExactRules PersistentStore)) { Remove-NetFirewallRule -PolicyStore PersistentStore -Name ([string]$rule.Name) -ErrorAction Stop }',
+    "if (@(Get-ExactRules ActiveStore).Count) { throw ('A rule named ' + $targetName + ' is still active, probably from Group Policy. Ask your administrator to remove it.') }",
+  ];
+}
+
+module.exports = { buildFirewallApplyLines, buildFirewallRemoveLines };

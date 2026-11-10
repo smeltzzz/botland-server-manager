@@ -112,5 +112,6 @@ test('removes the rule elevated and reports a missing rule', async () => {
   const removed = await manager.firewallRemove('waw');
   assert.deepEqual(removed, { name: 'botLANd WaW UDP', port: 28963, state: 'missing' });
   assert.equal(runs.length, 1);
-  assert.match(runs[0][0], /delete rule name="botLANd WaW UDP"/);
+  assert.equal(runs[0][0], "$targetName = 'botLANd WaW UDP'");
+  assert.match(runs[0].join('\n'), /Remove-NetFirewallRule -PolicyStore PersistentStore -Name \(\[string\]\$rule\.Name\) -ErrorAction Stop/);
 });

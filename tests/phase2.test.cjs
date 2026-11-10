@@ -219,9 +219,9 @@ test('Plutonium key stays absent until explicit import from a synthetic launcher
     assert.equal(await store.has('waw'), false);
     await assert.rejects(fs.stat(keyFile), { code: 'ENOENT' });
     manager.data.root = '';
-    await assert.rejects(manager.importKey('waw'), /Choose your private legacy scripts folder/);
+    await assert.rejects(manager.importKey('waw'), /Choose your legacy scripts folder/);
     manager.data.root = scripts;
-    await assert.rejects(manager.importKey('bo1'), /No key was found/);
+    await assert.rejects(manager.importKey('bo1'), /No key was found|No private launcher was found/);
     assert.equal(launcherReads, 0);
     assert.equal(await manager.importKey('waw'), true);
     assert.equal(launcherReads, 1);

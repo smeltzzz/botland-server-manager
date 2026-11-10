@@ -74,6 +74,7 @@ app.whenReady().then(async () => {
         if (failSnapshotOnce) { failSnapshotOnce = false; throw new Error('Synthetic status refresh failure.'); }
         return structuredClone(snapshot);
       case 'start': return undefined;
+      case 'setUnsavedChanges': return true;
       case 'artwork': return null;
       case 'maps': return { maps: mapsVersion === 1 ? ['mp_crash'] : ['mp_crash', 'mp_second'], modes: [{ value: 'dom', label: 'Domination' }] };
       case 'firewallStatus': return { name: 'botLANd CoD4 UDP', port: 28962, state: 'missing' };
@@ -111,26 +112,15 @@ app.whenReady().then(async () => {
     assert.equal(dashboard.cards, 1);
     assert.equal(dashboard.missing, 5);
     assert.ok(dashboard.scrollWidth <= dashboard.width, 'Dashboard must not clip at a 640-DIP window');
+    // The card is a mouse shortcut, not an extra tab stop; MANAGE is its named control.
     const cardAccessibility = await win.webContents.executeJavaScript(`(() => {
       const card = document.querySelector('.server-card');
-      return { role: card?.getAttribute('role'), tabIndex: card?.tabIndex, label: card?.getAttribute('aria-label') };
+      return { role: card?.getAttribute('role'), tabIndex: card?.tabIndex, manage: card?.querySelector('.card-open')?.getAttribute('aria-label') };
     })()`);
-    assert.equal(cardAccessibility.role, 'group');
-    assert.equal(cardAccessibility.tabIndex, 0);
-    assert.match(cardAccessibility.label, /Press Enter or Space to manage/);
-    await win.webContents.executeJavaScript(`(() => {
-      const card = document.querySelector('.server-card');
-      card.focus();
-      card.dispatchEvent(new KeyboardEvent('keydown', { key: 'Enter', bubbles: true }));
-    })()`);
-    await waitFor(win, '.detail-tabs');
-    await win.webContents.executeJavaScript("document.querySelector('.sidebar > .nav-item').click()");
-    await waitFor(win, '.server-card');
-    await win.webContents.executeJavaScript(`(() => {
-      const card = document.querySelector('.server-card');
-      card.focus();
-      card.dispatchEvent(new KeyboardEvent('keydown', { key: ' ', bubbles: true }));
-    })()`);
+    assert.equal(cardAccessibility.role, null);
+    assert.equal(cardAccessibility.tabIndex, -1);
+    assert.equal(cardAccessibility.manage, 'Manage Call of Duty 4');
+    await win.webContents.executeJavaScript("document.querySelector('.server-card .card-art').click()");
     await waitFor(win, '.detail-tabs');
     await win.webContents.executeJavaScript("document.querySelector('.sidebar > .nav-item').click()");
     await waitFor(win, '.server-card');
@@ -149,10 +139,11 @@ app.whenReady().then(async () => {
     assert.equal(manageFocus.label, 'Call of Duty 4 — Overview');
     const heading = await win.webContents.executeJavaScript("document.querySelector('.detail-hero h1').textContent");
     assert.equal(heading, 'Call of Duty 4');
-    await win.webContents.executeJavaScript("[...document.querySelectorAll('.detail-tabs button')].find(button => button.textContent.includes('Configuration')).click()");
+    await win.webContents.executeJavaScript("(() => { const tab = [...document.querySelectorAll('.detail-tabs button')].find(button => button.textContent.includes('Configuration')); tab.focus(); tab.click(); })()");
     await waitFor(win, '.config-field-grid input');
-    const tabFocus = await win.webContents.executeJavaScript("({ active: document.activeElement?.tagName, label: document.querySelector('main')?.getAttribute('aria-label') })");
-    assert.equal(tabFocus.active, 'MAIN');
+    // Switching tabs keeps focus on the activated tab instead of jumping to <main>.
+    const tabFocus = await win.webContents.executeJavaScript("({ active: document.activeElement?.textContent || '', label: document.querySelector('main')?.getAttribute('aria-label') })");
+    assert.equal(tabFocus.active, 'Configuration');
     assert.equal(tabFocus.label, 'Call of Duty 4 — Configuration');
     const width = await win.webContents.executeJavaScript('({ width: innerWidth, scrollWidth: document.documentElement.scrollWidth })');
     assert.ok(width.scrollWidth <= width.width, 'Configuration must not clip at a 640-DIP window');
@@ -203,7 +194,7 @@ app.whenReady().then(async () => {
       stopButtons: document.querySelectorAll('.server-card .stop-button').length,
     })`);
     assert.equal(unavailableDashboard.cards, 1, 'A running unavailable game must remain on the dashboard');
-    assert.equal(unavailableDashboard.missing, 5, 'A running unavailable game must not move to Not installed');
+    assert.equal(unavailableDashboard.missing, 5, 'A running unavailable game must not move to Not detected');
     assert.match(unavailableDashboard.running, /01/, 'A running unavailable game must remain in the live count');
     assert.equal(unavailableDashboard.stopButtons, 1, 'The dashboard must retain its Stop control');
 
@@ -222,6 +213,9 @@ app.whenReady().then(async () => {
     await waitForAbsent(win, '.map-option');
     win.webContents.send('manager:event', { type: 'state', snapshot: gameSnapshot({ installed: true, status: 'running', pid: 4321,
       activePort: 28962, startedAt: new Date().toISOString(), blockers: [] }) });
+    // The disabled Maps tab fell back to Overview while the folder was missing.
+    await waitFor(win, '.detail-tabs button:nth-child(3):not(:disabled)');
+    await win.webContents.executeJavaScript("[...document.querySelectorAll('.detail-tabs button')].find(button => button.textContent.includes('Maps & modes')).click()");
     await waitFor(win, '.map-grid .map-option:nth-child(2)');
     const rescannedMaps = await win.webContents.executeJavaScript("document.querySelectorAll('.map-option').length");
     // Verify connect panel copy, stopping state, and starting state

@@ -1,7 +1,7 @@
 const fs = require('node:fs/promises');
 const path = require('node:path');
 const crypto = require('node:crypto');
-const { withoutBlockComments } = require('./config.cjs');
+const { withoutBlockComments, decode } = require('./config.cjs');
 
 const safeName = /^[a-z0-9_]+$/i;
 async function exists(file) { try { await fs.access(file); return true; } catch { return false; } }
@@ -69,7 +69,8 @@ async function modeOptions(profile, gamePath) {
     // explicitly select their own gametype are valid for a t6mp rotation.
     const verified = await Promise.all(candidates.map(async name => {
       try {
-        const text = withoutBlockComments(await fs.readFile(path.join(folder, name), 'utf8'));
+        // Decode like the config editor, so UTF-16 mode files are not silently dropped.
+        const text = withoutBlockComments(decode(await fs.readFile(path.join(folder, name))).text);
         const declarations = text.split(/\r?\n/).map(line => line.split('//', 1)[0].trim().match(/^set_gametype\s+([a-z0-9_]+)\b/i)).filter(Boolean);
         const declaration = declarations.at(-1);
         return declaration?.[1].toLowerCase() === name.slice(0, -extension.length).toLowerCase() ? name : null;

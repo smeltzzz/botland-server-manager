@@ -21,6 +21,8 @@ export interface Game {
   installed: boolean;
   pathSource: 'manual' | 'steam' | 'none';
   keyStatus: 'not-required' | 'stored' | 'missing' | 'unavailable';
+  /** The game is installed but its server config file does not exist yet. */
+  configMissing?: boolean;
   modBusy: boolean;
   connect: ConnectAddresses;
   orphan: OrphanCandidate | null;
@@ -51,6 +53,7 @@ export type ManagerEvent = { type: 'state'; snapshot: Snapshot } | { type: 'log'
 export interface ManagerApi {
   snapshot(): Promise<Snapshot>;
   copyDiagnostics(): Promise<boolean>;
+  setUnsavedChanges(dirty: boolean): Promise<boolean>;
   maps(id: GameId): Promise<MapData>;
   start(id: GameId): Promise<void>;
   stop(id: GameId): Promise<void>;

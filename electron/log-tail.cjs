@@ -60,11 +60,14 @@ function logCandidates({ id, gamePath, localAppData }) {
   });
 }
 
-// Reject reparse points/symlinks in every component, including the file. In
-// particular a mod directory must not redirect reads into private config data.
+// Reject reparse points/symlinks in every component beneath the game or storage
+// root, including the file. In particular a mod directory must not redirect
+// reads into private config data. The root itself is resolved once, because a
+// game moved to another drive is commonly reached through a junction.
 async function regularLog(candidate) {
-  const anchor = path.parse(candidate.file).root;
-  const parts = path.relative(anchor, candidate.file).split(path.sep);
+  let anchor;
+  try { anchor = await fs.realpath(candidate.root); } catch { return null; }
+  const parts = path.relative(candidate.root, candidate.file).split(path.sep);
   let name = anchor;
   for (let i = 0; i < parts.length; i++) {
     name = path.join(name, parts[i]);
@@ -74,6 +77,26 @@ async function regularLog(candidate) {
     if (i === parts.length - 1) return stat.isFile() ? stat : null;
   }
   return null;
+}
+
+const HEAD_BYTES = 64;
+async function readHead(file) {
+  let handle;
+  try {
+    handle = await fs.open(file, 'r');
+    const buffer = Buffer.alloc(HEAD_BYTES);
+    const { bytesRead } = await handle.read(buffer, 0, HEAD_BYTES, 0);
+    return buffer.subarray(0, bytesRead);
+  } catch { return null; } finally { await handle?.close().catch(() => {}); }
+}
+// Compares the shared prefix, since a short file may have grown since it was sampled.
+async function sameHead(file, state) {
+  const head = await readHead(file);
+  if (!head || !state.head) return false;
+  const length = Math.min(head.length, state.head.length);
+  if (!head.subarray(0, length).equals(state.head.subarray(0, length))) return false;
+  if (head.length > state.head.length) state.head = head;
+  return true;
 }
 
 function identity(stat) { return `${stat.dev}:${stat.ino}`; }
@@ -135,11 +158,17 @@ class ServerLogTail {
       let state = this.states.get(candidate.file);
       if (!state) {
         state = freshState(stat, initial ? stat.size : 0);
+        state.head = await readHead(candidate.file);
         this.states.set(candidate.file, state);
       } else if (state.identity !== identity(stat) || stat.size < state.offset ||
-                 (stat.size === state.offset && stat.mtimeMs !== state.mtimeMs)) {
+                 (stat.size === state.offset && stat.mtimeMs !== state.mtimeMs && !await sameHead(candidate.file, state))) {
+        // NTFS can update the write time after the last bytes were read, with
+        // no size change. Only a changed beginning means the file was rewritten.
         state = freshState(stat);
+        state.head = await readHead(candidate.file);
         this.states.set(candidate.file, state);
+      } else if ((!state.head || state.head.length < HEAD_BYTES) && stat.size > (state.head?.length ?? 0)) {
+        state.head = await readHead(candidate.file);
       }
       state.mtimeMs = stat.mtimeMs;
       present.push({ candidate, stat, state });

@@ -1,7 +1,7 @@
 const path = require('node:path');
 const fs = require('node:fs/promises');
 const { constants } = require('node:fs');
-const { app, BrowserWindow, clipboard, dialog, ipcMain, safeStorage, session, shell } = require('electron');
+const { app, BrowserWindow, Menu, clipboard, dialog, ipcMain, safeStorage, session, shell } = require('electron');
 const { ServerManager } = require('./manager.cjs');
 const { KeyStore } = require('./key-store.cjs');
 const { BotWarfareSource } = require('./botwarfare-source.cjs');
@@ -27,6 +27,10 @@ let window;
 let manager;
 let quitAfterStop = false;
 let stoppingForQuit = false;
+// The renderer reports unsaved configuration or rotation drafts, so a quit can
+// ask about them once, before any server is stopped.
+let rendererDirty = false;
+let discardConfirmed = false;
 
 async function migrateSettings() {
   // The product name controls Electron's userData folder. Preserve existing
@@ -63,13 +67,22 @@ async function createWindow() {
   window.on('close', event => {
     if (quitAfterStop) return;
     if (stoppingForQuit) { event.preventDefault(); return; }
-    if (!manager?.hasRunning()) return;
+    if (!needsQuitPrompt()) return;
     event.preventDefault();
     requestQuit();
+  });
+  // Windows sign-out or shutdown: there is no time for dialogs, so stop owned
+  // servers (Cod4R gets its graceful quit first) and close session logs.
+  window.on('session-end', () => {
+    quitAfterStop = true;
+    discardConfirmed = true;
+    manager?.stopAll().catch(() => {});
   });
   window.webContents.setWindowOpenHandler(() => ({ action: 'deny' }));
   window.webContents.on('will-navigate', event => event.preventDefault());
   window.webContents.on('will-prevent-unload', event => {
+    // The quit prompt already covered the unsaved drafts.
+    if (discardConfirmed) { event.preventDefault(); return; }
     const choice = dialog.showMessageBoxSync(window, {
       type: 'warning', buttons: ['Keep editing', 'Discard changes'], defaultId: 0, cancelId: 0,
       title: 'Unsaved changes', message: 'Discard your unsaved changes?',
@@ -77,9 +90,12 @@ async function createWindow() {
     });
     if (choice === 1) { event.preventDefault(); return; }
     // A quit that was waiting on this dialog must not bypass the running-server
-    // check if the user keeps editing and later starts another server.
+    // check if the user keeps editing and later starts another server, and a
+    // shutdown begun for that quit must not keep blocking Start.
     quitAfterStop = false;
+    manager?.cancelShutdown?.();
   });
+  if (app.isPackaged) Menu.setApplicationMenu(null); // No Reload or DevTools shortcuts in releases.
   if (app.isPackaged) await window.loadFile(path.join(__dirname, '..', 'dist', 'index.html'));
   else await window.loadURL('http://127.0.0.1:5173');
   // Metadata checks run in the background and never delay the first window.
@@ -116,6 +132,11 @@ if (primaryInstance) app.whenReady().then(() => {
     const id = payload.id;
     switch (action) {
       case 'snapshot': return manager.snapshot();
+      case 'setUnsavedChanges': {
+        if (typeof payload.dirty !== 'boolean') throw new Error('Invalid unsaved-changes state.');
+        rendererDirty = payload.dirty;
+        return true;
+      }
       case 'copyDiagnostics': {
         clipboard.writeText(formatDiagnostics(await manager.snapshot(), app.getVersion(), process.platform, process.arch));
         return true;
@@ -184,27 +205,48 @@ if (primaryInstance) app.whenReady().then(() => {
   createWindow().catch(error => { dialog.showErrorBox('botLANd could not start', error.message); app.quit(); });
 });
 
+function needsQuitPrompt() { return Boolean(manager?.hasRunning() || manager?.hasModWork?.()); }
+function showBox(options) {
+  return window && !window.isDestroyed() ? dialog.showMessageBoxSync(window, options) : dialog.showMessageBoxSync(options);
+}
 function requestQuit() {
   if (stoppingForQuit) return;
-  const options = {
+  if (manager?.hasModWork?.()) {
+    // Quitting mid-install would leave files for the next launch to recover.
+    showBox({
+      type: 'info', buttons: ['OK'], defaultId: 0, cancelId: 0,
+      title: 'Bot Warfare change in progress',
+      message: 'Wait for the Bot Warfare change to finish before closing botLANd.',
+      detail: 'Closing now could leave the mod files half-updated. The change usually takes less than a minute.',
+    });
+    return;
+  }
+  const result = showBox({
     type: 'warning', buttons: ['Keep app open', 'Stop servers and exit'], defaultId: 0, cancelId: 0,
     title: 'Servers are still running', message: 'Stop your managed servers before closing botLANd?',
-    detail: 'Stopping a server ends its current game session. Only processes started by this app will be targeted.',
-  };
-  const result = window && !window.isDestroyed() ? dialog.showMessageBoxSync(window, options) : dialog.showMessageBoxSync(options);
+    detail: 'Stopping a server ends its current game session. Only processes started by this app will be targeted.'
+      + (rendererDirty ? '\n\nYour unsaved configuration or rotation edits will also be discarded.' : ''),
+  });
   if (result !== 1) return;
   stoppingForQuit = true;
+  discardConfirmed = true;
   manager.stopAll().then(() => {
     stoppingForQuit = false;
     if (manager.hasRunning()) {
+      discardConfirmed = false;
       dialog.showErrorBox('Servers still running', 'A managed server could not be stopped. The app will remain open so you can try again.');
     } else { quitAfterStop = true; app.quit(); }
-  }).catch(error => { stoppingForQuit = false; dialog.showErrorBox('Could not close', error.message); });
+  }).catch(error => {
+    stoppingForQuit = false;
+    discardConfirmed = false;
+    manager.cancelShutdown?.();
+    dialog.showErrorBox('Could not close', error.message);
+  });
 }
 app.on('before-quit', event => {
   if (quitAfterStop) return;
   if (stoppingForQuit) { event.preventDefault(); return; }
-  if (!manager?.hasRunning()) return;
+  if (!needsQuitPrompt()) return;
   event.preventDefault();
   requestQuit();
 });
