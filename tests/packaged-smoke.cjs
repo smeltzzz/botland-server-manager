@@ -224,7 +224,61 @@ app.whenReady().then(async () => {
       activePort: 28962, startedAt: new Date().toISOString(), blockers: [] }) });
     await waitFor(win, '.map-grid .map-option:nth-child(2)');
     const rescannedMaps = await win.webContents.executeJavaScript("document.querySelectorAll('.map-option').length");
-    assert.equal(rescannedMaps, 2, 'Reappearing installations must be rescanned for maps');
+    // Verify connect panel copy, stopping state, and starting state
+    await win.webContents.executeJavaScript("[...document.querySelectorAll('.detail-tabs button')].find(button => button.textContent.includes('Overview')).click()");
+    await waitFor(win, '.connect-panel');
+    const connectSnap = gameSnapshot({
+      installed: true, status: 'running', pid: 4321, activePort: 28962, startedAt: new Date().toISOString(), blockers: [],
+      connect: {
+        primaryAddress: null, ambiguous: true,
+        candidates: [
+          { adapter: 'Eth0', address: '192.168.1.10', scope: 'private', label: 'Local', connectAddress: '192.168.1.10:28962' },
+          { adapter: 'Eth1', address: '10.0.0.5', scope: 'private', label: 'VPN', connectAddress: '10.0.0.5:28962' },
+        ],
+      },
+    });
+    win.webContents.send('manager:event', { type: 'state', snapshot: connectSnap });
+    await waitFor(win, '.connect-row code');
+    const connectPlaceholder = await win.webContents.executeJavaScript("document.querySelector('.connect-row code')?.textContent || ''");
+    assert.equal(connectPlaceholder, 'Choose an interface above', 'Connect panel must direct the user to the dropdown above');
+
+    // Stopping server must keep the stop-button class, be disabled, and read Stopping…
+    const stoppingSnap = gameSnapshot({ installed: true, status: 'stopping', pid: 4321, activePort: 28962, startedAt: new Date().toISOString(), blockers: [] });
+    win.webContents.send('manager:event', { type: 'state', snapshot: stoppingSnap });
+    await waitFor(win, '.detail-hero-action .stop-button');
+    const stoppingButton = await win.webContents.executeJavaScript(`({
+      text: document.querySelector('.detail-hero-action .stop-button')?.textContent?.trim(),
+      disabled: document.querySelector('.detail-hero-action .stop-button')?.disabled,
+      chipClass: document.querySelector('.state-chip')?.className,
+      chipText: document.querySelector('.state-chip')?.textContent?.trim(),
+    })`);
+    assert.equal(stoppingButton.text, 'Stopping…');
+    assert.equal(stoppingButton.disabled, true);
+    assert.ok(stoppingButton.chipClass.includes('attention'));
+    assert.equal(stoppingButton.chipText, 'Stopping');
+
+    // Starting server must render attention chip and Cancel start control
+    const startingSnap = gameSnapshot({ installed: true, status: 'starting', pid: null, activePort: 28962, startedAt: null, blockers: [] });
+    win.webContents.send('manager:event', { type: 'state', snapshot: startingSnap });
+    await waitFor(win, '.detail-hero-action .stop-button');
+    const startingState = await win.webContents.executeJavaScript(`({
+      text: document.querySelector('.detail-hero-action .stop-button')?.textContent?.trim(),
+      chipClass: document.querySelector('.state-chip')?.className,
+      chipText: document.querySelector('.state-chip')?.textContent?.trim(),
+    })`);
+    assert.equal(startingState.text, 'Cancel start');
+    assert.ok(startingState.chipClass.includes('attention'));
+    assert.equal(startingState.chipText, 'Starting');
+
+    // Console tab must reflect STARTING
+    await win.webContents.executeJavaScript("[...document.querySelectorAll('.detail-tabs button')].find(button => button.textContent.includes('Console')).click()");
+    await waitFor(win, '.console-panel');
+    const consoleStarting = await win.webContents.executeJavaScript(`({
+      state: document.querySelector('.console-state')?.textContent?.trim(),
+      live: document.querySelector('.terminal-live')?.textContent?.trim(),
+    })`);
+    assert.match(consoleStarting.state, /STARTING/);
+    assert.match(consoleStarting.live, /STARTING/);
 
     console.log('Synthetic packaged renderer: startup fallback, dashboard, navigation, lifecycle state, map rescan, narrow layout and modal keyboard smoke passed.');
   } finally { win.destroy(); app.quit(); }

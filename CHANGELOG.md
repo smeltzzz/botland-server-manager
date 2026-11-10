@@ -4,7 +4,7 @@ Notable changes to botLANd Server Manager are recorded here. This project follow
 
 ## 1.1.0 (2026-11-07)
 
-Bug-fix and polish release. Full-pass error, bug, UI and UX sweep; see [`docs/sweep-5-plan.md`](docs/sweep-5-plan.md).
+Bug-fix and polish release. Full-pass error, bug, UI and UX sweep; see [`docs/sweep-5-plan.md`](docs/sweep-5-plan.md) and [`docs/sweep-6-plan.md`](docs/sweep-6-plan.md).
 
 ### Fixed
 
@@ -30,6 +30,15 @@ Bug-fix and polish release. Full-pass error, bug, UI and UX sweep; see [`docs/sw
   longer discards a custom image chosen for the other.
 - The browser preview uses each title's real game mode names (CoD4/MW2 `war`, WaW/BO1
   `tdm`, IW5 ruleset names) instead of one shared list.
+- The server launch control now displays a disabled "Stopping…" stop button when a server is stopping instead of abruptly flipping to a disabled "Start server" button. While a launch is being cancelled, the button now indicates "Cancelling…".
+- The server console status and terminal indicator accurately report `STARTING` and `STOPPING` instead of claiming the server is `OFFLINE` and `IDLE` during startup and shutdown.
+- Ambiguous UDP listeners (`pid: null`) on a port belonging to a running managed server are no longer falsely reported as unmanaged rogue processes.
+- The connect address panel now correctly directs the user to "Choose an interface above" when multiple network adapters are available.
+- Enforce the 18-slot limit on both player slots and bot fill targets in the configuration workspace and browser demo for MW2, MW3, and BO2.
+- Clearing or backspacing an unset configuration field without a schema default is no longer falsely marked as a dirty edit.
+- Localize Bot Warfare manifest and version timestamps in the UI instead of rendering raw ISO 8601 strings.
+- Add dismiss buttons to configuration notices in the configuration workspace.
+- Accurately track active ports in the browser preview fixture for simulated server runs and firewall checks.
 
 ### Changed
 

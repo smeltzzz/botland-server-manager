@@ -95,7 +95,7 @@ export default function ConfigWorkspace({ game, maps, refreshRevision, onDirtyCh
     const entry = document.entries.find(item => item.key === key);
     if (entry?.masked) return value !== '';
     const original = document.values[key] ?? entry?.value ?? document.fields.find(field => field.key === key)?.default;
-    return value !== original;
+    return value !== (original ?? '');
   }));
   const changeCount = Object.keys(edits).length;
   const visibleBackups = backupScope === contextKey ? backups : [];
@@ -111,10 +111,10 @@ export default function ConfigWorkspace({ game, maps, refreshRevision, onDirtyCh
     const dialog = dialogRef.current;
     const trigger = window.document.activeElement;
     if (!dialog) return;
-    dialog.showModal();
+    if (!dialog.open) dialog.showModal();
     dialog.querySelector('button')?.focus();
     return () => {
-      dialog.close();
+      if (dialog.open) dialog.close();
       window.requestAnimationFrame(() => {
         if (trigger instanceof HTMLElement && trigger.isConnected) trigger.focus();
       });
@@ -251,7 +251,7 @@ export default function ConfigWorkspace({ game, maps, refreshRevision, onDirtyCh
     if (field.type === 'select') return <select value={value} disabled={busy || !!restoreReview} onChange={event => setValue(event.target.value)}>{!field.choices?.some(item => item.value === value) && <option value={value}>{value || 'Not set'}</option>}{field.choices?.map(item => <option value={item.value} key={item.value}>{item.label}</option>)}</select>;
     // MW2, MW3 and BO2 cap player slots at 18 (the schema and save path enforce
     // the same cap), so the guided input must not offer a higher value.
-    const slotCap = ['mw2', 'mw3', 'bo2'].includes(game.id) && field.key === 'sv_maxclients' ? 18 : field.max;
+    const slotCap = ['mw2', 'mw3', 'bo2'].includes(game.id) && (field.key === 'sv_maxclients' || field.key === 'bots_manage_fill') ? 18 : field.max;
     return <input type={field.type === 'text' ? 'text' : 'number'} step={field.type === 'decimal' ? '0.1' : '1'} min={field.min} max={slotCap} maxLength={field.maxLength} value={value} disabled={busy || !!restoreReview} onChange={event => setValue(event.target.value)} />;
   }
   return <div className="config-layout">
@@ -261,7 +261,7 @@ export default function ConfigWorkspace({ game, maps, refreshRevision, onDirtyCh
       {supportsModeFile && <div className="config-targets"><button className={target === 'base' ? 'active' : ''} aria-pressed={target === 'base'} onClick={() => { if (target !== 'base' && canSwitch()) setTarget('base'); }}>Server & bots</button><button className={target === 'mode' ? 'active' : ''} aria-pressed={target === 'mode'} onClick={() => { if (target !== 'mode' && canSwitch()) setTarget('mode'); }}>Mode rules</button>{target === 'mode' && <label><span>RULESET</span><select value={mode} onChange={event => { if (event.target.value !== mode && canSwitch()) setMode(event.target.value); }}>{maps?.modes?.length ? <>{!maps.modes.some(item => item.value === mode) && <option value={mode} disabled>{mode} (not installed)</option>}{maps.modes.map(item => <option value={item.value} key={item.value}>{item.label}</option>)}</> : <option value={mode}>{mode}</option>}</select><ChevronDown size={14} /></label>}</div>}
       <div className="config-toolbar"><div className="config-switch"><button className={view === 'guided' ? 'selected' : ''} aria-pressed={view === 'guided'} onClick={() => { setView('guided'); setSearch(''); }}>Guided settings</button><button className={view === 'advanced' ? 'selected' : ''} aria-pressed={view === 'advanced'} onClick={() => { setView('advanced'); setSearch(''); }}>All existing settings <span>{document?.entries.length || 0}</span></button></div><div className="config-search"><Search size={15} /><input type="search" aria-label="Search configuration settings" placeholder="Search settings…" value={search} onChange={event => setSearch(event.target.value)} /></div></div>
       {pathConflict && <div className="config-path-warning" role="alert"><TriangleAlert size={17} /><div><strong>Game folder changed while you were editing.</strong><p>Your unsaved edits are still shown below for reference. Saving to the old location is blocked. Copy anything you need before loading the new file.</p><button className="outline-button" onClick={() => { setDraft(document?.values || {}); setPathConflict(false); setReloadRevision(previous => previous + 1); }}>Discard edits and load new file</button></div></div>}
-      {notice && <div className={`config-notice ${notice.error ? 'error' : 'success'}`} role={notice.error ? 'alert' : 'status'}>{notice.error ? <TriangleAlert size={16} /> : <Check size={16} />}{notice.text}</div>}
+      {notice && <div className={`config-notice ${notice.error ? 'error' : 'success'}`} role={notice.error ? 'alert' : 'status'}>{notice.error ? <TriangleAlert size={16} /> : <Check size={16} />}<span>{notice.text}</span><button className="config-notice-dismiss" onClick={() => setNotice(null)} aria-label="Dismiss"><X size={15} /></button></div>}
       {loading && <div className="config-empty">Loading settings from the installed game…</div>}
       {!loading && !document && <div className="config-empty"><FileText size={22} /> Config file could not be opened. Check the game folder above.</div>}
       {!loading && document && <>

@@ -90,7 +90,8 @@ function demoDocument(id: GameId, target: 'base' | 'mode', mode?: string): Confi
   const game = find(id);
   const selectedMode = mode || game.options.mode;
   const values = target === 'base' ? { ...game.config } : { ...demoModeDefaults, ...demoModeValues.get(modeKey(id, selectedMode)) };
-  const fields = target === 'base' ? demoFields : [{ key: 'timelimit', sourceKey: 'timelimit', label: 'Time limit', section: 'Match rules', type: 'integer' as const, min: 0, max: 120 }];
+  const slotCap = ['mw2', 'mw3', 'bo2'].includes(id) ? 18 : 64;
+  const fields = target === 'base' ? demoFields.map(field => ['sv_maxclients', 'bots_manage_fill'].includes(field.key) ? { ...field, max: slotCap } : field) : [{ key: 'timelimit', sourceKey: 'timelimit', label: 'Time limit', section: 'Match rules', type: 'integer' as const, min: 0, max: 120 }];
   const path = target === 'base'
     ? game.configPath
     : id === 'mw3'
@@ -105,8 +106,8 @@ export function createDemoManager(): ManagerApi {
     snapshot: async () => structuredClone(snapshot),
     copyDiagnostics: async () => false, // Browser preview never writes to the clipboard.
     maps: async (id): Promise<MapData> => ({ maps: pool, modes: demoModes(id) }),
-    start: async id => { const game = find(id); if (!game.installed || game.blockers.length) throw new Error('Resolve the setup checks before starting.'); game.status = 'running'; game.pid = 4108; game.startedAt = new Date().toISOString(); game.restart = { ...game.restart, attempts: 0, nextAttemptAt: null, cutOff: false }; demoConnect(game); game.logs = [{ at: new Date().toISOString(), level: 'info', source: 'manager', message: `Started ${game.engine} with the selected map rotation.` }, { at: new Date().toISOString(), level: 'info', source: 'stdout', message: 'Demo server output (no game process launched).' }]; emit(); },
-    stop: async id => { const game = find(id); game.status = 'stopped'; game.pid = null; game.connect = { primaryAddress: null, ambiguous: false, candidates: [] }; game.restart.nextAttemptAt = null; emit(); },
+    start: async id => { const game = find(id); if (!game.installed || game.blockers.length) throw new Error('Resolve the setup checks before starting.'); game.status = 'running'; game.pid = 4108; game.activePort = game.options.port; game.startedAt = new Date().toISOString(); game.restart = { ...game.restart, attempts: 0, nextAttemptAt: null, cutOff: false }; demoConnect(game); game.logs = [{ at: new Date().toISOString(), level: 'info', source: 'manager', message: `Started ${game.engine} with the selected map rotation.` }, { at: new Date().toISOString(), level: 'info', source: 'stdout', message: 'Demo server output (no game process launched).' }]; emit(); },
+    stop: async id => { const game = find(id); game.status = 'stopped'; game.pid = null; game.activePort = null; game.connect = { primaryAddress: null, ambiguous: false, candidates: [] }; game.restart.nextAttemptAt = null; emit(); },
     copyConnectAddress: async (id, address) => { const game = find(id); return game.status === 'running' && game.connect.candidates.some(candidate => candidate.connectAddress === address); },
     setAutoRestart: async (id, enabled) => { find(id).restart.enabled = enabled; emit(); },
     rescanOrphans: async () => { emit(); },
@@ -158,9 +159,9 @@ export function createDemoManager(): ManagerApi {
       return demoDocument(id, target, mode);
     },
     artwork: async () => null, openDocs: async () => {}, chooseArtwork: async () => false, resetArtwork: async () => null, openDocument: async () => false,
-    firewallStatus: async id => ({ name: `botLANd ${find(id).short} UDP`, port: find(id).options.port, state: 'missing' }),
-    firewallApply: async id => ({ name: `botLANd ${find(id).short} UDP`, port: find(id).options.port, state: id === 'bo1' || find(id).options.lan ? 'lan' : 'any' }),
-    firewallRemove: async id => ({ name: `botLANd ${find(id).short} UDP`, port: find(id).options.port, state: 'missing' }),
+    firewallStatus: async id => ({ name: `botLANd ${find(id).short} UDP`, port: find(id).activePort ?? find(id).options.port, state: 'missing' }),
+    firewallApply: async id => ({ name: `botLANd ${find(id).short} UDP`, port: find(id).activePort ?? find(id).options.port, state: id === 'bo1' || find(id).options.lan ? 'lan' : 'any' }),
+    firewallRemove: async id => ({ name: `botLANd ${find(id).short} UDP`, port: find(id).activePort ?? find(id).options.port, state: 'missing' }),
     // Mirror the real manager's validation: a browser preview must not confirm
     // options that the desktop app would reject.
     saveOptions: async (id, values) => {

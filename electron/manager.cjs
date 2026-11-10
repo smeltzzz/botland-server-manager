@@ -178,7 +178,8 @@ class ServerManager {
       try { findings = await this.findPossibleOrphans(candidates); }
       catch { /* Netstat is optional; an unavailable scan cannot prove occupancy. */ }
       const owned = new Set([...this.instances.values()].map(instance => instance.child?.pid).filter(pid => Number.isInteger(pid) && pid > 0));
-      this.orphans = new Map(findings.filter(item => item && !owned.has(item.pid) &&
+      const runningPorts = new Set([...this.instances.values()].filter(instance => instance.status === 'running').map(instance => instance.activePort).filter(Boolean));
+      this.orphans = new Map(findings.filter(item => item && !owned.has(item.pid) && !(item.pid === null && runningPorts.has(item.port)) &&
         candidates.some(candidate => candidate.id === item.id && candidate.port === item.port))
         .map(item => [item.id, { pid: item.pid, port: item.port, reason: item.reason }]));
       await this.broadcastState();
@@ -441,7 +442,7 @@ class ServerManager {
           : { primaryAddress: null, ambiguous: false, candidates: [] },
         orphan: (() => {
           const orphan = this.orphans.get(id);
-          const owned = [...this.instances.values()].some(value => value.child?.pid && value.child.pid === orphan?.pid);
+          const owned = [...this.instances.values()].some(value => (value.child?.pid && value.child.pid === orphan?.pid) || (value.status === 'running' && (value.activePort ?? this.options(id).port) === orphan?.port && orphan?.pid === null));
           return orphan?.port === result.options.port && !owned ? orphan : null;
         })(),
         restart: { enabled: this.data.games?.[id]?.autoRestart === true, attempts: restart?.attempts || 0,
