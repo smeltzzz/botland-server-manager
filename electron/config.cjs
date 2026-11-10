@@ -2,6 +2,7 @@ const fs = require('node:fs/promises');
 const path = require('node:path');
 const crypto = require('node:crypto');
 const { schemaFor, fieldFor } = require('./schema.cjs');
+const { withConfigLock } = require('./config-backups.cjs');
 
 /** @typedef {{id?: string, target?: 'base'|'mode', mode?: string, token?: string}} ConfigOptions */
 const legacyKeys = new Set(['sv_hostname', 'sv_maxclients', 'bots_manage_fill', 'bots_skill', 'bot_difficulty', 'bots_main', 'bots_play_obj', 'bots_manage_fill_mode', 'bots_team', 'scr_dom_timelimit', 'scr_dom_scorelimit']);
@@ -12,11 +13,10 @@ const safeKey = /^[a-z_][a-z0-9_.]*$/i;
 function isSecret(key) { return secretName.test(key); }
 function decode(buffer) {
   if (buffer.subarray(0, 3).equals(Buffer.from([0xef, 0xbb, 0xbf]))) return { text: buffer.subarray(3).toString('utf8'), encoding: 'utf8', bom: true };
-  if (buffer.subarray(0, 2).equals(Buffer.from([0xff, 0xfe]))) {
-    return { text: new TextDecoder('utf-16le', { fatal: true }).decode(buffer.subarray(2)), encoding: 'utf16le', bom: true };
-  }
-  if (buffer.subarray(0, 2).equals(Buffer.from([0xfe, 0xff]))) {
-    return { text: new TextDecoder('utf-16be', { fatal: true }).decode(buffer.subarray(2)), encoding: 'utf16be', bom: true };
+  for (const [bom, encoding] of [[[0xff, 0xfe], 'utf16le'], [[0xfe, 0xff], 'utf16be']]) {
+    if (!buffer.subarray(0, 2).equals(Buffer.from(bom))) continue;
+    try { return { text: new TextDecoder(encoding === 'utf16le' ? 'utf-16le' : 'utf-16be', { fatal: true }).decode(buffer.subarray(2)), encoding, bom: true }; }
+    catch { throw new Error('This config file starts with a UTF-16 marker but is not valid UTF-16 text. Re-save it in a text editor as UTF-8 or UTF-16.'); }
   }
   try { return { text: new TextDecoder('utf-8', { fatal: true }).decode(buffer), encoding: 'utf8', bom: false }; }
   catch { return { text: buffer.toString('latin1'), encoding: 'latin1', bom: false }; }
@@ -67,8 +67,9 @@ function parseEntries(text, dialect = 'dvar') {
   });
   return entries;
 }
+function dialectFor(opts = {}) { return opts.target === 'mode' ? (opts.id === 'mw3' ? 'gameOpt' : 'gts') : 'dvar'; }
 function parseConfig(text, opts = {}) {
-  const dialect = opts.target === 'mode' ? (opts.id === 'mw3' ? 'gameOpt' : 'gts') : 'dvar';
+  const dialect = dialectFor(opts);
   const allowed = opts.id ? new Set(schemaFor(opts.id, opts.target || 'base', opts.mode).fields.map(field => field.key)) : legacyKeys;
   const result = {};
   for (const [key, item] of parseEntries(text, dialect)) if (allowed.has(key) && !isSecret(key)) result[key] = item.value;
@@ -92,7 +93,7 @@ function validateOne(value, field, key) {
 }
 function validateValues(values, opts = {}, text = '') {
   if (!values || typeof values !== 'object' || Array.isArray(values) || Object.keys(values).length > 100) throw new Error('Invalid settings.');
-  const dialect = opts.target === 'mode' ? (opts.id === 'mw3' ? 'gameOpt' : 'gts') : 'dvar';
+  const dialect = dialectFor(opts);
   const existing = parseEntries(text, dialect);
   const cleaned = {};
   for (const [rawKey, value] of Object.entries(values)) {
@@ -127,7 +128,7 @@ function updateConfigText(text, values, opts = {}) {
   // Keep each original separator so edits do not normalize unrelated lines.
   const lines = text.split(/(\r\n|\n)/);
   const activeLines = withoutBlockComments(text).split(/(\r\n|\n)/);
-  const dialect = opts.target === 'mode' ? (opts.id === 'mw3' ? 'gameOpt' : 'gts') : 'dvar';
+  const dialect = dialectFor(opts);
   for (const [key, value] of Object.entries(patch)) {
     let last = -1;
     for (let i = 0; i < activeLines.length; i += 2) if (assignment(activeLines[i], dialect)?.key === key && assignment(lines[i], dialect)) last = i;
@@ -162,14 +163,19 @@ function assertEncodable(patch, decoded) {
   }
 }
 function hash(buffer) { return crypto.createHash('sha256').update(buffer).digest('hex'); }
-// The review token covers both the file bytes and the validated values, so a
-// commit can only write exactly what was previewed against the previewed file.
-function reviewToken(original, patch) {
+// The review token covers the target path, the file bytes and the
+// validated values, so a commit can only write exactly what was previewed
+// against the previewed file (two byte-identical mode files differ by path).
+function pathKey(file) {
+  const resolved = path.resolve(file);
+  return process.platform === 'win32' ? resolved.toLowerCase() : resolved;
+}
+function reviewToken(original, patch, file) {
   const values = Object.entries(patch).sort(([a], [b]) => (a < b ? -1 : a > b ? 1 : 0));
-  return crypto.createHash('sha256').update(hash(original)).update('\0').update(JSON.stringify(values)).digest('hex');
+  return crypto.createHash('sha256').update(pathKey(file)).update('\0').update(hash(original)).update('\0').update(JSON.stringify(values)).digest('hex');
 }
 function inspectText(text, opts = {}) {
-  const dialect = opts.target === 'mode' ? (opts.id === 'mw3' ? 'gameOpt' : 'gts') : 'dvar';
+  const dialect = dialectFor(opts);
   const items = parseEntries(text, dialect);
   const values = parseConfig(text, opts);
   const entries = [...items.values()].map(entry => ({ key: entry.key, value: isSecret(entry.key) ? '' : entry.value, hasValue: !!entry.value, masked: isSecret(entry.key), count: entry.count }));
@@ -182,7 +188,7 @@ async function previewConfig(file, values, opts = {}) {
   const original = await fs.readFile(file);
   const decoded = decode(original);
   const text = decoded.text;
-  const entries = parseEntries(text, opts.target === 'mode' ? (opts.id === 'mw3' ? 'gameOpt' : 'gts') : 'dvar');
+  const entries = parseEntries(text, dialectFor(opts));
   const patch = validateValues(values, opts, text);
   assertEncodable(patch, decoded);
   const updated = updateConfigText(text, patch, opts);
@@ -192,28 +198,29 @@ async function previewConfig(file, values, opts = {}) {
     after: isSecret(key) ? '••••••' : after,
     duplicates: entries.get(key)?.count || 0,
   }));
-  return { token: reviewToken(original, patch), changes, changed: updated !== text };
+  return { token: reviewToken(original, patch, file), changes, changed: updated !== text };
 }
-const pendingSaves = new Map();
 /** @param {string} file @param {Record<string, string>} values @param {ConfigOptions} [opts] */
 async function saveConfig(file, values, opts = {}) {
-  const resolved = path.resolve(file);
-  const key = process.platform === 'win32' ? resolved.toLowerCase() : resolved;
-  // Check the preview token after earlier saves to this path have completed.
-  const previous = pendingSaves.get(key) || Promise.resolve();
-  const current = previous.catch(() => {}).then(async () => {
+  // Saves share the backup module's per-file queue, so a save and a backup
+  // restore of the same config can never interleave their check-then-rename.
+  return withConfigLock(file, async () => {
+    const link = await fs.lstat(file);
+    // Replacing a symlink or hard link by rename would silently detach it, and
+    // the backups panel refuses such files; refuse consistently up front.
+    if (link.isSymbolicLink() || link.nlink > 1) throw new Error(`${path.basename(file)} is a symbolic or hard link. Replace it with a regular file before editing it here.`);
     const original = await fs.readFile(file);
     const decoded = decode(original);
     const patch = validateValues(values, opts, decoded.text);
     assertEncodable(patch, decoded);
-    if (opts.token && opts.token !== reviewToken(original, patch)) throw new Error('Config or settings changed since preview. Refresh and review your edits again.');
+    if (opts.token && opts.token !== reviewToken(original, patch, file)) throw new Error('Config or settings changed since preview. Refresh and review your edits again.');
     const updated = updateConfigText(decoded.text, patch, opts);
     if (updated === decoded.text) return;
     const backup = `${file}.bak-${new Date().toISOString().replace(/[:.]/g, '-')}-${crypto.randomUUID()}`;
     const temp = path.join(path.dirname(file), `.${path.basename(file)}.${crypto.randomUUID()}.tmp`);
-    await fs.writeFile(backup, original, { flag: 'wx' });
     let replaced = false;
     try {
+      await fs.writeFile(backup, original, { flag: 'wx' });
       await fs.writeFile(temp, encode(updated, decoded), { flag: 'wx' });
       // Recheck after the awaited writes so an editor change is not silently replaced.
       if (!(await fs.readFile(file)).equals(original)) throw new Error('Config changed since preview. Refresh and review your edits again.');
@@ -228,9 +235,6 @@ async function saveConfig(file, values, opts = {}) {
       if (!replaced) await fs.rm(backup, { force: true }).catch(() => {});
     }
   });
-  pendingSaves.set(key, current);
-  try { await current; }
-  finally { if (pendingSaves.get(key) === current) pendingSaves.delete(key); }
 }
 function parseLauncher(text) {
   const variables = {};
@@ -255,4 +259,4 @@ function parseLauncher(text) {
   }
   return variables;
 }
-module.exports = { withoutBlockComments, parseConfig, parseEntries, inspectText, isSecret, validateValues, updateConfigText, readConfig, readDocument, previewConfig, saveConfig, parseLauncher };
+module.exports = { decode, withoutBlockComments, parseConfig, parseEntries, inspectText, isSecret, validateValues, updateConfigText, readConfig, readDocument, previewConfig, saveConfig, parseLauncher };

@@ -141,10 +141,15 @@ test('rejects linked config files and backups', async t => fixture(async dir => 
   await assert.rejects(pruneBackups(file, [item.id]), /not found/);
 }));
 
-test('rejects junctions in parent directories', async () => fixture(async dir => {
+test('resolves a junctioned game folder to its real location for backups', async () => fixture(async dir => {
+  // Games moved to another drive are commonly reached through a junction; the
+  // backups saved through that path must remain listable through it.
   const file = path.join(dir, 'server.cfg');
   await savedConfig(file, Buffer.from('set sv_hostname "Before"\n'));
   const junction = path.join(dir, 'junction');
   await fs.symlink(dir, junction, process.platform === 'win32' ? 'junction' : 'dir');
-  await assert.rejects(listBackups(path.join(junction, 'server.cfg')), /links/);
+  const direct = await listBackups(file);
+  const linked = await listBackups(path.join(junction, 'server.cfg'));
+  assert.equal(linked.length, 1);
+  assert.deepEqual(linked.map(item => item.date), direct.map(item => item.date));
 }));

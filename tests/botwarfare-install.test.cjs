@@ -399,3 +399,34 @@ test('invalid manifest cannot claim arbitrary user config, and tampered history 
   await assert.rejects(f.installer.restore('mw2', f.game, version.versionId), /SHA-256 mismatch/u);
   assert.equal(await read(path.join(base, 'z_svr_bots.iwd')), 'release-two');
 });
+
+test('an abandoned stage without a journal is discarded instead of blocking every action', async t => {
+  const f = await fixture(t, 'cod4');
+  await f.installer.install('cod4', f.game);
+  const parent = path.join(f.game, 'mods');
+  const stage = path.join(parent, '.botland-stage-cod4-abc123');
+  await fs.mkdir(path.join(stage, 'version'), { recursive: true });
+  await fs.writeFile(path.join(stage, 'before-0'), 'partial');
+  assert.equal((await f.installer.status('cod4', f.game)).state, 'installed');
+  assert.equal(await exists(stage), false);
+  // A stage holding anything unexpected still fails closed and names its folder.
+  await fs.mkdir(stage);
+  await fs.writeFile(path.join(stage, 'unexpected.txt'), 'keep');
+  await assert.rejects(f.installer.status('cod4', f.game), error => /transaction journal/u.test(error.message) && error.message.includes(stage));
+  assert.equal(await exists(path.join(stage, 'unexpected.txt')), true);
+});
+
+test('foreign or damaged entries in version history are skipped, not fatal', async t => {
+  const f = await fixture(t, 'cod4');
+  await f.installer.install('cod4', f.game);
+  f.setVersion('two');
+  await f.installer.install('cod4', f.game);
+  const history = path.join(f.game, 'mods', '.botland-versions-cod4-mp_bots');
+  await fs.mkdir(history, { recursive: true });
+  const before = (await f.installer.status('cod4', f.game)).versions.length;
+  await fs.writeFile(path.join(history, 'desktop.ini'), '[.ShellClassInfo]');
+  await fs.mkdir(path.join(history, '00000000-0000-4000-8000-000000000000'));
+  const status = await f.installer.status('cod4', f.game);
+  assert.equal(status.state, 'installed');
+  assert.equal(status.versions.length, before);
+});

@@ -127,9 +127,10 @@ if (primaryInstance) app.whenReady().then(() => {
       case 'rescanOrphans': return manager.rescanOrphans();
       case 'copyConnectAddress': {
         profileFor(id);
-        if (typeof payload.address !== 'string' || manager.instances.get(id)?.status !== 'running') throw new Error('Start this server before copying its address.');
+        if (typeof payload.address !== 'string') throw new Error('Invalid connect address.');
+        if (manager.instances.get(id)?.status !== 'running') throw new Error('Start this server before copying its address.');
         const port = manager.instances.get(id).activePort;
-        const connect = discoverConnectAddresses(port);
+        const connect = discoverConnectAddresses(port, manager.networkInterfaces);
         if (!connect.candidates.some(candidate => candidate.connectAddress === payload.address)) throw new Error('That local connect address is no longer available. Refresh the page.');
         clipboard.writeText(payload.address);
         return true;

@@ -15,6 +15,17 @@ async function tempUserData(t) {
 
 const entry = message => ({ at: '2026-11-03T10:15:30.000Z', level: 'info', message });
 
+test('redactLog masks player GUIDs in games_mp.log event lines', () => {
+  const guids = ['0123456789abcdef0123456789abcdef', '76561198000000001'];
+  const join = redactLog(`  0:12 J;${guids[0]};3;Player`);
+  assert.equal(join.includes(guids[0]), false);
+  assert.equal(join.includes(';3;Player'), true);
+  const kill = redactLog(`1:05 K;${guids[0]};2;axis;Victim;${guids[1]};5;allies;Killer;m16_mp;30;MOD_RIFLE_BULLET;torso_upper`);
+  for (const guid of guids) assert.equal(kill.includes(guid), false);
+  assert.equal(kill.includes('MOD_RIFLE_BULLET'), true);
+  assert.equal(redactLog('InitGame: \\g_gametype\\war;0123456789abcdef;'), 'InitGame: \\g_gametype\\war;0123456789abcdef;');
+});
+
 // Use synthetic values assembled at runtime. Assert only booleans when testing
 // secrecy, so a failed assertion cannot print the value to the test runner.
 test('redactLog masks a supplied key and generic quoted, unquoted and set assignments', () => {

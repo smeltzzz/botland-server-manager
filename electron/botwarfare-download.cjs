@@ -154,7 +154,7 @@ async function downloadArchive(url, { fetch: fetcher = globalThis.fetch, expecte
       if (length !== null && size !== length) throw new Error('Truncated Bot Warfare download (Content-Length mismatch).');
       const sha256 = hash.digest('hex');
       if (expectedHash !== undefined && sha256 !== expectedHash.toLowerCase()) {
-        throw new Error('Bot Warfare download SHA-256 mismatch.');
+        throw new Error('Bot Warfare download SHA-256 mismatch: the archive did not match its verified checksum, so nothing was installed. Retry; if it keeps failing, the upstream file may have changed.');
       }
       return { bytes: Buffer.concat(chunks, size), sha256 };
     }

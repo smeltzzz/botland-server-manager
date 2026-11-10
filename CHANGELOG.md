@@ -2,6 +2,36 @@
 
 Notable changes to botLANd Server Manager are recorded here. This project follows [Semantic Versioning](https://semver.org/).
 
+## 1.1.1 (unreleased)
+
+Bug-fix and polish release from full-pass sweep 7; see [`docs/sweep-7-plan.md`](docs/sweep-7-plan.md).
+
+### Fixed
+
+- Stop and Cancel start stay available for every server while another action (a Bot Warfare download, a firewall prompt, a folder picker) is in progress.
+- An install interrupted before its journal was written no longer blocks every Bot Warfare action until a hidden folder is deleted by hand.
+- A failed update check (offline or rate limited) is retried after about 10 minutes instead of being cached for 18 hours, which could also disable CoD4 development installs.
+- Stray files or a half-deleted version in the Bot Warfare version history no longer break status, install, remove or restore.
+- A successful Bot Warfare install is no longer reported as failed when only the final cleanup fails; real rollback failures name their cause and journal folder.
+- Crash recovery works when the game folder path differs only in letter case.
+- Config backups can be listed, restored and pruned for games reached through a junction (for example, moved to another drive). Symbolic or hard-linked config files are refused with a clear message instead of being silently replaced.
+- MW3 and BO2 no longer fail the rotation `exec` check when their base config is saved as UTF-16.
+- Config saves and backup restores of the same file can no longer interleave.
+- Read-only or locked config folders report a clear message on save and restore; pruning reports how many backups were removed when some cannot be.
+- A completed restore or starter-config creation is no longer reported as failed when only the status refresh fails.
+- The remainder of an over-long server output line is discarded instead of being logged without its setting name, and player GUIDs in `games_mp.log` event lines are redacted.
+- A UAC prompt left open past the timeout reports that the firewall change may still apply, and the rule status is re-read after any firewall error.
+- Removing a firewall rule asks for confirmation, with explicit wording for Black Ops, whose rule is its only LAN guard.
+- The restart panel's attempt number matches the console, and a restart blocked by preflight no longer claims the retry limit was reached.
+- Key import shows why it failed and is disabled until a scripts location is chosen.
+- Update-check status is shown in plain language instead of internal codes.
+- The configuration tab no longer flashes an error when it opens, and offers Retry when a config cannot be opened.
+- Long values in the save review wrap instead of being clipped.
+- A server's own socket is no longer reported as a possible unmanaged process while it is starting or stopping.
+- Remove and Restore no longer clear the Bot Warfare update badge incorrectly.
+- Session logs keep working when an old log file is locked, and stop retrying after a failed write.
+- Smaller wording and accessibility fixes: "Save 1 change", "Takes effect the next time the server starts", "Set up", Black Ops visibility explanation for screen readers, Console tab available for a running server whose folder disappeared, and covers that survive one unreadable image.
+
 ## 1.1.0 (2026-11-07)
 
 Bug-fix and polish release. Full-pass error, bug, UI and UX sweep; see [`docs/sweep-5-plan.md`](docs/sweep-5-plan.md) and [`docs/sweep-6-plan.md`](docs/sweep-6-plan.md).

@@ -281,6 +281,29 @@ test('oversized, malformed and untrusted upstream data fail closed without stori
   assert.equal(cache.includes('evil.test'), false);
 }));
 
+test('failed checks retry after a short backoff instead of caching the failure for hours', async () => fixture(async dir => {
+  let clock = 1_000_000_000;
+  let online = false;
+  let calls = 0;
+  const source = new BotWarfareSource({ userData: dir, now: () => clock, fetch: async () => {
+    calls++;
+    if (!online) throw new Error('offline');
+    return json(release('bo1'));
+  } });
+  assert.equal((await source.resolveSource('bo1')).status, 'offline');
+  clock += 5 * 60 * 1000;
+  assert.equal((await source.resolveSource('bo1')).status, 'cached');
+  assert.equal(calls, 1);
+  online = true;
+  clock += 6 * 60 * 1000;
+  assert.equal((await source.resolveSource('bo1')).status, 'current');
+  assert.equal(calls, 2);
+  online = false;
+  clock += 60 * 60 * 1000;
+  assert.equal((await source.resolveSource('bo1')).status, 'cached');
+  assert.equal(calls, 2);
+}));
+
 test('rate limits and network failures are nonfatal and retain last known metadata', async () => fixture(async dir => {
   let step = 0;
   const source = new BotWarfareSource({ userData: dir, fetch: async () => {

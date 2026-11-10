@@ -6,7 +6,7 @@ const { spawn, execFile } = require('node:child_process');
 const { promisify } = require('node:util');
 const { StringDecoder } = require('node:string_decoder');
 const { profiles, order, profileFor, launcherPath, bootstrapPath } = require('./profiles.cjs');
-const { readConfig, readDocument, previewConfig, saveConfig, parseEntries, parseLauncher, withoutBlockComments } = require('./config.cjs');
+const { readConfig, readDocument, previewConfig, saveConfig, parseEntries, parseLauncher, withoutBlockComments, decode } = require('./config.cjs');
 const { schemaFor, sourceRepos } = require('./schema.cjs');
 const { artworkFor, loadImage } = require('./artwork.cjs');
 const { scanMaps, modeOptions, rotationText, writeRotation } = require('./maps.cjs');
@@ -177,9 +177,7 @@ class ServerManager {
       let findings = [];
       try { findings = await this.findPossibleOrphans(candidates); }
       catch { /* Netstat is optional; an unavailable scan cannot prove occupancy. */ }
-      const owned = new Set([...this.instances.values()].map(instance => instance.child?.pid).filter(pid => Number.isInteger(pid) && pid > 0));
-      const runningPorts = new Set([...this.instances.values()].filter(instance => instance.status === 'running').map(instance => instance.activePort).filter(Boolean));
-      this.orphans = new Map(findings.filter(item => item && !owned.has(item.pid) && !(item.pid === null && runningPorts.has(item.port)) &&
+      this.orphans = new Map(findings.filter(item => item && !this.ownsListener(item) &&
         candidates.some(candidate => candidate.id === item.id && candidate.port === item.port))
         .map(item => [item.id, { pid: item.pid, port: item.port, reason: item.reason }]));
       await this.broadcastState();
@@ -187,6 +185,17 @@ class ServerManager {
     })();
     this.orphanScan = scan;
     try { return await scan; } finally { if (this.orphanScan === scan) this.orphanScan = null; }
+  }
+  // A listener belongs to this app when its PID is an owned child, or when an
+  // ambiguous (PID-less) listener sits on a port an owned instance has bound.
+  ownsListener(listener) {
+    if (!listener) return false;
+    return [...this.instances.values()].some(instance => {
+      const pid = instance.child?.pid;
+      if (Number.isInteger(pid) && pid > 0 && pid === listener.pid) return true;
+      return listener.pid === null && Boolean(instance.activePort) && instance.activePort === listener.port &&
+        (instance.status === 'running' || instance.status === 'starting' || instance.status === 'stopping');
+    });
   }
   async keyStatus(id) {
     if (profileFor(id).executable !== 'plutonium') return 'not-required';
@@ -320,7 +329,13 @@ class ServerManager {
       if (operation === 'remove') await this.modInstaller.remove(id, gamePath);
       else if (operation === 'restore') await this.modInstaller.restore(id, gamePath, versionId);
       else await this.modInstaller.install(id, gamePath, this.botChannel(id));
-      if (this.botUpdates[id]) this.botUpdates[id] = { ...this.botUpdates[id], updateAvailable: false };
+      if (this.botUpdates[id]) {
+        // A fresh install is current; after a remove or an older restore the
+        // answer is unknown until the next check, which runs in the background.
+        const fresh = ['install', 'update', 'reinstall'].includes(operation);
+        this.botUpdates[id] = { ...this.botUpdates[id], updateAvailable: fresh ? false : null };
+        if (!fresh) Promise.resolve().then(() => this.checkBotUpdates(false)).catch(() => {});
+      }
     } finally {
       this.modBusy.delete(id);
       await this.broadcastState().catch(() => {});
@@ -400,7 +415,8 @@ class ServerManager {
     // Without a game folder configPath is relative to the working directory, which must never be read.
     if ((id === 'mw3' || id === 'bo2') && gamePath && await exists(configPath)) {
       try {
-        const body = withoutBlockComments(await fs.readFile(configPath, 'utf8'));
+        // Decode like the config editor does, so UTF-16 configs are checked correctly.
+        const body = withoutBlockComments(decode(await fs.readFile(configPath)).text);
         const rotation = path.basename(profile.rotation).toLowerCase();
         const included = body.split(/\r?\n/).some(line => {
           const statement = line.split('//', 1)[0].trim();
@@ -442,7 +458,7 @@ class ServerManager {
           : { primaryAddress: null, ambiguous: false, candidates: [] },
         orphan: (() => {
           const orphan = this.orphans.get(id);
-          const owned = [...this.instances.values()].some(value => (value.child?.pid && value.child.pid === orphan?.pid) || (value.status === 'running' && (value.activePort ?? this.options(id).port) === orphan?.port && orphan?.pid === null));
+          const owned = this.ownsListener(orphan);
           return orphan?.port === result.options.port && !owned ? orphan : null;
         })(),
         restart: { enabled: this.data.games?.[id]?.autoRestart === true, attempts: restart?.attempts || 0,
@@ -468,8 +484,12 @@ class ServerManager {
     if (lines.length > 400) lines.splice(0, lines.length - 400);
     this.logs.set(id, lines);
     if (this.instances.get(id)?.sessionOpen && this.sessionLogs) {
-      try { Promise.resolve(this.sessionLogs.append(id, entry)).catch(() => {}); }
-      catch { /* Disk logging is optional and must not interrupt the server. */ }
+      // A failed disk append closes the session log instead of retrying (and
+      // failing) on every following line.
+      const instance = this.instances.get(id);
+      const stopDiskLog = () => { if (instance) instance.sessionOpen = false; };
+      try { Promise.resolve(this.sessionLogs.append(id, entry)).catch(stopDiskLog); }
+      catch { stopDiskLog(); /* Disk logging is optional and must not interrupt the server. */ }
     }
     this.notify({ type: 'log', id, entry });
   }
@@ -562,7 +582,8 @@ class ServerManager {
     const gamePath = await this.gamePath(id);
     if (!(await inspectGameFolder(id, gamePath)).installed) throw new Error('Select an installed game folder before creating a starter config.');
     const file = await writeStarterConfig(id, gamePath);
-    await this.broadcastState();
+    // The file now exists; a refresh failure must not report the creation as failed.
+    await this.broadcastState().catch(() => {});
     return file;
   }
   async configTarget(id, target = 'base', mode) {
@@ -621,7 +642,8 @@ class ServerManager {
   async restoreConfigBackup(id, target, mode, backupId, token) {
     const { file } = await this.configTarget(id, target, mode);
     const restored = await restoreBackup(file, backupId, token);
-    await this.broadcastState();
+    // The restore is already on disk; a failed refresh must not report it as failed.
+    await this.broadcastState().catch(() => {});
     return restored;
   }
   async pruneConfigBackups(id, target, mode, ids) {
@@ -751,6 +773,7 @@ class ServerManager {
       } catch (error) {
         const text = `${error?.stderr ?? ''} ${error?.stdout ?? ''}`;
         if (error?.code === 1223 || /cancel/i.test(text)) throw new Error('The elevation prompt was canceled, so the firewall was not changed.');
+        if (error?.killed || error?.signal) throw new Error('Timed out waiting for the administrator prompt; the change may still apply. Refresh the rule status.');
         throw new Error('Windows could not complete the firewall change. Approve the administrator prompt and try again.');
       }
       let result;
@@ -912,7 +935,8 @@ class ServerManager {
         instance.logTail = null;
       }
       if (instance.cancelled) throw new Error('Launch cancelled.');
-      this.addLog(id, `Starting ${profile.engine} on UDP ${options.port} (${options.lan === false ? 'public' : 'LAN'}) with ${chosen.length} maps.`, 'info');
+      const visibility = id === 'bo1' ? 'no -lan; firewall-scoped' : options.lan === false ? 'public' : 'LAN';
+      this.addLog(id, `Starting ${profile.engine} on UDP ${options.port} (${visibility}) with ${chosen.length} maps.`, 'info');
       const child = spawn(command.file, command.args, { cwd: command.cwd, argv0: command.argv0, windowsHide: true, stdio: [id === 'cod4' ? 'pipe' : 'ignore', 'pipe', 'pipe'], shell: false });
       instance.child = child;
       if (id === 'cod4' && child.stdin) {
@@ -924,26 +948,39 @@ class ServerManager {
       for (const [stream, level, source] of [[child.stdout, 'info', 'stdout'], [child.stderr, 'error', 'stderr']]) {
         if (!stream) continue;
         let pending = '';
+        // After an oversized line is omitted, discard its remainder up to the
+        // next newline so the tail is not published as a separate line.
+        let dropping = false;
         // A multi-byte UTF-8 character may be split across chunks.
         const decoder = new StringDecoder('utf8');
         stream.on('data', chunk => {
           pending += typeof chunk === 'string' ? chunk : decoder.write(chunk);
           const lines = pending.split(/\r?\n/);
           pending = lines.pop();
-          for (const line of lines) this.addLog(id, line, level, key, source);
-          if (pending.length > 16_000) { this.addLog(id, '[Long server output line omitted]', 'info', key, source); pending = ''; }
+          for (const line of lines) {
+            if (dropping) { dropping = false; continue; }
+            this.addLog(id, line, level, key, source);
+          }
+          if (pending.length > 16_000) {
+            if (!dropping) this.addLog(id, '[Long server output line omitted]', 'info', key, source);
+            dropping = true;
+            pending = '';
+          }
         });
-        stream.on('end', () => { pending += decoder.end(); if (pending) this.addLog(id, pending, level, key, source); });
+        stream.on('end', () => { pending += decoder.end(); if (pending && !dropping) this.addLog(id, pending, level, key, source); });
       }
       child.on('error', error => { if (spawned) this.addLog(id, `Process error: ${error.message}`, 'error', key); });
       child.on('close', (code, signal) => {
         instance.closed = true;
         const wasStopping = instance.status === 'stopping' || instance.cancelled;
         const managed = this.instances.get(id) === instance;
-        const restarting = managed && !wasStopping && spawned && Number.isInteger(child.pid) && child.pid > 0 && this.scheduleRestart(id, instance);
+        // Log the exit before any restart scheduling so the console reads in order.
         if (spawned) this.addLog(id, wasStopping ? 'Server stopped.' : `Server exited (code ${code ?? 'unknown'}${signal ? `, ${signal}` : ''}).`, wasStopping || code === 0 ? 'info' : 'error');
-        if (managed && !restarting) this.instances.delete(id);
+        const restarting = managed && !wasStopping && spawned && Number.isInteger(child.pid) && child.pid > 0 && this.scheduleRestart(id, instance);
+        // Register session cleanup before releasing the slot, so an immediate
+        // Start waits for the previous session log to close.
         this.releaseSession(id, instance).catch(() => {});
+        if (managed && !restarting) this.instances.delete(id);
         this.broadcastState().catch(() => {});
       });
       await new Promise((resolve, reject) => {
@@ -1029,6 +1066,7 @@ class ServerManager {
         return;
       }
     } finally { child.off('close', markClosed); }
+    const cleanup = this.releaseSession(id, instance);
     if (this.instances.get(id) === instance) {
       this.instances.delete(id);
       try {
@@ -1036,7 +1074,7 @@ class ServerManager {
         await this.broadcastState();
       } catch { /* The instance is already released. */ }
     }
-    await this.releaseSession(id, instance);
+    await cleanup;
   }
   async stop(id) {
     profileFor(id);

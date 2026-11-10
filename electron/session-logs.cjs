@@ -13,16 +13,21 @@ const name = String.raw`[a-z0-9_.-]*(?:guid|token|key|secret|passwd|password|aut
 // A header may have a scheme followed by a credential, so redact to end of line.
 const authorization = /(\b(?:Proxy-)?Authorization[ \t]*:[ \t]*)[^\r\n]*/gi;
 const assignment = new RegExp(String.raw`(\b${name}[ \t]*(?:=|:)[ \t]*)${value}`, 'gi');
-const setCommand = new RegExp(String.raw`(\b\+?set(?:a|s|u)?[ \t]+${name}[ \t]+)${value}`, 'gi');
+const setCommand = new RegExp(String.raw`(\bset(?:a|s|u)?[ \t]+${name}[ \t]+)${value}`, 'gi');
 // A quoted console command can be echoed without `set` (e.g. `rcon_password "x"`).
 const bareCommand = new RegExp(String.raw`(\b${name}[ \t]+)(?:"(?:\\.|[^"\\\r\n])*"|'(?:\\.|[^'\\\r\n])*'|"[^\r\n]*|'[^\r\n]*)`, 'gi');
 const sessionName = /^session-\d{8}T\d{9}Z-[a-f0-9-]{36}\.jsonl$/;
+// games_mp.log event lines (join, quit, kill, damage, weapon, say) carry player
+// GUIDs as semicolon-separated fields, e.g. `0:12 J;0123abcd...;3;Name`.
+const gameEvent = /^\s*(?:\d+:\d{2}\s+)?(?:J|Q|K|D|W|L|say|sayteam|tell);/i;
+const eventGuid = /;[0-9a-f]{8,32}(?=;|$)/gi;
 
 // The complete server line must be supplied by the caller; no unredacted chunk is written.
 function redactLog(text, key = '') {
   try {
     let safe = String(text);
     safe = safe.replace(authorization, '$1[REDACTED]').replace(assignment, '$1[REDACTED]').replace(setCommand, '$1[REDACTED]').replace(bareCommand, '$1[REDACTED]');
+    if (gameEvent.test(safe)) safe = safe.replace(eventGuid, ';[REDACTED]');
     return typeof key === 'string' && key ? safe.replaceAll(key, '[REDACTED]') : safe;
   } catch { throw new Error('Could not redact log.'); }
 }
@@ -85,14 +90,12 @@ class SessionLogs {
         .filter(item => item.isFile() && sessionName.test(item.name))
         .map(item => item.name).sort();
       const old = files.filter(name => name !== path.basename(file));
+      // Retention is best effort: a locked old file (open in an editor) must
+      // not disable logging for the new session.
       for (const name of old.slice(0, Math.max(0, files.length - this.maxSessions))) {
-        await fs.rm(path.join(directory, name));
+        await fs.rm(path.join(directory, name)).catch(() => {});
       }
-    } catch {
-      await handle.close().catch(() => {});
-      await fs.rm(file, { force: true }).catch(() => {});
-      throw new Error('Could not retain session logs.');
-    }
+    } catch { /* Listing failed; keep the new session and retry pruning next time. */ }
     const session = { file, handle, size: 0, key };
     this.sessions.set(id, session);
     return file;

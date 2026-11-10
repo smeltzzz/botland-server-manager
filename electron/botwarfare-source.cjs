@@ -13,6 +13,9 @@ const SOURCES = Object.freeze({
 
 const CACHE_FILE = 'botwarfare-sources.json';
 const CACHE_AGE_MS = 18 * 60 * 60 * 1000;
+// Failed checks (offline, rate limited) retry sooner instead of caching the
+// failure for the full metadata lifetime.
+const FAILURE_RETRY_MS = 10 * 60 * 1000;
 const REQUEST_TIMEOUT_MS = 8000;
 const MAX_RESPONSE_BYTES = 256 * 1024;
 const MAX_CACHE_BYTES = 64 * 1024;
@@ -205,7 +208,9 @@ class BotWarfareSource {
         else { status = 'not-modified'; entry.etag = result.etag || entry.etag; }
       }
       entry.record = record;
-      entry.checkedAt = now;
+      const succeeded = status === 'current' || status === 'not-modified' || status === 'unsupported';
+      const previous = entry.checkedAt && entry.checkedAt <= now ? entry.checkedAt : 0;
+      entry.checkedAt = succeeded ? now : Math.max(previous, now - CACHE_AGE_MS + FAILURE_RETRY_MS);
       // Fetches can run concurrently; merge and persist one cache entry at a
       // time so simultaneous game and channel checks do not lose each other.
       const save = this.queue.then(async () => {

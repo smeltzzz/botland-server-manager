@@ -144,7 +144,7 @@ export function createDemoManager(): ManagerApi {
       botStatuses[id].source = { supported: true, ref: channel === 'stable' ? 'v2.1.0' : 'abcdef1234567890', notes: 'Demo release summary. No download occurs in browser preview.', status: 'Sample release available' };
       emit();
     },
-    checkBotUpdates: async () => { snapshot.updates.cod4 = { status: 'checked', latest: { tag: 'v2.1.0' }, updateAvailable: botStatuses.cod4.manifest?.ref !== 'v2.1.0' }; emit(); },
+    checkBotUpdates: async () => { snapshot.updates.cod4 = { status: 'current', latest: { tag: 'v2.1.0' }, updateAvailable: botStatuses.cod4.manifest?.ref !== 'v2.1.0' }; emit(); },
     setUpdateChecks: async enabled => { snapshot.updatesEnabled = enabled; emit(); },
     saveKey: async (id, key) => { if (!key.trim()) throw new Error('A key is required.'); fakeKeyPresence.add(id); updateDemoReadiness(id); },
     removeKey: async id => { fakeKeyPresence.delete(id); updateDemoReadiness(id); },

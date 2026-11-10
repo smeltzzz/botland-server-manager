@@ -191,7 +191,7 @@ test('copyConnectAddress rejects non-running, invalid ids and invalid address ty
     await assert.rejects(api.copyConnectAddress(id, address), /Invalid game id/);
   }
   for (const invalid of [undefined, null, 28962, { connectAddress: address }, ['192.168.10.5']]) {
-    await assert.rejects(api.copyConnectAddress('cod4', invalid), /Start this server/);
+    await assert.rejects(api.copyConnectAddress('cod4', invalid), /Invalid connect address/);
   }
   assert.deepEqual(writes, []);
   assert.deepEqual(discoveries, []);

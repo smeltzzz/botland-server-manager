@@ -114,7 +114,9 @@ test('whole-line redaction and optional session service cover stdout, stderr, fi
   assert.ok(logEntries.some(item => item.source === 'manager' && item.message === 'manager secret: [REDACTED]'));
   assert.equal(calls.findIndex(item => item[0] === 'tail-stop') < calls.findIndex(item => item[0] === 'close'), true);
   const persisted = calls.filter(item => item[0] === 'append').map(item => item[2]);
-  assert.ok(persisted.length > 2);
+  // A rejected append ends disk logging for the session (the real service has
+  // already closed the file); console logging continues unaffected.
+  assert.equal(persisted.length, 1);
   assert.equal(JSON.stringify({ events, persisted, logs: manager.logs.get('waw') }).includes(key), false);
   assert.equal(manager.hasRunning(), false);
 });

@@ -16,13 +16,32 @@ function target(file) {
   return file;
 }
 
-function locked(file, action) {
-  file = target(file);
-  const key = process.platform === 'win32' ? file.toLowerCase() : file;
+// Games moved to another drive are often reached through a directory junction
+// under steamapps\common. Resolve the containing folder once so backups work on
+// the real location (which then must not contain further links) and so saves
+// and restores of the same file share one queue whichever path names it.
+async function realTarget(file) {
+  try { return path.join(await fs.realpath(path.dirname(file)), path.basename(file)); }
+  catch (error) { if (error.code === 'ENOENT') return path.resolve(file); throw error; }
+}
+function queue(key, action) {
   const previous = pending.get(key) || Promise.resolve();
-  const current = previous.catch(() => {}).then(() => action(file));
+  const current = previous.catch(() => {}).then(action);
   pending.set(key, current);
   return current.finally(() => { if (pending.get(key) === current) pending.delete(key); });
+}
+const queueKey = file => (process.platform === 'win32' ? file.toLowerCase() : file);
+async function withConfigLock(file, action) {
+  const real = await realTarget(file);
+  return queue(queueKey(real), action);
+}
+async function locked(file, action) {
+  const real = target(await realTarget(target(file)));
+  return queue(queueKey(real), () => action(real));
+}
+function writeError(file, error) {
+  if (['EPERM', 'EACCES', 'EBUSY'].includes(error?.code)) return new Error(`Could not write ${path.basename(file)}. It is read-only or in use by another program. Close the program or clear the read-only flag, then try again.`);
+  return error;
 }
 
 async function safeDirectory(file) {
@@ -144,6 +163,8 @@ async function restoreBackup(file, id, token) {
       await fs.rename(temp, file);
       replaced = true;
       return { backupId: backupId(file, path.basename(saved)) };
+    } catch (error) {
+      throw writeError(file, error);
     } finally {
       await fs.rm(temp, { force: true }).catch(() => {});
       if (created && !replaced) await fs.rm(saved, { force: true }).catch(() => {});
@@ -159,12 +180,23 @@ async function pruneBackups(file, ids) {
       if (!item) throw new Error('Backup not found for this config.');
       return item;
     });
+    // Keep going past a locked backup so one failure neither hides how many
+    // were already deleted nor leaves the rest of the selection untouched.
+    let removed = 0;
+    let failure = null;
     for (const item of chosen) {
-      await safeDirectory(file);
-      await readRegular(item.backup);
-      await fs.unlink(item.backup);
+      try {
+        await safeDirectory(file);
+        await readRegular(item.backup);
+        await fs.unlink(item.backup);
+        removed++;
+      } catch (error) { failure ??= error; }
     }
-    return { removed: chosen.length };
+    if (failure) {
+      const reason = ['EPERM', 'EACCES', 'EBUSY'].includes(failure.code) ? 'it is read-only or in use' : failure.message;
+      throw new Error(`Removed ${removed} of ${chosen.length} backups; the rest could not be removed (${reason}).`);
+    }
+    return { removed };
   });
 }
-module.exports = { listBackups, previewRestore, restoreBackup, pruneBackups };
+module.exports = { listBackups, previewRestore, restoreBackup, pruneBackups, withConfigLock };

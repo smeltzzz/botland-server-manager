@@ -112,7 +112,11 @@ const JOURNAL = 'transaction.json';
 const COMMITTED = 'committed';
 const stagePrefix = id => `.botland-stage-${id}-`;
 const donePrefix = id => `.botland-done-${id}-`;
-const journalError = () => new Error('Invalid Bot Warfare transaction journal; refusing to touch files.');
+const journalError = stage => new Error('Invalid Bot Warfare transaction journal; refusing to touch files.' +
+  (stage ? ` Inspect or remove "${stage}" after confirming no install is in progress.` : ''));
+const samePath = (a, b) => process.platform === 'win32' ?
+  path.resolve(a).toLowerCase() === path.resolve(b).toLowerCase() : path.resolve(a) === path.resolve(b);
+const PREPARE_ENTRY = /^(?:version|before-\d+|after-\d+)$/u;
 async function stageBytes(stage, name, expected) {
   const bytes = await regular(path.join(stage, name));
   if (!bytes || digest(bytes) !== expected) throw journalError();
@@ -196,22 +200,25 @@ class BotWarfareInstaller {
     catch (error) { if (error.code === 'ENOENT') return []; throw error; }
     const result = [];
     for (const name of names) {
-      if (!ID.test(name)) throw new Error('Invalid Bot Warfare version history.');
+      // Skip foreign files (desktop.ini, Thumbs.db) and damaged or half-pruned
+      // versions instead of blocking every Bot Warfare action for this game.
+      if (!ID.test(name)) continue;
       const dir = path.join(paths.history, name);
       await noLinks(dir);
-      if (!(await fs.lstat(dir)).isDirectory()) throw new Error('Invalid Bot Warfare version history.');
-      const bytes = await regular(path.join(dir, 'version.json'));
-      if (!bytes || bytes.length > 1024 * 1024) throw new Error('Invalid Bot Warfare version history.');
-      let entry;
-      try { entry = JSON.parse(bytes.toString('utf8')); } catch { throw new Error('Invalid Bot Warfare version history.'); }
-      if (entry.version !== 1 || entry.versionId !== name || entry.id !== id ||
-          !Number.isFinite(Date.parse(entry.date)) ||
-          (entry.manifest !== null && !entry.manifest) || !Array.isArray(entry.files)) {
-        throw new Error('Invalid Bot Warfare version history.');
-      }
-      if (entry.manifest) validateManifest(entry.manifest, id);
-      entry.files = records(id, entry.files);
-      result.push({ ...entry, dir });
+      if (!(await fs.lstat(dir)).isDirectory()) continue;
+      try {
+        const stat = await fs.lstat(path.join(dir, 'version.json')).catch(() => null);
+        if (!stat?.isFile() || stat.size > 1024 * 1024) continue;
+        const bytes = await regular(path.join(dir, 'version.json'));
+        if (!bytes) continue;
+        const entry = JSON.parse(bytes.toString('utf8'));
+        if (entry.version !== 1 || entry.versionId !== name || entry.id !== id ||
+            !Number.isFinite(Date.parse(entry.date)) ||
+            (entry.manifest !== null && !entry.manifest) || !Array.isArray(entry.files)) continue;
+        if (entry.manifest) validateManifest(entry.manifest, id);
+        entry.files = records(id, entry.files);
+        result.push({ ...entry, dir });
+      } catch { /* Damaged version entry: not offered for restore. */ }
     }
     return result.sort((a, b) => b.date.localeCompare(a.date) || b.versionId.localeCompare(a.versionId));
   }
@@ -219,7 +226,14 @@ class BotWarfareInstaller {
     // Housekeeping must never undo a successful publish or recovered rollback.
     try {
       const versions = await this.versions(paths, id);
-      for (const old of versions.slice(MAX_VERSIONS)) { await noLinks(old.dir); await fs.rm(old.dir, { recursive: true }); }
+      for (const old of versions.slice(MAX_VERSIONS)) {
+        await noLinks(old.dir);
+        // Move into the disposable .done namespace first so an interrupted
+        // delete never leaves a half-removed version inside the history.
+        const done = path.join(paths.parent, donePrefix(id) + randomUUID().replace(/-/gu, '').slice(0, 6));
+        await fs.rename(old.dir, done);
+        await fs.rm(done, { recursive: true }).catch(() => {});
+      }
     } catch { /* A later status call will report damaged history. */ }
   }
   async status(id, gamePath) {
@@ -276,23 +290,39 @@ class BotWarfareInstaller {
         if (!(await fs.lstat(dir)).isDirectory()) throw journalError();
         await fs.rm(dir, { recursive: true });
         await syncDir(paths.parent);
+      } else if (await this.discardUnprepared(dir)) {
+        await syncDir(paths.parent);
       } else {
         await this.recoverStage(id, paths, dir);
         await this.prune(paths, id);
       }
     }
   }
+  async discardUnprepared(stage) {
+    // A stage without a journal was abandoned before any game file was
+    // touched (publication only starts once the journal is durable). It is
+    // safe to delete only if it holds nothing but preparation entries.
+    await noLinks(stage);
+    if (!(await fs.lstat(stage)).isDirectory()) throw journalError(stage);
+    const names = await fs.readdir(stage);
+    if (names.includes(JOURNAL) || names.includes(COMMITTED)) return false;
+    if (!names.every(name => PREPARE_ENTRY.test(name))) throw journalError(stage);
+    for (const name of names) await noLinks(path.join(stage, name));
+    await fs.rm(stage, { recursive: true });
+    return true;
+  }
   async recoverStage(id, paths, stage) {
     await noLinks(stage);
-    if (!(await fs.lstat(stage)).isDirectory()) throw journalError();
+    if (!(await fs.lstat(stage)).isDirectory()) throw journalError(stage);
     const raw = await regular(path.join(stage, JOURNAL));
-    if (!raw || raw.length > 2 * 1024 * 1024) throw journalError();
+    if (!raw || raw.length > 2 * 1024 * 1024) throw journalError(stage);
     let journal;
-    try { journal = JSON.parse(raw.toString('utf8')); } catch { throw journalError(); }
-    if (journal.version !== 1 || journal.id !== id || journal.folder !== paths.folder ||
+    try { journal = JSON.parse(raw.toString('utf8')); } catch { throw journalError(stage); }
+    if (journal.version !== 1 || journal.id !== id || typeof journal.folder !== 'string' ||
+        !samePath(journal.folder, paths.folder) ||
         !Array.isArray(journal.changes) || journal.changes.length > 10001 ||
         (journal.snapshot !== null && (!journal.snapshot || !ID.test(journal.snapshot.versionId) ||
-          !HASH.test(journal.snapshot.sha256)))) throw journalError();
+          !HASH.test(journal.snapshot.sha256)))) throw journalError(stage);
     const seen = new Set();
     const changes = [];
     for (const [index, entry] of journal.changes.entries()) {
@@ -363,9 +393,13 @@ class BotWarfareInstaller {
     const done = path.join(paths.parent, path.basename(stage).replace(stagePrefix(id), donePrefix(id)));
     await noLinks(done);
     await fs.rename(stage, done);
-    await syncDir(paths.parent);
-    await fs.rm(done, { recursive: true });
-    await syncDir(paths.parent);
+    // The transaction is resolved once the stage leaves the active namespace.
+    // Deleting the .done copy is housekeeping; recover() retries it later.
+    try {
+      await syncDir(paths.parent);
+      await fs.rm(done, { recursive: true });
+      await syncDir(paths.parent);
+    } catch { /* Leftover .done data is removed by the next recover(). */ }
   }
   async transition(id, paths, desired, nextManifest, capture, snapshot = true) {
     await this.checkRunning(id);
@@ -441,8 +475,11 @@ class BotWarfareInstaller {
       if (error?.simulateCrash) throw error;
       if (prepared && !committed) {
         try { await this.recoverStage(id, paths, stage); }
-        catch (failure) { throw new AggregateError([error, failure], 'Bot Warfare rollback failed; transaction journal retained.'); }
-      } else if (!prepared) await fs.rm(stage, { recursive: true });
+        catch (failure) {
+          throw new AggregateError([error, failure], `Bot Warfare rollback failed (${failure?.message || failure}) after: ` +
+            `${error?.message || error}. The transaction journal was kept in "${stage}" and is retried on the next Bot Warfare action.`);
+        }
+      } else if (!prepared) await fs.rm(stage, { recursive: true }).catch(() => {});
       throw error;
     }
     await this.prune(paths, id);
@@ -460,7 +497,7 @@ class BotWarfareInstaller {
       }
       const { bytes, sha256 } = await this.download(source.assetUrl, source.expectedHash ? { expectedHash: source.expectedHash } : {});
       if (!(bytes instanceof Uint8Array) || !HASH.test(sha256) || digest(bytes) !== sha256) {
-        throw new Error('Bot Warfare download SHA-256 mismatch.');
+        throw new Error('Bot Warfare download SHA-256 mismatch: the archive did not match its verified checksum, so nothing was installed. Retry; if it keeps failing, the upstream file may have changed.');
       }
       const plan = recipeFor(id, channel, readModArchive(bytes));
       if (plan.target !== paths.target || (plan.storageCode || null) !== paths.code || plan.base !== paths.base ||
