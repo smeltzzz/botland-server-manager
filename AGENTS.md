@@ -71,7 +71,20 @@ Renderer:
 
 On push to `main` and tags `v*`: `npm ci` → `npm test` → `npm run build` → packaged smoke → `npm run lint` → `npm run format:check` → `npm audit --audit-level=high` → Gitleaks full-history scan.
 
-Tag releases (`v*`) additionally require the tag to equal `v<package.json version>`, run `npm run dist:win`, verify exactly two EXEs (installer + portable), write `release/SHA256SUMS.txt`, and upload provenance attestations. Builds are unsigned, so SmartScreen warnings are expected. `dist/` and `release/` are generated/gitignored; use `npm run build` for routine verification, not `dist:win`.
+Tag releases (`v*`) additionally require the tag to equal `v<package.json version>`, run `npm run dist:win`, verify exactly two EXEs (installer + portable), write `release/SHA256SUMS.txt`, and upload provenance attestations. Builds are unsigned, so SmartScreen warnings are expected. `dist/` and `release/` are generated/gitignored; use `npm run build` for routine verification mid-work, and `dist:win` only at the end of a sweep (see below).
+
+## End of every sweep (required)
+
+A "sweep" is a batch of fixes/features the user asks for. When one is finished, always do all of the following without being asked, in order, and stop to report if any step fails:
+
+1. `git fetch origin`. If `origin/main` has commits that local `main` lacks, stop and ask before doing anything else (never force-push).
+2. Bump the patch version: `npm version patch --no-git-tag-version` (e.g. 1.2.0 → 1.2.1). Use a minor bump only if the user asks for one.
+3. Run `npm test`, `npm run build`, `npm run lint`, `npm run format:check`. All must pass.
+4. Commit the sweep's changes plus `package.json`/`package-lock.json` to `main` with a descriptive "Sweep N: …" message. Never commit protected data (see below).
+5. `npm run dist:win` to rebuild the installer and portable exe in `release/`.
+6. Create an annotated tag matching the version: `git tag -a v<version> -m "Release <version>"`.
+7. `git push origin main`, then `git push origin v<version>`. CI publishes the GitHub release with both exes and `SHA256SUMS.txt`.
+8. Confirm `git status -sb` shows `main...origin/main` with nothing ahead/behind, then report the version, the exe paths in `release/`, and the pushed commit/tag.
 
 ## Testing quirks
 
