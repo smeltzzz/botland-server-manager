@@ -3,8 +3,10 @@ const { profiles } = require('./profiles.cjs');
 const managedNames = new Set(Object.values(profiles).map(profile => `botLANd ${profile.short} UDP`));
 
 // Returns statements for Manager.runElevated(lines). Never execute these unelevated:
-// NetSecurity writes require administrator privileges. An existing legacy netsh rule
-// has no ownership marker and must be reviewed/migrated manually, not replaced.
+// NetSecurity writes require administrator privileges. A rule made by the old
+// launcher scripts (netsh) has no ownership marker. It is replaced only when it has
+// the exact legacy fingerprint (exact name, empty Group and Description, and every
+// filter botLANd itself would have written); any other unmarked rule is refused.
 function buildFirewallApplyLines({ name, port, scope }) {
   if (!managedNames.has(name)) throw new Error('Unknown botLANd firewall rule.');
   if (!Number.isInteger(port) || port < 1 || port > 65535) throw new Error('Invalid UDP port.');
@@ -32,8 +34,14 @@ function buildFirewallApplyLines({ name, port, scope }) {
     "  if ($found.Count -ne 1) { throw 'Firewall rule identity changed.' }",
     '  return $found[0]',
     '}',
-    'function Assert-ManagedRule($rule, $display, $localPort, $remote) {',
-    "  if ([string]$rule.DisplayName -cne $display -or [string]$rule.Group -cne $owner -or [string]$rule.Description -cne $description) { throw 'Firewall rule is not owned by botLANd.' }",
+    // $allowLegacy is only ever passed for the rule being replaced. A rule made by
+    // the old launcher scripts (netsh) carries neither marker: both Group and
+    // Description are empty. Every other check below still applies to it, and the
+    // replacement rule is always verified as strictly botLANd-marked.
+    'function Assert-ManagedRule($rule, $display, $localPort, $remote, $allowLegacy = $false) {',
+    '  $marked = ([string]$rule.Group -ceq $owner -and [string]$rule.Description -ceq $description)',
+    '  $legacy = ($allowLegacy -and [string]::IsNullOrEmpty([string]$rule.Group) -and [string]::IsNullOrEmpty([string]$rule.Description))',
+    "  if ([string]$rule.DisplayName -cne $display -or -not ($marked -or $legacy)) { throw 'Firewall rule is not owned by botLANd: it has a different owner or description. Remove it in Windows Defender Firewall, then create it again.' }",
     "  if ([string]$rule.Direction -ne 'Inbound' -or [string]$rule.Action -ne 'Allow' -or [string]$rule.Enabled -ne 'True' -or [string]$rule.Profile -ne 'Any') { throw 'Firewall rule has unsupported settings.' }",
     '  $ports = $rule | Get-NetFirewallPortFilter -ErrorAction Stop',
     '  $addresses = $rule | Get-NetFirewallAddressFilter -ErrorAction Stop',
@@ -56,7 +64,7 @@ function buildFirewallApplyLines({ name, port, scope }) {
     '  $oldPort = [string]$oldPorts.LocalPort',
     '  $oldScope = [string]$oldAddresses.RemoteAddress',
     "  if ($oldPort -notmatch '^[1-9][0-9]{0,4}$' -or [int]$oldPort -gt 65535 -or $oldScope -cnotin @('Any', 'LocalSubnet')) { throw 'Existing rule has unsafe filters; review it manually.' }",
-    '  Assert-ManagedRule $originals[0] $targetName $oldPort $oldScope',
+    '  Assert-ManagedRule $originals[0] $targetName $oldPort $oldScope $true',
     '}',
     "$candidateName = 'botLANd-' + [guid]::NewGuid().ToString('N')",
     "$pendingName = $targetName + ' (pending ' + $candidateName + ')'",
@@ -69,7 +77,7 @@ function buildFirewallApplyLines({ name, port, scope }) {
     "  if ($current.Count -ne $originals.Count -or $currentActive.Count -ne $originals.Count) { throw 'Firewall rules changed during update.' }",
     '  if ($oldName) {',
     "    if ([string]$current[0].Name -cne $oldName -or [string]$currentActive[0].Name -cne $oldName) { throw 'Firewall rule identity changed during update.' }",
-    '    Assert-ManagedRule (Get-OneByName $oldName) $targetName $oldPort $oldScope',
+    '    Assert-ManagedRule (Get-OneByName $oldName) $targetName $oldPort $oldScope $true',
     '  }',
     // Keep the original display name intact until the verified candidate is
     // promoted. A failed cleanup then yields visible duplicate-rule drift.
@@ -79,7 +87,7 @@ function buildFirewallApplyLines({ name, port, scope }) {
     "  if ($promoted.Count -ne ($originals.Count + 1) -or @($promoted | Where-Object { [string]$_.Name -ceq $candidateName }).Count -ne 1) { throw 'Candidate rule was not promoted.' }",
     '  $promotionVerified = $true',
     '  if ($oldName) {',
-    '    Assert-ManagedRule (Get-OneByName $oldName) $targetName $oldPort $oldScope',
+    '    Assert-ManagedRule (Get-OneByName $oldName) $targetName $oldPort $oldScope $true',
     '    Remove-NetFirewallRule -PolicyStore PersistentStore -Name $oldName -ErrorAction Stop',
     '  }',
     '} catch {',
@@ -89,7 +97,7 @@ function buildFirewallApplyLines({ name, port, scope }) {
     '  }',
     '  $rollbackErrors = @()',
     '  if ($oldName) {',
-    '    try { Assert-ManagedRule (Get-OneByName $oldName) $targetName $oldPort $oldScope }',
+    '    try { Assert-ManagedRule (Get-OneByName $oldName) $targetName $oldPort $oldScope $true }',
     '    catch { $rollbackErrors += [string]$_ }',
     '  }',
     '  try {',

@@ -10,6 +10,11 @@ function rule(name = 'old', display = input.name, group = 'botLANd.ServerManager
   return { Name: name, DisplayName: display, Group: group, Description: 'Managed by botLANd Server Manager (UDP)', Direction: 'Inbound', Action: 'Allow', Enabled: 'True', Profile: 'Any', Protocol: 'UDP', LocalPort: '12345', RemotePort: 'Any', LocalAddress: 'Any', RemoteAddress: 'Any', Program: 'Any', Service: 'Any' };
 }
 
+// A rule made by the old launcher scripts (netsh): same name, no owner or description.
+function legacy(name = 'old', overrides = {}) {
+  return { ...rule(name), Group: '', Description: '', LocalPort: String(input.port), ...overrides };
+}
+
 function mockRun(scenario, initial = []) {
   // This harness shadows every NetSecurity cmdlet in a child PowerShell process.
   // It has no elevation, no import of NetSecurity and no real firewall writes.
@@ -103,7 +108,16 @@ test('candidate precedes old rule mutation; removal is last and by immutable Nam
   assert.doesNotMatch(script, /Set-NetFirewallRule .* -Name \$oldName/);
   assert.match(script, /\$originals\.Count -gt 1/);
   assert.match(script, /\$active\.Count -ne \$originals\.Count/);
-  assert.match(script, /\$rule\.Group -cne \$owner/);
+  assert.match(script, /\$rule\.Group -ceq \$owner/);
+  assert.match(script, /\$rule\.Description -ceq \$description/);
+  // Only assertions about the rule being replaced may accept the legacy fingerprint;
+  // the replacement is always checked as strictly botLANd-marked.
+  const assertions = script.split('\n').filter(line => /Assert-ManagedRule [(\$]/.test(line) && !line.includes('function'));
+  assert.ok(assertions.length >= 6);
+  for (const line of assertions) {
+    const original = /\$oldName|\$originals\[0\]/.test(line);
+    assert.equal(/\$true\b/.test(line), original, line);
+  }
   assert.match(script, /\$promotionVerified = \$true/);
   assert.doesNotMatch(script, /netsh|Remove-NetFirewallRule -DisplayName/);
 });
@@ -128,19 +142,71 @@ test('mock: ambiguous and unmarked rules fail without modification', { skip: !wi
 });
 
 test('mock: creation and promotion faults retain original and clean candidate', { skip: !windows }, () => {
-  for (const scenario of ['create', 'promote', 'promote-after-write']) {
-    const { error, rules } = mockRun(scenario, [rule()]);
-    assert.notEqual(error, '', scenario);
-    assert.deepEqual(rules, [rule()], scenario);
+  for (const original of [rule(), legacy()]) {
+    for (const scenario of ['create', 'promote', 'promote-after-write']) {
+      const { error, rules } = mockRun(scenario, [original]);
+      assert.notEqual(error, '', scenario);
+      assert.deepEqual(rules, [original], scenario);
+    }
   }
 });
 
 test('mock: failed cleanup keeps verified new rule, whether old removal happened or not', { skip: !windows }, () => {
-  for (const scenario of ['cleanup', 'cleanup-after-write']) {
-    const { error, rules } = mockRun(scenario, [rule()]);
-    assert.match(error, /New rule is active, but cleanup failed/);
-    assert.equal(rules.length, scenario === 'cleanup' ? 2 : 1);
-    assert.equal(rules.find(item => item.LocalPort === String(input.port)).DisplayName, input.name);
-    if (scenario === 'cleanup') assert.equal(rules.find(item => item.Name === 'old').DisplayName, input.name);
+  for (const original of [rule(), legacy()]) {
+    for (const scenario of ['cleanup', 'cleanup-after-write']) {
+      const { error, rules } = mockRun(scenario, [original]);
+      assert.match(error, /New rule is active, but cleanup failed/);
+      assert.equal(rules.length, scenario === 'cleanup' ? 2 : 1);
+      assert.equal(rules.find(item => item.LocalPort === String(input.port)).DisplayName, input.name);
+      if (scenario === 'cleanup') assert.equal(rules.find(item => item.Name === 'old').DisplayName, input.name);
+    }
+  }
+});
+
+test('mock: a rule from the old launcher scripts is replaced by a botLANd-marked one in a single update', { skip: !windows }, () => {
+  // Group/Description may come back empty or null depending on how the rule was made.
+  for (const unmarked of [{ Group: '', Description: '' }, { Group: null, Description: null }]) {
+    const { error, rules } = mockRun('normal', [legacy('{GUID-OLD}', unmarked)]);
+    assert.equal(error, '');
+    assert.equal(rules.length, 1);
+    assert.notEqual(rules[0].Name, '{GUID-OLD}', 'the old rule is gone');
+    assert.equal(rules[0].DisplayName, input.name);
+    assert.equal(rules[0].Group, 'botLANd.ServerManager');
+    assert.equal(rules[0].Description, 'Managed by botLANd Server Manager (UDP)');
+    assert.equal(rules[0].LocalPort, String(input.port));
+    assert.equal(rules[0].RemoteAddress, 'LocalSubnet');
+  }
+  // The replacement is managed, so the next update works exactly as before.
+  const { error, rules } = mockRun('normal', [legacy('{GUID-OLD}')]);
+  assert.equal(error, '');
+  assert.equal(mockRun('normal', rules).error, '');
+});
+
+test('mock: a legacy-looking rule that differs in any way is still refused and left untouched', { skip: !windows }, () => {
+  const cases = {
+    'a description but no group': legacy('old', { Description: 'something else' }),
+    'a group but no description': legacy('old', { Group: 'other-owner' }),
+    'a different owner': legacy('old', { Group: 'other-owner', Description: 'other' }),
+    'a program restriction': legacy('old', { Program: 'C:\\game.exe' }),
+    'a service restriction': legacy('old', { Service: 'SomeService' }),
+    'a remote port': legacy('old', { RemotePort: '80' }),
+    'a local address': legacy('old', { LocalAddress: '10.0.0.5' }),
+    'a remote range': legacy('old', { RemoteAddress: '10.0.0.0/8' }),
+    TCP: legacy('old', { Protocol: 'TCP' }),
+    outbound: legacy('old', { Direction: 'Outbound' }),
+    block: legacy('old', { Action: 'Block' }),
+    disabled: legacy('old', { Enabled: 'False' }),
+    'a profile restriction': legacy('old', { Profile: 'Private' }),
+  };
+  for (const [label, rule1] of Object.entries(cases)) {
+    const { error, rules } = mockRun('normal', [rule1]);
+    assert.match(error, /not owned by botLANd|unsupported|unsafe/i, label);
+    assert.deepEqual(rules, [rule1], label);
+  }
+  // Duplicates and Group Policy rules are ambiguous even when they look like legacy rules.
+  for (const initial of [[legacy('one'), legacy('two')], [legacy('one'), rule('two')], [{ ...legacy('policy'), Store: 'GPO' }], [legacy('one'), { ...legacy('policy'), Store: 'GPO' }]]) {
+    const { error, rules } = mockRun('normal', initial);
+    assert.notEqual(error, '');
+    assert.deepEqual(rules, initial);
   }
 });

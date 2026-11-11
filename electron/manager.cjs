@@ -776,7 +776,7 @@ class ServerManager {
       '$rules = foreach ($rule in $found) {',
       '  $ports = $rule | Get-NetFirewallPortFilter',
       '  $addresses = $rule | Get-NetFirewallAddressFilter',
-      '  [pscustomobject]@{ enabled = [string]$rule.Enabled; direction = [string]$rule.Direction; action = [string]$rule.Action; protocol = [string]$ports.Protocol; localPort = @($ports.LocalPort | ForEach-Object { [string]$_ }); remoteAddress = @($addresses.RemoteAddress | ForEach-Object { [string]$_ }) }',
+      '  [pscustomobject]@{ group = [string]$rule.Group; description = [string]$rule.Description; enabled = [string]$rule.Enabled; direction = [string]$rule.Direction; action = [string]$rule.Action; protocol = [string]$ports.Protocol; localPort = @($ports.LocalPort | ForEach-Object { [string]$_ }); remoteAddress = @($addresses.RemoteAddress | ForEach-Object { [string]$_ }) }',
       '}',
       'ConvertTo-Json -InputObject @($rules) -Compress -Depth 4',
     ].join('\n');
@@ -808,7 +808,12 @@ class ServerManager {
     const remote = list(rule.remoteAddress);
     const state = !enabled || !inbound || !allowed || !udp || !portOk || remote.length !== 1 ? 'drift'
       : remote[0] === 'localsubnet' ? 'lan' : remote[0] === 'any' ? 'any' : 'drift';
-    return { name, port, state };
+    // A rule made by the old launcher scripts has no botLANd owner or description.
+    // Update replaces it (see firewall-rule.cjs); the panel explains that.
+    // Only when the query actually reported both fields: a missing field is unknown, not empty.
+    const legacy = typeof rule.group === 'string' && typeof rule.description === 'string' &&
+      !rule.group.trim() && !rule.description.trim();
+    return legacy ? { name, port, state, legacy: true } : { name, port, state };
   }
   async runElevated(lines) {
     const workspace = await fs.mkdtemp(path.join(os.tmpdir(), 'botland-elevate-'));

@@ -115,3 +115,25 @@ test('removes the rule elevated and reports a missing rule', async () => {
   assert.equal(runs[0][0], "$targetName = 'botLANd WaW UDP'");
   assert.match(runs[0].join('\n'), /Remove-NetFirewallRule -PolicyStore PersistentStore -Name \(\[string\]\$rule\.Name\) -ErrorAction Stop/);
 });
+
+test('flags a rule from the old launcher scripts so the panel can offer to replace it', async () => {
+  const manager = new ServerManager('unused', () => {});
+  const owner = { group: 'botLANd.ServerManager', description: 'Managed by botLANd Server Manager (UDP)' };
+  // Group and Description both empty: exactly what a netsh-created rule reports.
+  manager.firewallQuery = async () => [{ ...rule(28962, 'Any'), group: '', description: '' }];
+  assert.deepEqual(await manager.firewallStatus('cod4'), { name: 'botLANd CoD4 UDP', port: 28962, state: 'any', legacy: true });
+  // A mismatched old rule is still flagged, so it can be replaced or removed.
+  manager.firewallQuery = async () => [{ ...rule(27016, 'Any'), group: '', description: '' }];
+  assert.deepEqual(await manager.firewallStatus('cod4'), { name: 'botLANd CoD4 UDP', port: 28962, state: 'drift', legacy: true });
+  // A botLANd-owned rule, a rule with only one marker, a missing field and duplicates are never "legacy".
+  for (const rules of [
+    [{ ...rule(28962, 'LocalSubnet'), ...owner }],
+    [{ ...rule(28962, 'LocalSubnet'), group: '', description: 'other' }],
+    [{ ...rule(28962, 'LocalSubnet'), group: 'other', description: '' }],
+    [{ ...rule(28962, 'LocalSubnet'), group: '' }],
+    [{ ...rule(28962, 'Any'), group: '', description: '' }, { ...rule(28962, 'Any'), group: '', description: '' }],
+  ]) {
+    manager.firewallQuery = async () => rules;
+    assert.equal(Object.hasOwn(await manager.firewallStatus('cod4'), 'legacy'), false);
+  }
+});

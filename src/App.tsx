@@ -103,16 +103,16 @@ function FirewallPanel({ game, status, busy, onApply, onRemove }: { game: Game; 
   // BO1 always launches public, so its rule is always scoped to the LAN (mirrors firewallScope).
   const lanRule = game.id === 'bo1' || game.options.lan;
   const matchesVisibility = status.state === (lanRule ? 'lan' : 'any');
-  const active = status.state === 'lan' || status.state === 'any';
   // While running, the rule follows the port the server was launched with.
   const pendingPort = game.activePort != null && game.activePort !== game.options.port;
   return <div>
     <div className="firewall-row">
       <span className={`fw-chip ${status.state}`}><ShieldCheck size={14} /> {titles[status.state]}</span>
-      {matchesVisibility
-        ? (active && <button className="inline-link" disabled={busy} onClick={onRemove}>Remove rule <ArrowRight size={13} /></button>)
-        : <button className="button outline-button firewall-apply" disabled={busy} title="Windows asks for administrator approval" onClick={onApply}>{status.state === 'missing' ? 'Create firewall rule' : status.state === 'unknown' ? 'Apply firewall rule' : 'Update firewall rule'}</button>}
+      {(!matchesVisibility || status.legacy) && <button className="button outline-button firewall-apply" disabled={busy} title="Windows asks for administrator approval" onClick={onApply}>{status.legacy ? 'Replace with botLANd rule' : status.state === 'missing' ? 'Create firewall rule' : status.state === 'unknown' ? 'Apply firewall rule' : 'Update firewall rule'}</button>}
+      {/* A mismatched or older rule must stay removable, or it could never be cleared from here. */}
+      {status.state !== 'missing' && status.state !== 'unknown' && <button className="inline-link" disabled={busy} onClick={onRemove}>Remove rule <ArrowRight size={13} /></button>}
     </div>
+    {status.legacy && <p className="firewall-note">This rule was created by the old launcher scripts, not by botLANd, and it allows connections from any address. Replace it to have botLANd manage it ({lanRule ? 'local subnet only' : 'any address'}), or remove it.</p>}
     {status.state === 'unknown' && <p className="firewall-note">The current rule could not be read. Use Refresh server status (top right) to check again, or apply the rule to replace it.</p>}
     <p className="firewall-hint">{lanRule ? 'LAN only' : 'Public'} inbound UDP {status.port} ({lanRule ? 'local subnet' : 'any address'}). Applies immediately, even mid-match. Windows asks for administrator approval. {pendingPort ? <>This rule covers the running server&rsquo;s port; update it after the restart to move it to UDP {game.options.port}. </> : null}{game.id === 'bo1' ? <>Black Ops always launches public, so this rule is what keeps it LAN-only. </> : null}{lanRule ? <>LAN players connect to your PC&rsquo;s local IP and need no router changes.</> : <>Players beyond your home network also need UDP {status.port} opened or forwarded in your router settings — the firewall rule only covers this PC.</>}</p>
   </div>;

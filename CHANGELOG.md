@@ -2,6 +2,14 @@
 
 Notable changes to botLANd Server Manager are recorded here. This project follows [Semantic Versioning](https://semver.org/).
 
+## 1.2.3
+
+### Firewall
+
+- Fixed "The firewall change failed: Firewall rule is not owned by botLANd." after pressing Update firewall rule. Rules made by the old launcher scripts (same `botLANd <Game> UDP` name, no owner or description) can now be replaced in one click with **Replace with botLANd rule**. The replacement is created and verified as a botLANd-owned rule before the old one is removed; only a rule with that exact fingerprint qualifies, and duplicates, Group Policy rules and any other unmarked rule are still refused.
+- **Remove rule** now stays available whenever a rule exists, including a mismatched or old-launcher rule. Previously it was hidden whenever the rule did not match the server's visibility and port, so such a rule could not be cleared from the app.
+- The panel explains when an existing rule came from the old launcher, and that it allows connections from any address.
+
 ## 1.2.2
 
 ### Bot Warfare

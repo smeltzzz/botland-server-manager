@@ -55,7 +55,7 @@ export interface ConfigEntry { key: string; value: string; masked: boolean; hasV
 export interface ConfigDocument { path: string; target: ConfigTarget; mode: string; sourceRepo: string; fields: ConfigField[]; values: Record<string, string>; entries: ConfigEntry[] }
 export interface ConfigPreview { token: string; changed: boolean; changes: { key: string; label: string; before: string; after: string; duplicates: number }[] }
 export type FirewallState = 'missing' | 'lan' | 'any' | 'drift' | 'unknown';
-export interface FirewallStatus { name: string; port: number; state: FirewallState }
+export interface FirewallStatus { name: string; port: number; state: FirewallState; /** The rule was made by the old launcher scripts, not by botLANd. */ legacy?: boolean }
 export type ManagerEvent = { type: 'state'; snapshot: Snapshot } | { type: 'log'; id: GameId; entry: LogEntry };
 export interface ManagerApi {
   snapshot(): Promise<Snapshot>;
