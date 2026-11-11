@@ -38,7 +38,7 @@ const netstatOutput = (...lines) => `\r\nActive Connections\r\n\r\n  Proto  Loca
 
 test('port check sees listeners bound to IPv6 as well as IPv4', async t => {
   const dir = await temporary(t);
-  const manager = new ServerManager(path.join(dir, 'settings.json'), () => {}, dir);
+  const manager = new ServerManager(path.join(dir, 'settings.json'), () => {});
   const asked = [];
   t.after(() => { execImpl = (_file, _args, _options, callback) => callback(null, '', ''); });
   execImpl = (_file, args, _options, callback) => {
@@ -52,7 +52,7 @@ test('port check sees listeners bound to IPv6 as well as IPv4', async t => {
 
 test('port check still works when only one address family can be queried, and fails when neither can', async t => {
   const dir = await temporary(t);
-  const manager = new ServerManager(path.join(dir, 'settings.json'), () => {}, dir);
+  const manager = new ServerManager(path.join(dir, 'settings.json'), () => {});
   t.after(() => { execImpl = (_file, _args, _options, callback) => callback(null, '', ''); });
   execImpl = (_file, args, _options, callback) => {
     if (args.includes('udpv6')) callback(new Error('IPv6 is disabled'), '', '');
@@ -67,7 +67,7 @@ test('port check still works when only one address family can be queried, and fa
 test('a port check that cannot run does not block a launch', async t => {
   const dir = await temporary(t);
   const logs = [];
-  const manager = new ServerManager(path.join(dir, 'settings.json'), event => { if (event.type === 'log') logs.push(event.entry.message); }, dir);
+  const manager = new ServerManager(path.join(dir, 'settings.json'), event => { if (event.type === 'log') logs.push(event.entry.message); });
   manager.broadcastState = async () => {};
   manager.check = async () => ({ blockers: [], gamePath: dir, options: { port: 28960, mode: 'dom', shuffle: false, selectedMaps: [], lan: true } });
   manager.portInUse = async () => { throw new Error('Command failed: netstat.exe'); };
@@ -90,7 +90,7 @@ test('without a game folder, preflight never reads a config relative to the work
   // Neither file execs the generated rotation, so reading them would add a blocker.
   await fs.writeFile(path.join(dir, 'admin', 'server.cfg'), 'set sv_hostname "stray"\n');
   await fs.writeFile(path.join(dir, 'main', 'dedicated.cfg'), 'set sv_hostname "stray"\n');
-  const manager = new ServerManager(path.join(dir, 'settings.json'), () => {}, path.join(dir, 'scripts'));
+  const manager = new ServerManager(path.join(dir, 'settings.json'), () => {});
   process.chdir(dir);
   try {
     for (const id of ['mw3', 'bo2']) {
@@ -104,7 +104,7 @@ test('without a game folder, preflight never reads a config relative to the work
 test('a state snapshot that finishes late is never delivered after a newer one', async t => {
   const dir = await temporary(t);
   const delivered = [];
-  const manager = new ServerManager(path.join(dir, 'settings.json'), event => delivered.push(event.snapshot.label), dir);
+  const manager = new ServerManager(path.join(dir, 'settings.json'), event => delivered.push(event.snapshot.label));
   const pending = [];
   manager.snapshot = () => new Promise(resolve => pending.push(label => resolve({ label })));
   const first = manager.broadcastState();

@@ -3,7 +3,7 @@ const assert = require('node:assert/strict');
 const fs = require('node:fs/promises');
 const path = require('node:path');
 const os = require('node:os');
-const { parseConfig, parseLauncher, updateConfigText, saveConfig } = require('../electron/config.cjs');
+const { parseConfig, updateConfigText, saveConfig } = require('../electron/config.cjs');
 const { scanMaps, rotationText } = require('../electron/maps.cjs');
 const { profiles } = require('../electron/profiles.cjs');
 const { ServerManager } = require('../electron/manager.cjs');
@@ -24,23 +24,6 @@ test('rejects invalid config values and unknown keys', () => {
   assert.throws(() => updateConfigText('', { bots_team: 'spectator; quit' }));
   assert.match(updateConfigText('set bots_main "1"', { bots_main: '0' }), /bots_main "0"/);
 });
-test('parses both quoted and unquoted launcher assignments', () => {
-  assert.deepEqual(parseLauncher('set "gamepath=D:\\Games\\COD4"\r\nset key=exampleSecret\r\nset GamePort=28960\r\n'),
-    { gamepath: 'D:\\Games\\COD4', key: 'exampleSecret', gameport: '28960' });
-  assert.deepEqual(parseLauncher([
-    'set GAMEPATH = "D:\\Games\\COD4"',
-    "set \"basecfg=main\\server.cfg\"",
-    'set "mod=mods/mp_bots"',
-    'set extra=a=b',
-    'rem set ignored=value',
-    'set novalue',
-  ].join('\r\n')), {
-    gamepath: 'D:\\Games\\COD4',
-    basecfg: 'main\\server.cfg',
-    mod: 'mods/mp_bots',
-    extra: 'a=b',
-  });
-});
 test('renders engine-specific rotations', () => {
   const maps = ['mp_alpha', 'mp_bravo'];
   assert.match(rotationText(profiles.cod4, maps, 'dom', false), /gametype dom map mp_alpha gametype dom map mp_bravo/);
@@ -52,7 +35,7 @@ test('renders engine-specific rotations', () => {
 });
 test('redacts Plutonium keys from renderer log events', () => {
   const events = [];
-  const manager = new ServerManager('unused', event => events.push(event), 'unused');
+  const manager = new ServerManager('unused', event => events.push(event));
   manager.addLog('bo2', 'server key=sample-secret-value', 'info', 'sample-secret-value');
   assert.equal(events[0].entry.message, 'server key=[REDACTED]');
   assert.ok(!JSON.stringify(manager.logs.get('bo2')).includes('sample-secret-value'));
@@ -63,7 +46,7 @@ test('uses the correct direct executable and LAN arguments for each title', () =
   const previousLocalAppData = process.env.LOCALAPPDATA;
   process.env.LOCALAPPDATA = 'C:\\Users\\botland\\AppData\\Local';
   try {
-    const manager = new ServerManager('unused', () => {}, 'unused');
+    const manager = new ServerManager('unused', () => {});
     const root = 'D:\\Games\\Installed Game';
     for (const id of ['cod4', 'waw', 'mw2', 'bo1', 'mw3', 'bo2']) {
       const command = manager.buildCommand(profiles[id], root, profiles[id].defaultPort, profiles[id].defaultMode, 'example-key');
@@ -91,7 +74,7 @@ test('persists the visibility option with per-title defaults', async () => {
   await fs.mkdir(root, { recursive: true });
   const dir = await fs.mkdtemp(path.join(root, 'botland-visibility-'));
   try {
-    const manager = new ServerManager(path.join(dir, 'settings.json'), () => {}, 'unused');
+    const manager = new ServerManager(path.join(dir, 'settings.json'), () => {});
     manager.broadcastState = async () => {};
     assert.equal(manager.options('cod4').lan, true);
     assert.equal(manager.options('bo1').lan, false);
@@ -119,7 +102,7 @@ test('backs up the original config byte-for-byte when saving', async () => {
   } finally { await fs.rm(dir, { recursive: true, force: true }); }
 });
 test('cancels a start in progress before spawning a server', async () => {
-  const manager = new ServerManager('unused', () => {}, 'unused');
+  const manager = new ServerManager('unused', () => {});
   manager.broadcastState = async () => {};
   manager.addLog = () => {};
   manager.check = async () => ({ blockers: [], gamePath: 'unused', options: { port: 28960, mode: 'dom', shuffle: false, selectedMaps: [] } });

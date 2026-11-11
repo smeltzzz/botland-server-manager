@@ -42,7 +42,7 @@ async function settle(predicate) {
 test('running connect candidates and cached possible orphans never claim an owned PID or scan on snapshot', async t => {
   const dir = await fixture(t);
   let calls = 0;
-  const manager = new ServerManager(path.join(dir, 'settings.json'), () => {}, dir, {
+  const manager = new ServerManager(path.join(dir, 'settings.json'), () => {}, {
     networkInterfaces: () => ({ LAN: [{ family: 'IPv4', address: '192.168.1.20', internal: false }] }),
     findPossibleOrphans: async candidates => {
       calls++;
@@ -83,7 +83,7 @@ test('whole-line redaction and optional session service cover stdout, stderr, fi
     append(id, entry) { calls.push(['append', id, entry]); return Promise.reject(new Error('disk full')); },
     async close(id) { calls.push(['close', id]); throw new Error('unavailable'); },
   };
-  const manager = new ServerManager(path.join(dir, 'settings.json'), event => events.push(event), dir, {
+  const manager = new ServerManager(path.join(dir, 'settings.json'), event => events.push(event), {
     keyStore: { get: async () => key }, sessionLogs: service,
     createLogTail: options => ({ async start() { calls.push(['tail-start']); fileLine = options.onLine; },
       async stop() { calls.push(['tail-stop']); } }),
@@ -127,7 +127,7 @@ test('a fresh launch waits for the previous tail and session to close', async t 
   const order = [];
   let finishTail;
   const waiting = new Promise(resolve => { finishTail = resolve; });
-  const manager = new ServerManager(path.join(dir, 'settings.json'), () => {}, dir, {
+  const manager = new ServerManager(path.join(dir, 'settings.json'), () => {}, {
     sessionLogs: { async start() { order.push('session-start'); }, async close() { order.push('session-close'); },
       async append() {} },
     createLogTail: () => ({ async start() { order.push('tail-start'); },
@@ -159,7 +159,7 @@ test('real session JSONL never stores the key, command line or unredacted server
   await fs.mkdir(path.join(dir, 'main'));
   const { SessionLogs } = require('../electron/session-logs.cjs');
   const sessionLogs = new SessionLogs({ userData: dir });
-  const manager = new ServerManager(path.join(dir, 'settings.json'), () => {}, dir, {
+  const manager = new ServerManager(path.join(dir, 'settings.json'), () => {}, {
     keyStore: { get: async () => 'session-unique-key' }, sessionLogs,
     createLogTail: () => ({ async start() {}, async stop() {} }),
   });
@@ -189,7 +189,7 @@ test('manager backup API stays path-bound, previewed and broadcasts restored byt
   const original = Buffer.from('\ufeffset sv_hostname "Before"\r\nset rcon_password "confidential"\r\n');
   await fs.writeFile(file, original);
   let broadcasts = 0;
-  const manager = new ServerManager(path.join(dir, 'settings.json'), () => {}, dir);
+  const manager = new ServerManager(path.join(dir, 'settings.json'), () => {});
   manager.data.games.cod4 = { gamePath: dir };
   manager.broadcastState = async () => { broadcasts++; };
   const review = await manager.previewSettings('cod4', 'base', 'dom', { sv_hostname: 'After' });
@@ -211,7 +211,7 @@ test('manager backup API stays path-bound, previewed and broadcasts restored byt
 });
 
 test('firewall apply uses validated staged managed-rule lines; remove uses checked NetSecurity cmdlets', async () => {
-  const manager = new ServerManager('unused', () => {}, 'unused');
+  const manager = new ServerManager('unused', () => {});
   manager.data.games.cod4 = { port: 30001, lan: false };
   manager.instances.set('cod4', { status: 'running', activePort: 28962 });
   const runs = [];

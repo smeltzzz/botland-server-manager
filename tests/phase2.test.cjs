@@ -6,7 +6,7 @@ const os = require('node:os');
 const crypto = require('node:crypto');
 const { ServerManager } = require('../electron/manager.cjs');
 const { KeyStore } = require('../electron/key-store.cjs');
-const { order, profiles, launcherPath } = require('../electron/profiles.cjs');
+const { order, profiles } = require('../electron/profiles.cjs');
 
 // All paths, including the Plutonium bootstrapper/storage checks, stay in this
 // sandbox. Detection is injected: these tests never query Steam or the registry.
@@ -76,12 +76,11 @@ function fakeSafeStorage() {
   };
 }
 
-test('absent legacy scripts do not block a detected Cod4R install with config and mod', async () => fixture(async root => {
-  const scripts = path.join(root, 'absent-scripts');
+test('a detected Cod4R install with config and mod is ready without any other files', async () => fixture(async root => {
   const installed = await cod4(root, 'Detected CoD4');
   let scans = 0;
   const events = [];
-  const manager = new ServerManager(path.join(root, 'settings.json'), event => events.push(event), scripts, {
+  const manager = new ServerManager(path.join(root, 'settings.json'), event => events.push(event), {
     detectInstallations: async () => { scans++; return detection({ cod4: found(installed) }); },
   });
   assert.equal(await manager.initialize(), null);
@@ -104,7 +103,7 @@ test('absent legacy scripts do not block a detected Cod4R install with config an
   assert.equal(game(snapshot, 'waw').installed, false);
   assert.equal(game(snapshot, 'waw').pathSource, 'none');
   assert.equal(events.at(-1).snapshot.games[0].id, 'cod4');
-  await assert.rejects(fs.stat(scripts), { code: 'ENOENT' });
+  assert.deepEqual(card.setup, { folder: true, engine: true, plutonium: null, key: null, bots: true, config: true, maps: true });
 }));
 
 test('browse validates multiplayer files; manual override survives detection changes and restart', async () => fixture(async root => {
@@ -116,8 +115,7 @@ test('browse validates multiplayer files; manual override survives detection cha
   let suggested = detected;
   const services = { detectInstallations: async () => detection({ cod4: found(suggested) }) };
   const settings = path.join(root, 'settings.json');
-  const scripts = path.join(root, 'no-scripts');
-  const manager = new ServerManager(settings, () => {}, scripts, services);
+  const manager = new ServerManager(settings, () => {}, services);
   await manager.initialize();
   await manager.rescanInstallations();
   assert.equal(game(await manager.snapshot(), 'cod4').gamePath, detected);
@@ -137,7 +135,7 @@ test('browse validates multiplayer files; manual override survives detection cha
   assert.equal(card.gamePath, manual);
   assert.equal(card.pathSource, 'manual');
   assert.equal(JSON.parse(await fs.readFile(settings, 'utf8')).games.cod4.gamePath, manual);
-  const reopened = new ServerManager(settings, () => {}, scripts, services);
+  const reopened = new ServerManager(settings, () => {}, services);
   await reopened.initialize();
   await reopened.rescanInstallations();
   assert.equal(game(await reopened.snapshot(), 'cod4').gamePath, manual);
@@ -161,7 +159,7 @@ test('rescans replace reordered suggestions while preserving snapshot order and 
   let next = detection({ mw2: found(mw2), cod4: found(first) });
   let calls = 0;
   const events = [];
-  const manager = new ServerManager(path.join(root, 'settings.json'), event => events.push(event), path.join(root, 'scripts'), {
+  const manager = new ServerManager(path.join(root, 'settings.json'), event => events.push(event), {
     detectInstallations: async () => { calls++; return next; },
   });
   await manager.rescanInstallations();
@@ -190,48 +188,30 @@ test('rescans replace reordered suggestions while preserving snapshot order and 
   assert.equal(game(await manager.snapshot(), 'cod4').gamePath, '');
 }));
 
-test('Plutonium key stays absent until explicit import from a synthetic launcher; only status is published', async () => fixture(async root => {
-  const scripts = path.join(root, 'private-synthetic-scripts');
-  const launcher = launcherPath(scripts, profiles.waw);
+test('a pasted Plutonium key is stored encrypted; only its status is ever published', async () => fixture(async root => {
   const key = `fixture-token-${crypto.randomBytes(12).toString('hex')}`;
-  const original = Buffer.from(`@echo off\r\nset "key=${key}"\r\n`);
-  await put(launcher, original);
   const safeStorage = fakeSafeStorage();
   const keyFile = path.join(root, 'private', 'keys.json');
   const settings = path.join(root, 'settings.json');
   const store = new KeyStore(keyFile, safeStorage);
   const events = [];
-  const manager = new ServerManager(settings, event => events.push(event), scripts, {
+  const manager = new ServerManager(settings, event => events.push(event), {
     keyStore: store, detectInstallations: async () => detection(),
   });
-  const originalReadFile = fs.readFile;
-  let launcherReads = 0;
-  fs.readFile = async (...args) => {
-    if (args[0] === launcher) launcherReads++;
-    return originalReadFile(...args);
-  };
-  try {
-    await manager.initialize();
-    await manager.rescanInstallations();
-    assert.equal(game(await manager.snapshot(), 'waw').keyStatus, 'missing');
-    assert.equal(game(await manager.snapshot(), 'bo2').keyStatus, 'missing');
-    assert.equal(game(await manager.snapshot(), 'cod4').keyStatus, 'not-required');
-    assert.equal(await store.has('waw'), false);
-    await assert.rejects(fs.stat(keyFile), { code: 'ENOENT' });
-    manager.data.root = '';
-    await assert.rejects(manager.importKey('waw'), /Choose your legacy scripts folder/);
-    manager.data.root = scripts;
-    await assert.rejects(manager.importKey('bo1'), /No key was found|No private launcher was found/);
-    assert.equal(launcherReads, 0);
-    assert.equal(await manager.importKey('waw'), true);
-    assert.equal(launcherReads, 1);
-  } finally {
-    fs.readFile = originalReadFile;
-  }
-  // The import above is the only launcher read, even though it existed at startup.
+  await manager.initialize();
+  await manager.rescanInstallations();
+  assert.equal(game(await manager.snapshot(), 'waw').keyStatus, 'missing');
+  assert.equal(game(await manager.snapshot(), 'waw').setup.key, false);
+  assert.equal(game(await manager.snapshot(), 'bo2').keyStatus, 'missing');
+  assert.equal(game(await manager.snapshot(), 'cod4').keyStatus, 'not-required');
+  assert.equal(game(await manager.snapshot(), 'cod4').setup.key, null);
+  assert.equal(await store.has('waw'), false);
+  await assert.rejects(fs.stat(keyFile), { code: 'ENOENT' });
+  await assert.rejects(manager.saveKey('cod4', key), /does not use a Plutonium server key/);
+  await manager.saveKey('waw', key);
   assert.equal(await store.get('waw'), key);
   assert.equal(game(await manager.snapshot(), 'waw').keyStatus, 'stored');
-  assert.deepEqual(await fs.readFile(launcher), original);
+  assert.equal(game(await manager.snapshot(), 'waw').setup.key, true);
   await manager.saveOptions('waw', { port: 28970 });
   const ordinarySettings = await fs.readFile(settings, 'utf8');
   assert.equal(JSON.parse(ordinarySettings).games.waw.port, 28970);
@@ -255,5 +235,4 @@ test('Plutonium key stays absent until explicit import from a synthetic launcher
   assert.equal(game(await manager.snapshot(), 'waw').keyStatus, 'stored');
   await manager.removeKey('waw');
   assert.equal(game(await manager.snapshot(), 'waw').keyStatus, 'missing');
-  assert.deepEqual(await fs.readFile(launcher), original);
 }));

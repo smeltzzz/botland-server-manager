@@ -81,7 +81,7 @@ test('IW5 and T6 starter includes pass the existing preflight rotation and mod r
     for (const id of ['mw3', 'bo2']) {
       const gamePath = path.join(dir, id);
       await fs.mkdir(gamePath);
-      const manager = new ServerManager(path.join(dir, `${id}-settings.json`), () => {}, dir);
+      const manager = new ServerManager(path.join(dir, `${id}-settings.json`), () => {});
       manager.data.games[id] = { gamePath };
       const modeFile = id === 'mw3' ? path.join(gamePath, 'admin', 'DOM_default.dsr') : path.join(gamePath, 'main', 'gamesettings', 'dom.cfg');
       await fs.mkdir(path.dirname(modeFile), { recursive: true });

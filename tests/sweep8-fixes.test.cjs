@@ -21,7 +21,7 @@ async function temporary(testContext) {
   return dir;
 }
 function quietManager(dir, services = {}) {
-  const manager = new ServerManager(path.join(dir, 'settings.json'), () => {}, dir, services);
+  const manager = new ServerManager(path.join(dir, 'settings.json'), () => {}, services);
   manager.broadcastState = async () => {};
   return manager;
 }
@@ -128,7 +128,7 @@ test('firewall removal uses checked NetSecurity cmdlets for an allowlisted rule 
 test('a refused automatic restart still refreshes the UI', async t => {
   const dir = await temporary(t);
   let fire;
-  const manager = new ServerManager(path.join(dir, 'settings.json'), () => {}, dir, {
+  const manager = new ServerManager(path.join(dir, 'settings.json'), () => {}, {
     restartTimers: { now: Date.now, setTimeout: callback => { fire = callback; return 1; }, clearTimeout() {} },
   });
   let broadcasts = 0;
@@ -146,7 +146,7 @@ test('a refused automatic restart still refreshes the UI', async t => {
 
 test('a saved setting is not reported as failed when the follow-up refresh fails', async t => {
   const dir = await temporary(t);
-  const manager = new ServerManager(path.join(dir, 'settings.json'), () => {}, dir);
+  const manager = new ServerManager(path.join(dir, 'settings.json'), () => {});
   manager.broadcastState = async () => { throw new Error('renderer gone'); };
   await manager.setUpdateChecks(false);
   assert.equal(manager.data.updatesEnabled, false);
@@ -172,14 +172,6 @@ test('UTF-16 BO2 mode files are listed like UTF-8 ones', async t => {
   await fs.writeFile(path.join(folder, 'dom.cfg'), 'set_gametype dom\n');
   const modes = (await modeOptions(profiles.bo2, dir)).map(mode => mode.value).sort();
   assert.deepEqual(modes, ['dom', 'tdm']);
-});
-
-test('key import explains a missing launcher instead of reporting no key', async t => {
-  const dir = await temporary(t);
-  const keyStore = { async has() { return false; }, async get() { return ''; }, async save() { throw new Error('unexpected save'); }, async remove() {} };
-  const manager = quietManager(dir, { keyStore });
-  manager.data.root = dir;
-  await assert.rejects(manager.importKey('waw'), /No private launcher was found/);
 });
 
 test('Plutonium games are blocked with a clear reason when LOCALAPPDATA is missing', async t => {

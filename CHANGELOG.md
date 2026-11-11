@@ -6,6 +6,14 @@ Notable changes to botLANd Server Manager are recorded here. This project follow
 
 Bug-fix and polish release from full-pass sweep 7; see [`docs/sweep-7-plan.md`](docs/sweep-7-plan.md).
 
+### Standalone setup
+
+- botLANd is now the only tool needed to set up and run servers. The legacy scripts folder setting and **Import from legacy launcher** were removed; keys are pasted on the game page. An old scripts folder saved in settings is ignored.
+- Each game page has a click-by-click setup checklist (find the game, engine, Plutonium, server key, Bot Warfare, server config, maps, firewall rule, Start). Dashboard cards show **Finish setup** instead of a disabled Start.
+- botLANd installs and updates Plutonium itself using the official, SHA-256-pinned updater: automatically before a Plutonium server starts (at most every six hours) and from the sidebar's **Update Plutonium** button.
+- Server cards use the wide Steam hero art with the game's logo instead of a cropped portrait cover, and the game page header shows more of its artwork.
+- The Configuration tab no longer overflows sideways when the config file path is long.
+
 ### Fixed
 
 - Stop and Cancel start stay available for every server while another action (a Bot Warfare download, a firewall prompt, a folder picker) is in progress.

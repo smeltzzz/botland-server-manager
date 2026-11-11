@@ -11,10 +11,9 @@ const { BotWarfareInstaller } = require('../electron/botwarfare-install.cjs');
 
 // Use the platform's normal compositor for screenshots.
 app.whenReady().then(async () => {
-  const root = '';
   const source = { resolveSource: async () => ({ supported: false, ref: null, notes: '', status: 'offline' }) };
   const installer = new BotWarfareInstaller({ source, localAppData: process.env.LOCALAPPDATA });
-  const manager = new ServerManager(path.join(app.getPath('userData'), 'settings.json'), () => {}, root,
+  const manager = new ServerManager(path.join(app.getPath('userData'), 'settings.json'), () => {},
     { keyStore: new KeyStore(path.join(app.getPath('userData'), 'keys.json'), safeStorage), modSource: source, modInstaller: installer });
   await manager.initialize();
   await manager.rescanInstallations();
@@ -45,6 +44,9 @@ app.whenReady().then(async () => {
     if (process.env.BOTLAND_VISUAL_SCREENSHOTS !== '1') return;
     const output = path.join(process.env.LOCALAPPDATA || '.', 'Temp', 'opencode');
     await fs.mkdir(output, { recursive: true });
+    // Artwork loads asynchronously, and the compositor needs a painted frame to capture.
+    win.show(); win.focus();
+    await new Promise(resolve => setTimeout(resolve, 1500));
     await fs.writeFile(path.join(output, name), (await win.capturePage()).toPNG());
   };
   await waitFor('.server-card, .missing-row');
@@ -55,13 +57,24 @@ app.whenReady().then(async () => {
   console.log(`Dashboard rendered ${summary.detected} detected game(s) and ${summary.missing} not installed.`);
   await capture('botland-dashboard.png');
   if (summary.detected) {
+    await win.webContents.executeJavaScript("document.querySelector('.server-grid').scrollIntoView({ block: 'start' })");
+    await capture('botland-cards.png');
+  }
+  if (summary.detected) {
     const expected = await win.webContents.executeJavaScript("document.querySelector('.server-card h3').textContent");
     await win.webContents.executeJavaScript("document.querySelector('.server-card .card-open').click()");
     await waitFor('.detail-hero');
     const heading = await win.webContents.executeJavaScript("document.querySelector('.detail-hero h1').textContent");
     if (heading !== expected) throw new Error(`Unexpected game detail: ${heading}`);
+    await win.webContents.executeJavaScript("window.scrollTo(0, 0)");
+    await capture('botland-hero.png');
     await win.webContents.executeJavaScript("[...document.querySelectorAll('.detail-tabs button')].find(x => x.textContent.includes('Configuration')).click()");
     await waitFor('.config-main');
+    const overflow = await win.webContents.executeJavaScript('document.documentElement.scrollWidth - document.documentElement.clientWidth');
+    if (overflow > 0) {
+      const culprits = await win.webContents.executeJavaScript(`[...document.querySelectorAll('.config-main *, .config-workspace *, main *')].filter(el => el.getBoundingClientRect().right > document.documentElement.clientWidth + 1).slice(0, 6).map(el => el.tagName + '.' + el.className + ' w=' + Math.round(el.getBoundingClientRect().width) + ' sw=' + el.scrollWidth + ' ' + (el.textContent || '').slice(0, 60))`);
+      throw new Error(`Configuration workspace overflows horizontally by ${overflow}px: ${culprits.join(' | ')}`);
+    }
     console.log('Game detail and configuration workspace rendered.');
     await capture('botland-detail.png');
   }

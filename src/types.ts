@@ -9,6 +9,8 @@ export interface OrphanCandidate { pid: number | null; port: number; reason: str
 export interface RestartState { enabled: boolean; attempts: number; nextAttemptAt: string | null; cutOff: boolean }
 export interface ConfigBackup { id: string; date: string; bytes: number }
 export interface ConfigRestorePreview { token: string; summary: { changed: boolean; currentBytes: number; backupBytes: number; contents: string } }
+export interface GameSetup { folder: boolean; engine: boolean | null; plutonium: boolean | null; key: boolean | null; bots: boolean; config: boolean; maps: boolean }
+export type ArtworkKind = 'hero' | 'cover' | 'logo';
 export interface Game {
   id: GameId;
   title: string;
@@ -23,6 +25,8 @@ export interface Game {
   keyStatus: 'not-required' | 'stored' | 'missing' | 'unavailable';
   /** The game is installed but its server config file does not exist yet. */
   configMissing?: boolean;
+  /** Setup checklist steps: done (true), to do (false) or not applicable (null). */
+  setup: GameSetup;
   modBusy: boolean;
   connect: ConnectAddresses;
   orphan: OrphanCandidate | null;
@@ -40,7 +44,8 @@ export interface Game {
 export interface BotManifest { channel: string; ref: string; refType: 'tag' | 'commit'; sha256: string; date: string; repo: string; patches: string[] }
 export interface BotStatus { state: 'installed' | 'unknown' | 'not-installed'; targetPath: string; manifest: BotManifest | null; versions: { versionId: string; date: string; manifest: { ref: string; channel: string } | null }[]; channel: 'stable' | 'development'; source: { supported: boolean; ref: string | null; notes: string; status: string } }
 export interface BotUpdate { status: string; latest: { tag?: string; commit?: string; developmentCommit?: string | null }; updateAvailable: boolean | null }
-export interface Snapshot { root: string; games: Game[]; updatesEnabled: boolean; updates: Partial<Record<GameId, BotUpdate>> }
+export interface PlutoniumStatus { available: boolean; installed: boolean; updating: boolean; lastUpdated: string | null; error: string | null }
+export interface Snapshot { games: Game[]; updatesEnabled: boolean; updates: Partial<Record<GameId, BotUpdate>>; plutonium: PlutoniumStatus }
 export interface MapData { maps: string[]; modes: { value: string; label: string }[] }
 export type ConfigTarget = 'base' | 'mode';
 export interface ConfigField { key: string; sourceKey: string; section: string; label: string; hint?: string; type: 'text' | 'integer' | 'decimal' | 'select'; choices?: { value: string; label: string }[]; min?: number; max?: number; maxLength?: number; default?: string; presentOnly?: boolean; allowEmpty?: boolean; dependsOn?: { key: string; value: string } }
@@ -58,7 +63,6 @@ export interface ManagerApi {
   start(id: GameId): Promise<void>;
   stop(id: GameId): Promise<void>;
   chooseFolder(id: GameId): Promise<boolean>;
-  chooseRoot(): Promise<boolean>;
   rescanInstallations(): Promise<void>;
   createStarterConfig(id: GameId): Promise<string>;
   copyConnectAddress(id: GameId, address: string): Promise<boolean>;
@@ -75,13 +79,13 @@ export interface ManagerApi {
   setUpdateChecks(enabled: boolean): Promise<void>;
   saveKey(id: GameId, key: string): Promise<void>;
   removeKey(id: GameId): Promise<void>;
-  importKey(id: GameId): Promise<boolean>;
+  updatePlutonium(): Promise<boolean>;
   openKeyPage(): Promise<void>;
   openEngineGuide(id: GameId): Promise<void>;
   document(id: GameId, target: ConfigTarget, mode?: string): Promise<ConfigDocument>;
   previewSettings(id: GameId, target: ConfigTarget, mode: string, values: Record<string, string>, expectedPath?: string): Promise<ConfigPreview>;
   commitSettings(id: GameId, target: ConfigTarget, mode: string, values: Record<string, string>, token: string, expectedPath?: string): Promise<ConfigDocument>;
-  artwork(id: GameId, kind: 'hero' | 'cover'): Promise<string | null>;
+  artwork(id: GameId, kind: ArtworkKind): Promise<string | null>;
   firewallStatus(id: GameId): Promise<FirewallStatus>;
   firewallApply(id: GameId): Promise<FirewallStatus>;
   firewallRemove(id: GameId): Promise<FirewallStatus>;

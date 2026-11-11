@@ -15,13 +15,13 @@ function rule(port, remoteAddress, overrides = {}) {
 }
 
 test('names one firewall rule per game', () => {
-  const manager = new ServerManager('unused', () => {}, 'unused');
+  const manager = new ServerManager('unused', () => {});
   assert.equal(manager.firewallName('cod4'), 'botLANd CoD4 UDP');
   assert.equal(manager.firewallName('bo2'), 'botLANd BO2 UDP');
 });
 
 test('reads missing, lan, any, drift and unknown rule states', async () => {
-  const manager = new ServerManager('unused', () => {}, 'unused');
+  const manager = new ServerManager('unused', () => {});
   const queried = [];
   const respond = rules => { manager.firewallQuery = async name => { queried.push(name); return rules; }; };
   respond([rule(28962, 'LocalSubnet')]);
@@ -46,7 +46,7 @@ test('reads missing, lan, any, drift and unknown rule states', async () => {
 });
 
 test('applies the rule elevated with the stored port and visibility scope', async () => {
-  const manager = new ServerManager('unused', () => {}, 'unused');
+  const manager = new ServerManager('unused', () => {});
   const runs = [];
   manager.runElevated = async lines => { runs.push(lines); };
   manager.firewallQuery = async () => [rule(28962, 'LocalSubnet')];
@@ -71,7 +71,7 @@ test('applies the rule elevated with the stored port and visibility scope', asyn
 });
 
 test('a running server keeps its rule on the launched port; scope follows saved visibility', async () => {
-  const manager = new ServerManager('unused', () => {}, 'unused');
+  const manager = new ServerManager('unused', () => {});
   manager.data.games.cod4 = { port: 30000, lan: true };
   manager.instances.set('cod4', { status: 'running', activePort: 28962 });
   const runs = [];
@@ -92,7 +92,7 @@ test('a running server keeps its rule on the launched port; scope follows saved 
 });
 
 test('BO1 always gets a LAN-scoped rule because its launch stays public', async () => {
-  const manager = new ServerManager('unused', () => {}, 'unused');
+  const manager = new ServerManager('unused', () => {});
   manager.data.games.bo1 = { lan: false };
   assert.equal(manager.options('bo1').lan, false);
   assert.equal(manager.firewallScope('bo1'), 'lan');
@@ -105,7 +105,7 @@ test('BO1 always gets a LAN-scoped rule because its launch stays public', async 
 });
 
 test('removes the rule elevated and reports a missing rule', async () => {
-  const manager = new ServerManager('unused', () => {}, 'unused');
+  const manager = new ServerManager('unused', () => {});
   const runs = [];
   manager.runElevated = async lines => { runs.push(lines); };
   manager.firewallQuery = async () => [];

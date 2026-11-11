@@ -27,7 +27,7 @@ async function temporary(testContext) {
   testContext.after(() => fs.rm(dir, { recursive: true, force: true }));
   return dir;
 }
-function managerAt(dir) { return new ServerManager(path.join(dir, 'settings.json'), () => {}, dir); }
+function managerAt(dir) { return new ServerManager(path.join(dir, 'settings.json'), () => {}); }
 function readyToStart(manager, dir, port = 28960) {
   manager.broadcastState = async () => {};
   manager.check = async () => ({ blockers: [], gamePath: dir, options: { port, mode: 'dom', shuffle: false, selectedMaps: [] } });
@@ -163,12 +163,12 @@ test('concurrent settings actions serialize writes without losing a newer change
   try {
     const firstSave = manager.saveOptions('cod4', { port: 29999 });
     await waiting;
-    const secondSave = manager.chooseRoot(null, { showOpenDialog: async () => ({ canceled: false, filePaths: [path.join(dir, 'new-root')] }) });
+    const secondSave = manager.setUpdateChecks(false);
     release();
     await Promise.all([firstSave, secondSave]);
     const stored = JSON.parse(await fs.readFile(manager.settingsPath, 'utf8'));
     assert.equal(stored.games.cod4.port, 29999);
-    assert.equal(stored.root, path.join(dir, 'new-root'));
+    assert.equal(stored.updatesEnabled, false);
     assert.ok(!(await fs.readdir(dir)).some(name => name.endsWith('.tmp')));
   } finally { release(); fs.rename = rename; }
 });
@@ -468,22 +468,24 @@ test('unreadable settings are preserved and replaced by defaults; bad stored val
   const dir = await temporary(t);
   const settings = path.join(dir, 'settings.json');
   await fs.writeFile(settings, '{ "root": "D:\\\\x", "games": ');
-  const manager = new ServerManager(settings, () => {}, dir);
+  const manager = new ServerManager(settings, () => {});
   const backup = await manager.initialize();
   assert.ok(backup && path.basename(backup).startsWith('settings.json.corrupt-'));
   assert.equal(await fs.readFile(backup, 'utf8'), '{ "root": "D:\\\\x", "games": ');
-  assert.equal(manager.data.root, dir);
+  assert.equal(manager.data.root, undefined);
   assert.deepEqual(manager.data.games, {});
   await fs.writeFile(settings, JSON.stringify({ root: dir, games: {
     cod4: { port: 'abc', mode: 'dom;quit', shuffle: 'yes', selectedMaps: ['mp_ok', 'bad map', 'mp_ok', 3], gamePath: 7, lan: 'no', artwork: 'C:\\x.png' },
     mw2: [], unknown: { port: 30000 },
   } }));
-  const second = new ServerManager(settings, () => {}, dir);
+  const second = new ServerManager(settings, () => {});
   assert.equal(await second.initialize(), null);
   assert.deepEqual(second.options('cod4'), { port: 28962, mode: 'dom', shuffle: true, selectedMaps: ['mp_ok'], gamePath: '', lan: true });
   assert.deepEqual(second.data.games.cod4.artwork, {});
   assert.equal(second.data.games.mw2, undefined);
   assert.equal(second.data.games.unknown, undefined);
+  // The retired legacy scripts folder setting is ignored and never written back.
+  assert.equal(second.data.root, undefined);
 });
 
 test('a second app instance hands off to the first and never opens a window', async () => {
@@ -512,7 +514,7 @@ test('a second app instance hands off to the first and never opens a window', as
 });
 
 test('elevated firewall changes run inline, report the real failure and clean up', async () => {
-  const manager = new ServerManager('unused', () => {}, 'unused');
+  const manager = new ServerManager('unused', () => {});
   const before = (await fs.readdir(os.tmpdir())).filter(name => name.startsWith('botland-elevate-'));
   let seen;
   execImpl = (_file, args, _options, callback) => {

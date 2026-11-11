@@ -14,8 +14,11 @@ const definitions = [
   ['bo2', 'Black Ops II', 'BO2', 'Plutonium T6', 'bo'],
 ];
 const snapshot = {
-  root: '', updatesEnabled: false, updates: {},
+  updatesEnabled: false, updates: {},
+  plutonium: { available: true, installed: false, updating: false, lastUpdated: null, error: null },
   games: definitions.map(([id, title, short, engine, family]) => ({
+    setup: { folder: id === 'cod4', engine: engine.startsWith('Plutonium') ? null : id === 'cod4', plutonium: engine.startsWith('Plutonium') ? false : null,
+      key: engine.startsWith('Plutonium') ? false : null, bots: id === 'cod4', config: id === 'cod4', maps: id === 'cod4' },
     id, title, short, engine, family, subtitle: 'Synthetic test fixture',
     installed: id === 'cod4', pathSource: id === 'cod4' ? 'manual' : 'none',
     gamePath: id === 'cod4' ? 'C:\\Example\\Game' : '',

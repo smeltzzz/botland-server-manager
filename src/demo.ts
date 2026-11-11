@@ -2,7 +2,8 @@
 // when the Electron preload is absent; packaged builds never use these fixtures.
 import type { BotStatus, ConfigDocument, ConfigField, Game, GameId, ManagerApi, ManagerEvent, MapData, Snapshot } from './types';
 
-const base: Pick<Game, 'options' | 'config' | 'blockers' | 'warnings' | 'logs' | 'status' | 'pid' | 'startedAt' | 'connect' | 'orphan' | 'restart'> = {
+const base: Pick<Game, 'options' | 'config' | 'blockers' | 'warnings' | 'logs' | 'status' | 'pid' | 'startedAt' | 'connect' | 'orphan' | 'restart' | 'setup'> = {
+  setup: { folder: false, engine: null, plutonium: null, key: null, bots: false, config: false, maps: false },
   options: { port: 28961, mode: 'dom', shuffle: true, selectedMaps: [], gamePath: '', lan: true },
   config: { sv_hostname: 'botLANd â€” Domination', sv_maxclients: '18', bots_main: '1', bots_manage_fill: '14', bots_skill: '4', bots_team: 'autoassign', bots_manage_fill_mode: '0', bots_play_obj: '1', scr_dom_timelimit: '15', scr_dom_scorelimit: '200' },
   blockers: [], warnings: [], logs: [], status: 'stopped', pid: null, startedAt: null,
@@ -20,7 +21,10 @@ const definitions: [GameId, string, string, string, Game['family'], string, numb
 const detected = new Set<GameId>(['cod4', 'bo1', 'mw3']);
 // Only presence is modeled in this browser fixture; no actual key string is kept.
 const fakeKeyPresence = new Set<GameId>(['bo1']);
-const snapshot: Snapshot = { root: '', updatesEnabled: true, updates: { cod4: { status: 'current', latest: { tag: 'v2.1.0' }, updateAvailable: true } }, games: definitions.map(([id, title, short, subtitle, family, engine, port]) => ({
+// MW3 starts without a server config so the preview shows the checklist step.
+const configured = new Set<GameId>(['cod4', 'bo1']);
+const plutoniumGames = new Set<GameId>(['waw', 'bo1', 'mw3', 'bo2']);
+const snapshot: Snapshot = { plutonium: { available: true, installed: true, updating: false, lastUpdated: '2026-11-09T18:00:00.000Z', error: null }, updatesEnabled: true, updates: { cod4: { status: 'current', latest: { tag: 'v2.1.0' }, updateAvailable: true } }, games: definitions.map(([id, title, short, subtitle, family, engine, port]) => ({
   ...base, id, title, short, subtitle, family, engine, modBusy: false, config: { ...base.config },
   installed: detected.has(id), pathSource: detected.has(id) ? 'steam' : 'none',
   keyStatus: id === 'cod4' || id === 'mw2' ? 'not-required' : fakeKeyPresence.has(id) ? 'stored' : 'missing',
@@ -30,7 +34,6 @@ const snapshot: Snapshot = { root: '', updatesEnabled: true, updates: { cod4: { 
   options: { ...base.options, port, mode: id === 'mw3' ? 'DOM_default' : 'dom', lan: id !== 'bo1' },
   connect: { ...base.connect, candidates: [] }, restart: { ...base.restart },
   orphan: id === 'mw3' ? { pid: 8124, port, reason: 'Sample preview: an unverified listener uses this port.' } : null,
-  blockers: detected.has(id) ? id === 'mw3' ? ['A Plutonium server key is required.'] : [] : ['Game folder not found.'],
   warnings: id === 'bo1' ? ['The existing BO1 launch profile does not use -lan. Add the LAN firewall rule from the Overview tab to restrict network access.'] : [],
 })) };
 const pool = ['mp_crash', 'mp_crossfire', 'mp_backlot', 'mp_bloc', 'mp_bog', 'mp_broadcast', 'mp_chinatown', 'mp_creek', 'mp_killhouse', 'mp_pipeline', 'mp_shipment', 'mp_showdown', 'mp_strike', 'mp_vacant', 'mp_cargoship', 'mp_citystreets', 'mp_convoy', 'mp_countdown', 'mp_farm', 'mp_overgrown'];
@@ -69,12 +72,28 @@ const botStatuses: Record<GameId, BotStatus> = Object.fromEntries(definitions.ma
   versions: id === 'cod4' ? [{ versionId: 'demo-previous', date: '2026-09-01T12:00:00.000Z', manifest: { ref: 'v1.9.0', channel: 'stable' } }] : [],
   channel: 'stable', source: { supported: true, ref: 'v2.1.0', notes: 'Demo release summary. No download occurs in browser preview.', status: 'Sample release available' },
 }])) as Record<GameId, BotStatus>;
+// Derive the checklist flags and blockers the same way the real preflight does.
+function readiness(game: Game) {
+  const id = game.id;
+  const plutonium = plutoniumGames.has(id);
+  game.keyStatus = plutonium ? fakeKeyPresence.has(id) ? 'stored' : 'missing' : 'not-required';
+  game.configMissing = game.installed && !configured.has(id);
+  game.setup = { folder: game.installed, engine: plutonium ? null : game.installed, plutonium: plutonium ? snapshot.plutonium.installed : null,
+    key: plutonium ? game.keyStatus === 'stored' : null, bots: game.installed && botStatuses[id].state !== 'not-installed',
+    config: game.installed && configured.has(id), maps: game.installed };
+  const blockers: string[] = [];
+  if (!game.installed) blockers.push(`${game.short} was not found in your Steam libraries. Choose its installed game folder to continue.`);
+  if (game.setup.plutonium === false) blockers.push('Plutonium is not installed. Click Install Plutonium in this game\'s setup checklist.');
+  if (game.setup.key === false) blockers.push(`Plutonium server key needed for ${game.short}. Paste your key in this game's setup checklist.`);
+  if (game.installed && !game.setup.bots) blockers.push(`${game.short} Bot Warfare is not installed. Click Install Bot Warfare in this game's setup checklist.`);
+  if (game.configMissing) blockers.push('Server config missing. Click Create server config in this game\'s setup checklist.');
+  game.blockers = blockers;
+}
 function updateDemoReadiness(id: GameId) {
-  const game = find(id);
-  game.keyStatus = id === 'cod4' || id === 'mw2' ? 'not-required' : fakeKeyPresence.has(id) ? 'stored' : 'missing';
-  game.blockers = !game.installed ? ['Game folder not found.'] : game.keyStatus === 'missing' ? ['A Plutonium server key is required.'] : [];
+  readiness(find(id));
   emit();
 }
+snapshot.games.forEach(readiness);
 const demoFields: ConfigField[] = [
   { key: 'sv_hostname', sourceKey: 'sv_hostname', label: 'Server name', section: 'Server & access', type: 'text' },
   { key: 'sv_maxclients', sourceKey: 'sv_maxclients', label: 'Player slots', section: 'Server & access', type: 'integer', min: 2, max: 64 },
@@ -115,9 +134,8 @@ export function createDemoManager(): ManagerApi {
     setAutoRestart: async (id, enabled) => { find(id).restart.enabled = enabled; emit(); },
     rescanOrphans: async () => { emit(); },
     chooseFolder: async id => { const game = find(id); game.installed = true; game.pathSource = 'manual'; game.gamePath = `C:\\Example\\SelectedGames\\${game.title}`; game.configPath = `${game.gamePath}\\main\\server.cfg`; updateDemoReadiness(id); return true; },
-    chooseRoot: async () => { snapshot.root = 'C:\\Example\\OptionalScripts'; emit(); return true; },
     rescanInstallations: async () => { emit(); },
-    createStarterConfig: async id => { const game = find(id); if (!game.installed) throw new Error('Choose a game folder first.'); game.config.sv_hostname = `botLANd ${game.short} Server`; emit(); return game.configPath; },
+    createStarterConfig: async id => { const game = find(id); if (!game.installed) throw new Error('Choose a game folder first.'); game.config.sv_hostname = `botLANd ${game.short} Server`; configured.add(id); updateDemoReadiness(id); return game.configPath; },
     listConfigBackups: async () => [],
     previewConfigRestore: async () => { throw new Error('No sample backups are available.'); },
     restoreConfigBackup: async () => { throw new Error('No sample backups are available.'); },
@@ -139,7 +157,7 @@ export function createDemoManager(): ManagerApi {
         else bot.manifest = demoManifest(id, bot.source.ref || 'v2.1.0', bot.channel);
         bot.state = operation === 'remove' ? 'not-installed' : 'installed';
         snapshot.updates[id] = { status: 'current', latest: { tag: 'v2.1.0' }, updateAvailable: false };
-      } finally { game.modBusy = false; emit(); }
+      } finally { game.modBusy = false; updateDemoReadiness(id); }
     },
     setBotChannel: async (id, channel) => {
       if (channel === 'development' && id !== 'cod4' && id !== 'bo2') throw new Error('Development builds are not available for this game.');
@@ -151,7 +169,7 @@ export function createDemoManager(): ManagerApi {
     setUpdateChecks: async enabled => { snapshot.updatesEnabled = enabled; emit(); },
     saveKey: async (id, key) => { if (!key.trim()) throw new Error('A key is required.'); fakeKeyPresence.add(id); updateDemoReadiness(id); },
     removeKey: async id => { fakeKeyPresence.delete(id); updateDemoReadiness(id); },
-    importKey: async id => { if (!snapshot.root || id !== 'mw3') return false; fakeKeyPresence.add(id); updateDemoReadiness(id); return true; },
+    updatePlutonium: async () => { snapshot.plutonium = { ...snapshot.plutonium, installed: true, updating: false, lastUpdated: new Date().toISOString(), error: null }; snapshot.games.forEach(readiness); emit(); return true; },
     openKeyPage: async () => {}, openEngineGuide: async () => {}, openConfig: async () => false,
     document: async (id, target, mode) => demoDocument(id, target, mode),
     previewSettings: async (id, target, mode, values) => ({ token: '0'.repeat(64), changed: true, changes: Object.entries(values).map(([key, after]) => ({ key, label: key, before: demoDocument(id, target, mode).values[key] ?? '(not set)', after, duplicates: 1 })) }),

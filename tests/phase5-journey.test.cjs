@@ -143,8 +143,7 @@ test('six synthetic installs: starter, ZIP mod, readiness, rotation, owned start
     const installer = new BotWarfareInstaller({ source, download, localAppData: local,
       isRunning: id => manager.instances.get(id)?.status });
     const events = [];
-    manager = new ServerManager(path.join(dir, 'settings.json'), event => events.push(event),
-      path.join(dir, 'nonexistent-private-launchers'), {
+    manager = new ServerManager(path.join(dir, 'settings.json'), event => events.push(event), {
         modInstaller: installer, modSource: source,
         keyStore: {
           has: async id => readyKeys.has(id),

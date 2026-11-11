@@ -115,6 +115,7 @@ async function ipcFixture() {
     './botwarfare-source.cjs': { BotWarfareSource: class {} },
     './botwarfare-install.cjs': { BotWarfareInstaller: class {} },
     './session-logs.cjs': { SessionLogs: class {} },
+    './plutonium-update.cjs': { PlutoniumUpdater: class {} },
     './connect-address.cjs': {
       discoverConnectAddresses(port) {
         discoveries.push(port);

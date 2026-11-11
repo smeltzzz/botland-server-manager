@@ -18,7 +18,7 @@ async function temporary(testContext) {
 
 test('an ambiguous listener on a stopping server\'s own port is not reported as an orphan', async t => {
   const dir = await temporary(t);
-  const manager = new ServerManager(path.join(dir, 'settings.json'), () => {}, dir, {
+  const manager = new ServerManager(path.join(dir, 'settings.json'), () => {}, {
     findPossibleOrphans: async candidates => candidates.map(candidate => ({
       id: candidate.id, pid: null, port: candidate.port, reason: 'UDP port occupied (ambiguous PID; process identity unverified)',
     })),

@@ -236,27 +236,4 @@ async function saveConfig(file, values, opts = {}) {
     }
   });
 }
-function parseLauncher(text) {
-  const variables = {};
-  for (const line of text.split(/\r?\n/)) {
-    // Accept the common batch forms: set "KEY=VALUE", set KEY=VALUE,
-    // set KEY = VALUE and set KEY="VALUE". Values may contain '='.
-    const match = line.match(/^\s*set\s+(.+?)\s*$/i);
-    if (!match) continue;
-    let body = match[1];
-    if (body.length >= 2 && body.startsWith('"') && body.endsWith('"') && body.indexOf('"', 1) === body.length - 1) {
-      body = body.slice(1, -1);
-    }
-    const equals = body.indexOf('=');
-    if (equals <= 0) continue;
-    const key = body.slice(0, equals).trim();
-    if (!/^[a-zA-Z][a-zA-Z0-9_]*$/.test(key)) continue;
-    let value = body.slice(equals + 1).trim();
-    if (value.length >= 2 && ((value.startsWith('"') && value.endsWith('"')) || (value.startsWith("'") && value.endsWith("'")))) {
-      value = value.slice(1, -1);
-    }
-    variables[key.toLowerCase()] = value;
-  }
-  return variables;
-}
-module.exports = { decode, withoutBlockComments, parseConfig, parseEntries, inspectText, isSecret, validateValues, updateConfigText, readConfig, readDocument, previewConfig, saveConfig, parseLauncher };
+module.exports = { decode, withoutBlockComments, parseConfig, parseEntries, inspectText, isSecret, validateValues, updateConfigText, readConfig, readDocument, previewConfig, saveConfig };

@@ -36,7 +36,7 @@ test('base config requests reject an invalid mode name', async t => {
   await fs.mkdir(root, { recursive: true });
   const dir = await fs.mkdtemp(path.join(root, 'botland-sweep-'));
   t.after(() => fs.rm(dir, { recursive: true, force: true }));
-  const manager = new ServerManager(path.join(dir, 'settings.json'), () => {}, dir);
+  const manager = new ServerManager(path.join(dir, 'settings.json'), () => {});
   manager.data.games.cod4 = { gamePath: dir };
   for (const mode of ['dom;quit', '../x', { toString: () => 'dom' }]) {
     await assert.rejects(manager.configTarget('cod4', 'base', mode), /Invalid mode name/);

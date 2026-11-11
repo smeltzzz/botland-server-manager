@@ -52,7 +52,7 @@ async function fixture(t) {
   await fs.mkdir(path.join(dir, 'main'));
   await fs.mkdir(path.join(dir, 'userraw'));
   const timers = clock();
-  const manager = new ServerManager(path.join(dir, 'settings.json'), () => {}, dir, { restartTimers: timers });
+  const manager = new ServerManager(path.join(dir, 'settings.json'), () => {}, { restartTimers: timers });
   manager.broadcastState = async () => {};
   manager.check = async () => ({ blockers: [], gamePath: dir, options: { port: 28962, mode: 'dom', shuffle: false, selectedMaps: [], lan: true } });
   manager.maps = async () => ({ maps: ['mp_alpha', 'mp_bravo'], modes: [{ value: 'dom' }] });
@@ -84,7 +84,7 @@ test('restart is per-game, opt-in, persisted and validated; snapshots never pers
   const saved = JSON.parse(await fs.readFile(path.join(dir, 'settings.json'), 'utf8'));
   assert.equal(saved.games.cod4.autoRestart, true);
   assert.equal(saved.games.cod4.restart, undefined);
-  const next = new ServerManager(path.join(dir, 'settings.json'), () => {}, dir);
+  const next = new ServerManager(path.join(dir, 'settings.json'), () => {});
   await next.initialize();
   next.check = async () => ({ installed: false, gamePath: '', pathSource: 'none', keyStatus: 'not-required', blockers: [], warnings: [], options: {} });
   const snapshot = await next.snapshot();

@@ -76,7 +76,7 @@ async function fixture(t, id, { pausedDownload = false } = {}) {
   let manager;
   const installer = new BotWarfareInstaller({ source, download, localAppData,
     isRunning: gameId => manager.instances.get(gameId)?.status });
-  manager = new ServerManager(path.join(root, 'settings.json'), () => {}, path.join(root, 'absent-scripts'),
+  manager = new ServerManager(path.join(root, 'settings.json'), () => {},
     { modSource: source, modInstaller: installer, detectInstallations: async () => ({ games: {} }) });
   manager.data.games[id] = { gamePath };
   return { root, gamePath, localAppData, manager, installer, metadata, fetches, downloads, fixtureArchive,

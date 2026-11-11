@@ -34,7 +34,7 @@ async function temporary(testContext) {
 test('server output keeps multi-byte characters that are split across chunks', async t => {
   const dir = await temporary(t);
   const logs = [];
-  const manager = new ServerManager(path.join(dir, 'settings.json'), event => { if (event.type === 'log') logs.push(event.entry.message); }, dir);
+  const manager = new ServerManager(path.join(dir, 'settings.json'), event => { if (event.type === 'log') logs.push(event.entry.message); });
   manager.broadcastState = async () => {};
   manager.check = async () => ({ blockers: [], gamePath: dir, options: { port: 28960, mode: 'dom', shuffle: false, selectedMaps: [], lan: true } });
   manager.portInUse = async () => false;
@@ -56,7 +56,7 @@ test('server output keeps multi-byte characters that are split across chunks', a
 
 test('a failed stop of a cancelled launch restores a consistent running state', async t => {
   const dir = await temporary(t);
-  const manager = new ServerManager(path.join(dir, 'settings.json'), () => {}, dir);
+  const manager = new ServerManager(path.join(dir, 'settings.json'), () => {});
   manager.broadcastState = async () => {};
   const child = new EventEmitter();
   Object.assign(child, { pid: 4343, stdout: null, stderr: null, exitCode: null, signalCode: null });
@@ -73,7 +73,7 @@ test('a failed stop of a cancelled launch restores a consistent running state', 
 
 test('a declined UAC prompt is recognized by its native exit code, not localized text', async t => {
   const dir = await temporary(t);
-  const manager = new ServerManager(path.join(dir, 'settings.json'), () => {}, dir);
+  const manager = new ServerManager(path.join(dir, 'settings.json'), () => {});
   let command = '';
   execImpl = (_file, args, _options, callback) => {
     command = args.at(-1);
@@ -87,7 +87,7 @@ test('a declined UAC prompt is recognized by its native exit code, not localized
 
 test('saving mode and maps together scans the installation once', async t => {
   const dir = await temporary(t);
-  const manager = new ServerManager(path.join(dir, 'settings.json'), () => {}, dir);
+  const manager = new ServerManager(path.join(dir, 'settings.json'), () => {});
   manager.broadcastState = async () => {};
   let scans = 0;
   manager.maps = async () => { scans++; return { maps: ['mp_alpha', 'mp_bravo'], modes: [{ value: 'dom' }, { value: 'war' }] }; };

@@ -69,7 +69,7 @@ test('changing a port does not discard a custom artwork selection', async () => 
   await fs.mkdir(root, { recursive: true });
   const dir = await fs.mkdtemp(path.join(root, 'botland-options-'));
   try {
-    const manager = new ServerManager(path.join(dir, 'settings.json'), () => {}, 'unused');
+    const manager = new ServerManager(path.join(dir, 'settings.json'), () => {});
     manager.broadcastState = async () => {};
     manager.data.games.waw = { artwork: { hero: 'C:\\my-art\\hero.jpg' } };
     await manager.saveOptions('waw', { port: 29000 });
@@ -86,7 +86,7 @@ test('MW3 mode rules route to the selected DSR file', async () => {
     await fs.mkdir(admin, { recursive: true });
     await fs.writeFile(path.join(admin, 'DOM_default.dsr'), 'gameOpt commonOption.scoreLimit "200" // points\r\n');
     await fs.writeFile(path.join(admin, 'server.cfg'), 'set sv_maxclients "18"\r\n');
-    const manager = new ServerManager('unused', () => {}, 'unused');
+    const manager = new ServerManager('unused', () => {});
     manager.data.games.mw3 = { gamePath: dir, mode: 'DOM_default' };
     manager.broadcastState = async () => {};
     const doc = await manager.document('mw3', 'mode', 'DOM_default');
@@ -106,7 +106,7 @@ test('BO2 mode rules route to the selected gamesettings file, not dedicated.cfg'
     await fs.mkdir(modeDir, { recursive: true });
     await fs.writeFile(path.join(modeDir, 'dom.cfg'), 'execgts gamesettings_default.cfg\r\nset_gametype dom\r\ngts timelimit 5\r\n');
     await fs.writeFile(path.join(dir, 'main', 'dedicated.cfg'), 'set sv_hostname "untouched"\r\n');
-    const manager = new ServerManager('unused', () => {}, 'unused');
+    const manager = new ServerManager('unused', () => {});
     manager.data.games.bo2 = { gamePath: dir, mode: 'dom' };
     manager.broadcastState = async () => {};
     const document = await manager.document('bo2', 'mode', 'dom');

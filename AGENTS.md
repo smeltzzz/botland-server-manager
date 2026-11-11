@@ -3,8 +3,8 @@
 ## Quick context
 
 - Windows desktop app (Electron main process + React/TS renderer) that configures and launches six Call of Duty bot servers: CoD4, WaW, MW2, BO1, MW3, BO2.
-- This repo is `ServerManager/`. The legacy `1-CoD4-Server` … `6-BO2-Server` folders are **siblings** of the repo (in this checkout under `D:\GameServers`), not tracked. The app writes configs/rotations into the _installed game folder_, never into those scripts.
-- In dev the default legacy-scripts root is the repo's parent (`electron/main.cjs` → `path.resolve(__dirname, '..', '..')`), so those sibling folders are found automatically. Packaged builds start with no root. Launchers are read only for an explicit key import.
+- This repo is `ServerManager/` (in this checkout under `D:\GameServers`). The app is the only way servers are set up and launched: there are no batch launchers or legacy script folders, and no code reads them. It writes configs/rotations into the _installed game folder_.
+- Setup is click-by-click: each game's Overview has a setup checklist driven by the snapshot's per-game `setup` flags (`folder`, `engine`, `plutonium`, `key`, `bots`, `config`, `maps`; `null` = not applicable), computed in `check()`.
 - Direct commits to `main`; PRs are not used (see `CONTRIBUTING.md`). CI runs on push to `main` and tags `v*`.
 - Runtime state lives in `%APPDATA%\botland-server-manager` (`settings.json`, `keys.json`, `botwarfare-sources.json`, `session-logs/`), not in the repo. Old settings in `%APPDATA%\BotLANd Server Manager` are migrated on launch.
 
@@ -35,7 +35,7 @@
 | `electron/main.cjs`     | App/window lifecycle, the single `manager:action` IPC switch, `manager:event` broadcasts      |
 | `electron/manager.cjs`  | `ServerManager`: state, detection, launch/stop, config/rotation/backup/firewall orchestration |
 | `electron/preload.cjs`  | `window.manager` (`ManagerApi`), context-isolated bridge                                      |
-| `electron/profiles.cjs` | Per-title source of truth: folder, launcher, config, rotation, executable, port, default mode |
+| `electron/profiles.cjs` | Per-title source of truth: config, rotation, executable, port, default mode |
 | `electron/schema.cjs`   | Editable settings schema + upstream source repos                                              |
 | `electron/maps.cjs`     | Map scanning, mode discovery, rotation generation                                             |
 | `electron/config.cjs`   | Config parse/preview/commit, secret masking, encoding/BOM/line-ending preservation            |
@@ -45,6 +45,7 @@ Other main-process modules, grouped by feature:
 
 - Detection/setup: `detection.cjs` (Steam registry + `libraryfolders.vdf`), `starter-config.cjs`.
 - Bot Warfare: `botwarfare-source.cjs` → `botwarfare-download.cjs` → `botwarfare-recipes.cjs` → `botwarfare-install.cjs`, plus `mod-archive.cjs`. Explicit, upstream-only, SHA-256/inspection-checked, journaled installs; preserve rollback/version-retention behavior.
+- Plutonium: `plutonium-update.cjs` downloads the pinned official updater from `cdn.plutonium.pw` and runs `plutonium.exe -update-only` (visible window, no pipes — it hangs otherwise). It runs before a Plutonium launch at most every 6 h, is skipped while another Plutonium server or the Plutonium launcher is open, closes only the launcher process it spawned, and only blocks a launch when Plutonium is not installed.
 - Config/runtime: `config-backups.cjs`, `session-logs.cjs` + `log-tail.cjs`, `connect-address.cjs`, `orphan-detect.cjs`, `diagnostics.cjs`, `key-store.cjs`, `firewall-rule.cjs`.
 
 Renderer:
@@ -58,7 +59,7 @@ Renderer:
 ## Critical invariants (do not break)
 
 - **Transactional config saves**: `previewSettings` returns a 64-char SHA-256 token; `commitSettings` requires it, rejects writes after external edits or a changed `expectedPath`, writes a byte-for-byte `.bak-*`, and preserves encoding (UTF-8/UTF-16 with BOM), BOM and line endings. Tests cover concurrent/external edits.
-- **Secrets**: Plutonium keys are read in memory from legacy launchers only on explicit import, stored via Electron `safeStorage` (Windows DPAPI) in `keys.json`, never included in snapshots/logs/IPC responses, and fail closed if encryption is unavailable. `rcon_password` and GUIDs are masked by `config.cjs`; game configs/backups still contain plaintext secrets by game requirement.
+- **Secrets**: Plutonium keys are pasted by the user, stored via Electron `safeStorage` (Windows DPAPI) in `keys.json`, never included in snapshots/logs/IPC responses, and fail closed if encryption is unavailable. `rcon_password` and GUIDs are masked by `config.cjs`; game configs/backups still contain plaintext secrets by game requirement.
 - **Rotations**: generated on every Start and overwrite the profile's rotation file. Never hand-edit them. MW3/BO2 base configs must `exec` the generated rotation or launch preflight blocks.
 - **Process management**: only processes spawned by this app are managed. Stop = Cod4R `quit` on its console pipe first, then `taskkill /T /F` for the owned PID; other engines use `taskkill`. Orphans are reported read-only and never adopted/killed. UDP conflicts are checked via `netstat -ano -p udp` for IPv4 and IPv6; auto-restart refuses an unknown port state.
 - **Title-specific rules stay in profiles/schema/maps**: CoD4 `dedicated 1→2`, MW2 `sv_lanonly 1→0`, Plutonium `-lan` present/absent (BO1 has no `-lan`). BO2 needs at least two maps; MW3/BO2 mode files are `.dsr`/`gameSettings/*.cfg`; MW3 caps at 18 slots and requires `fs_game mods/bots`.

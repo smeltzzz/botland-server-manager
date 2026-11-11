@@ -16,7 +16,7 @@ async function temporary(testContext) {
 
 test('an ambiguous orphan whose port belongs to a running managed server is not reported', async t => {
   const dir = await temporary(t);
-  const manager = new ServerManager(path.join(dir, 'settings.json'), () => {}, dir, {
+  const manager = new ServerManager(path.join(dir, 'settings.json'), () => {}, {
     findPossibleOrphans: async candidates => candidates.map(candidate => ({
       id: candidate.id, pid: null, port: candidate.port, reason: 'UDP port occupied (ambiguous PID; process identity unverified)',
     })),
@@ -44,7 +44,7 @@ test('an ambiguous orphan whose port belongs to a running managed server is not 
 
 test('an ambiguous orphan on a different port is reported even when a server is running', async t => {
   const dir = await temporary(t);
-  const manager = new ServerManager(path.join(dir, 'settings.json'), () => {}, dir, {
+  const manager = new ServerManager(path.join(dir, 'settings.json'), () => {}, {
     findPossibleOrphans: async candidates => candidates.map(candidate => ({
       id: candidate.id, pid: null, port: candidate.port, reason: 'UDP port occupied (ambiguous PID; process identity unverified)',
     })),

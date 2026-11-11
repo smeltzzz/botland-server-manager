@@ -7,6 +7,7 @@ const { KeyStore } = require('./key-store.cjs');
 const { BotWarfareSource } = require('./botwarfare-source.cjs');
 const { BotWarfareInstaller } = require('./botwarfare-install.cjs');
 const { SessionLogs } = require('./session-logs.cjs');
+const { PlutoniumUpdater } = require('./plutonium-update.cjs');
 const { discoverConnectAddresses } = require('./connect-address.cjs');
 const { formatDiagnostics } = require('./diagnostics.cjs');
 const { profileFor } = require('./profiles.cjs');
@@ -44,7 +45,6 @@ async function migrateSettings() {
 }
 
 async function createWindow() {
-  const defaultRoot = app.isPackaged ? '' : path.resolve(__dirname, '..', '..');
   await migrateSettings();
   const modSource = new BotWarfareSource({ userData: app.getPath('userData') });
   const modInstaller = new BotWarfareInstaller({ source: modSource, localAppData: process.env.LOCALAPPDATA,
@@ -53,8 +53,9 @@ async function createWindow() {
     // Server output can arrive while the renderer is reloading or gone; sending to a
     // disposed frame throws and must not crash the main process or end a stream handler.
     try { if (window && !window.isDestroyed()) window.webContents.send('manager:event', data); } catch { /* Renderer unavailable. */ }
-  }, defaultRoot, { keyStore: new KeyStore(path.join(app.getPath('userData'), 'keys.json'), safeStorage),
-    modSource, modInstaller, sessionLogs: new SessionLogs({ userData: app.getPath('userData') }) });
+  }, { keyStore: new KeyStore(path.join(app.getPath('userData'), 'keys.json'), safeStorage),
+    modSource, modInstaller, sessionLogs: new SessionLogs({ userData: app.getPath('userData') }),
+    plutonium: new PlutoniumUpdater({ userData: app.getPath('userData') }) });
   const recoveredSettings = await manager.initialize();
   await manager.rescanInstallations();
   window = new BrowserWindow({
@@ -178,7 +179,6 @@ if (primaryInstance) app.whenReady().then(() => {
         return true;
       }
       case 'chooseFolder': return manager.chooseFolder(id, window, dialog);
-      case 'chooseRoot': return manager.chooseRoot(window, dialog);
       case 'rescanInstallations': return manager.rescanInstallations();
       case 'createStarterConfig': return manager.createStarterConfig(id);
       case 'botStatus': return manager.botStatus(id);
@@ -188,7 +188,7 @@ if (primaryInstance) app.whenReady().then(() => {
       case 'setUpdateChecks': return manager.setUpdateChecks(payload.enabled);
       case 'saveKey': return manager.saveKey(id, payload.key);
       case 'removeKey': return manager.removeKey(id);
-      case 'importKey': return manager.importKey(id);
+      case 'updatePlutonium': return manager.updatePlutonium();
       case 'openKeyPage': return shell.openExternal('https://platform.plutonium.pw/serverkeys/');
       case 'openEngineGuide': return shell.openExternal(engineGuides[profileFor(id).id]);
       case 'openConfig': {
@@ -213,11 +213,12 @@ function requestQuit() {
   if (stoppingForQuit) return;
   if (manager?.hasModWork?.()) {
     // Quitting mid-install would leave files for the next launch to recover.
+    const plutonium = Boolean(manager.plutonium?.updating);
     showBox({
       type: 'info', buttons: ['OK'], defaultId: 0, cancelId: 0,
-      title: 'Bot Warfare change in progress',
-      message: 'Wait for the Bot Warfare change to finish before closing botLANd.',
-      detail: 'Closing now could leave the mod files half-updated. The change usually takes less than a minute.',
+      title: plutonium ? 'Plutonium update in progress' : 'Bot Warfare change in progress',
+      message: plutonium ? 'Wait for the Plutonium update to finish before closing botLANd.' : 'Wait for the Bot Warfare change to finish before closing botLANd.',
+      detail: plutonium ? 'Closing now could leave Plutonium half-updated.' : 'Closing now could leave the mod files half-updated. The change usually takes less than a minute.',
     });
     return;
   }

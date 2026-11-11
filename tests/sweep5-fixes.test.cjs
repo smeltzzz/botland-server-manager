@@ -34,7 +34,7 @@ test('manager artwork uses the Steam path found by detection', async t => {
   const cache = path.join(steam, 'appcache', 'librarycache', '7940');
   await fs.mkdir(cache, { recursive: true });
   await fs.writeFile(path.join(cache, 'library_600x900.jpg'), jpeg(0x6b));
-  const manager = new ServerManager(path.join(dir, 'settings.json'), () => {}, dir);
+  const manager = new ServerManager(path.join(dir, 'settings.json'), () => {});
   manager.detected = { steamPath: steam, games: {} };
   const image = await manager.artwork('cod4', 'cover');
   assert.equal(image, `data:image/jpeg;base64,${jpeg(0x6b).toString('base64')}`);
@@ -43,7 +43,7 @@ test('manager artwork uses the Steam path found by detection', async t => {
 test('an ambiguous orphan keeps its warning with an explicitly unknown PID', async t => {
   const dir = await temporary(t);
   const reason = 'UDP port occupied (ambiguous PID; process identity unverified)';
-  const manager = new ServerManager(path.join(dir, 'settings.json'), () => {}, dir, {
+  const manager = new ServerManager(path.join(dir, 'settings.json'), () => {}, {
     // The real scan reports pid: null when the two address families disagree.
     findPossibleOrphans: async candidates => candidates.map(candidate => ({ id: candidate.id, pid: null, port: candidate.port, reason })),
   });
@@ -61,7 +61,7 @@ test('an ambiguous orphan keeps its warning with an explicitly unknown PID', asy
 
 test('an orphan whose PID belongs to a managed server is not reported', async t => {
   const dir = await temporary(t);
-  const manager = new ServerManager(path.join(dir, 'settings.json'), () => {}, dir, {
+  const manager = new ServerManager(path.join(dir, 'settings.json'), () => {}, {
     findPossibleOrphans: async candidates => candidates.map(candidate => ({
       id: candidate.id, pid: 4321, port: candidate.port, reason: 'UDP port occupied (process identity unverified)',
     })),
@@ -78,7 +78,7 @@ test('an orphan whose PID belongs to a managed server is not reported', async t 
 
 test('resetting one artwork kind leaves the other custom image in place', async t => {
   const dir = await temporary(t);
-  const manager = new ServerManager(path.join(dir, 'settings.json'), () => {}, dir);
+  const manager = new ServerManager(path.join(dir, 'settings.json'), () => {});
   const cover = path.join(dir, 'custom-cover.png');
   const hero = path.join(dir, 'custom-hero.png');
   manager.data.games.cod4 = { artwork: { cover, hero } };

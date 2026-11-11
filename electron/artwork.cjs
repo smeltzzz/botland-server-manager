@@ -4,7 +4,15 @@ const { profileFor } = require('./profiles.cjs');
 
 // Images are loaded from the user's own Steam cache, never shipped with the app.
 const appIds = { cod4: '7940', waw: '10090', mw2: '10180', bo1: '42700', mw3: '42690', bo2: '202970' };
-const fileNames = { hero: 'library_hero.jpg', cover: 'library_600x900.jpg' };
+// Server cards and the game page header are both wide banners, so the "cover"
+// uses Steam's wide hero art (falling back to the store header) rather than the
+// tall 600x900 box art, which crops badly in a short, wide card. The logo is a
+// transparent PNG laid over either image.
+const fileNames = {
+  hero: ['library_hero.jpg', 'header.jpg'],
+  cover: ['library_hero.jpg', 'header.jpg', 'library_600x900.jpg'],
+  logo: ['logo.png'],
+};
 function cacheRoots(extraRoots = []) {
   return [...new Set([
     ...extraRoots.filter(root => typeof root === 'string' && root),
@@ -36,17 +44,21 @@ async function artworkFor(id, kind, override, extraRoots = []) {
     const image = await loadImage(override);
     if (image) return image;
   }
+  // The Steam install found by detection comes first; within one cache, the
+  // best-suited image name wins over its fallbacks.
   for (const root of cacheRoots(extraRoots)) {
     const folder = path.join(root, appIds[id]);
-    const image = await loadImage(path.join(folder, fileNames[kind]));
-    if (image) return image;
-    // Newer Steam clients keep each image in a hashed subfolder of the app folder.
-    let entries = [];
-    try { entries = await fs.readdir(folder, { withFileTypes: true }); } catch { /* No cache for this app. */ }
-    for (const entry of entries) {
-      if (!entry.isDirectory()) continue;
-      const nested = await loadImage(path.join(folder, entry.name, fileNames[kind]));
-      if (nested) return nested;
+    for (const name of fileNames[kind]) {
+      const image = await loadImage(path.join(folder, name));
+      if (image) return image;
+      // Newer Steam clients keep each image in a hashed subfolder of the app folder.
+      let entries = [];
+      try { entries = await fs.readdir(folder, { withFileTypes: true }); } catch { /* No cache for this app. */ }
+      for (const entry of entries) {
+        if (!entry.isDirectory()) continue;
+        const nested = await loadImage(path.join(folder, entry.name, name));
+        if (nested) return nested;
+      }
     }
   }
   return null;

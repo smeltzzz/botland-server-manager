@@ -12,7 +12,7 @@ botLANd is maintained with direct commits to `main`; pull requests are not used.
 
 ## Protect private data
 
-Legacy launcher scripts may contain plaintext Plutonium keys. Never commit them, game configs, logs, secrets, personal paths, or screenshots that expose private data. Use synthetic placeholders in issues and screenshots. Do not paste keys into issues or commits. If you suspect a vulnerability, follow [SECURITY.md](SECURITY.md) instead of opening a public issue.
+Old batch launchers may contain plaintext Plutonium keys. Never commit them, game configs, logs, secrets, personal paths, or screenshots that expose private data. Use synthetic placeholders in issues and screenshots. Do not paste keys into issues or commits. If you suspect a vulnerability, follow [SECURITY.md](SECURITY.md) instead of opening a public issue.
 
 ## Licensing
 

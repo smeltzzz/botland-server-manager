@@ -19,7 +19,7 @@ async function put(file, contents = '') {
 
 test('CoD4 readiness reports absent maps and stale selections before Start', async t => {
   const dir = await temporary(t);
-  const manager = new ServerManager(path.join(dir, 'settings.json'), () => {}, '');
+  const manager = new ServerManager(path.join(dir, 'settings.json'), () => {});
   manager.data.games.cod4 = { gamePath: dir };
   await put(path.join(dir, 'main', 'botserver.cfg'), 'set sv_hostname "Fixture"\n');
   await put(path.join(dir, 'Cod4R-DedRun.exe'));
@@ -41,7 +41,7 @@ test('BO2 readiness requires a matching multiplayer ruleset and two maps', async
   process.env.LOCALAPPDATA = path.join(dir, 'local');
   t.after(() => { if (original === undefined) delete process.env.LOCALAPPDATA; else process.env.LOCALAPPDATA = original; });
   const gamePath = path.join(dir, 'game');
-  const manager = new ServerManager(path.join(dir, 'settings.json'), () => {}, '');
+  const manager = new ServerManager(path.join(dir, 'settings.json'), () => {});
   manager.data.games.bo2 = { gamePath };
   await put(path.join(gamePath, 't6mp.exe'));
   await put(path.join(gamePath, 'main', 'dedicated.cfg'), 'exec rotation_dom_shuffled.cfg\n');

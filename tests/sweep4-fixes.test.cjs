@@ -19,7 +19,7 @@ async function managerWithConfig(t) {
   await fs.mkdir(path.join(dir, 'main'), { recursive: true });
   const file = path.join(dir, 'main', 'botserver.cfg');
   await fs.writeFile(file, 'set sv_hostname "Before"\r\n');
-  const manager = new ServerManager(path.join(dir, 'settings.json'), () => {}, dir);
+  const manager = new ServerManager(path.join(dir, 'settings.json'), () => {});
   manager.data.games.cod4 = { gamePath: dir };
   return { dir, file, manager };
 }
