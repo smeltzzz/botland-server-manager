@@ -22,6 +22,7 @@ contextBridge.exposeInMainWorld('manager', {
   setUpdateChecks: (enabled) => invoke('setUpdateChecks', { enabled }),
   saveKey: (id, key) => invoke('saveKey', { id, key }),
   removeKey: (id) => invoke('removeKey', { id }),
+  resetKeyStore: () => invoke('resetKeyStore'),
   updatePlutonium: () => invoke('updatePlutonium'),
   openKeyPage: () => invoke('openKeyPage'),
   openEngineGuide: (id) => invoke('openEngineGuide', { id }),

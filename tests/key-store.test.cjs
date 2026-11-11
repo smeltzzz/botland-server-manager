@@ -165,3 +165,67 @@ test('rejects a provider that returns plaintext and leaves an existing store int
   assert.deepEqual(await fs.readdir(path.dirname(file)), ['keys.json']);
   assert.equal(await store.get('waw'), 'existing-secret');
 }));
+
+test('reports why a key is unavailable: encryption, damaged file, or another Windows profile', async () => fixture(async file => {
+  const provider = fakeSafeStorage();
+  const store = new KeyStore(file, provider);
+  await store.save('waw', 'profile-a-secret');
+  provider.setAvailable(false);
+  await assert.rejects(store.has('waw'), { code: 'encryption-unavailable' });
+  provider.setAvailable(true);
+
+  // Same file, but this profile's encryption key differs (e.g. restored from another account).
+  const otherProfile = new KeyStore(file, fakeSafeStorage());
+  await assert.rejects(otherProfile.has('waw'), { code: 'unreadable', message: 'Stored server keys are unavailable.' });
+  await assert.rejects(otherProfile.get('waw'), { code: 'unreadable' });
+  assert.equal(await otherProfile.has('bo2'), false, 'games without a stored key are unaffected');
+
+  await fs.writeFile(file, '{"not":"a key store"');
+  await assert.rejects(store.has('waw'), { code: 'damaged' });
+  await assert.rejects(store.save('waw', 'new-secret'), { code: 'damaged' });
+}));
+
+test('saving a key replaces an entry this profile cannot decrypt and leaves the others alone', async () => fixture(async file => {
+  const oldProfile = new KeyStore(file, fakeSafeStorage());
+  for (const id of ['waw', 'bo1', 'mw3']) await oldProfile.save(id, `old-${id}-secret`);
+
+  const store = new KeyStore(file, fakeSafeStorage());
+  for (const id of ['waw', 'bo1', 'mw3']) await assert.rejects(store.has(id), { code: 'unreadable' });
+  await store.save('waw', 'fresh-waw-secret');
+  assert.equal(await store.has('waw'), true);
+  assert.equal(await store.get('waw'), 'fresh-waw-secret');
+  await assert.rejects(store.has('bo1'), { code: 'unreadable' });
+  await assert.rejects(store.has('mw3'), { code: 'unreadable' });
+  assert.deepEqual(Object.keys(JSON.parse(await fs.readFile(file, 'utf8')).keys).sort(), ['bo1', 'mw3', 'waw']);
+  assert.equal((await fs.readFile(file, 'utf8')).includes('fresh-waw-secret'), false);
+}));
+
+test('resetDamaged keeps the unreadable file aside, never touches a readable one, and lets keys be saved again', async () => fixture(async (file, dir) => {
+  const provider = fakeSafeStorage();
+  const store = new KeyStore(file, provider);
+  assert.equal(await store.resetDamaged(), null, 'a missing store is not damaged');
+  await store.save('bo2', 'readable-secret');
+  const original = await fs.readFile(file);
+  assert.equal(await store.resetDamaged(), null);
+  assert.deepEqual(await fs.readFile(file), original, 'a readable store is left untouched');
+
+  // An entry another profile wrote is unreadable, not damaged, so it is also left alone.
+  const otherProfile = new KeyStore(file, fakeSafeStorage());
+  assert.equal(await otherProfile.resetDamaged(), null);
+  assert.deepEqual(await fs.readFile(file), original);
+
+  const damaged = '{"version":1,"keys":{"waw":"%%%not-base64%%%"}}';
+  await fs.writeFile(file, damaged);
+  await assert.rejects(store.save('waw', 'blocked-secret'), { code: 'damaged' });
+  provider.setAvailable(false);
+  const moved = await store.resetDamaged();
+  provider.setAvailable(true);
+  assert.match(moved, /^keys\.json\.corrupt-/);
+  assert.equal(await fs.readFile(path.join(path.dirname(file), moved), 'utf8'), damaged, 'the bad file is kept, not deleted');
+  await assert.rejects(fs.stat(file), { code: 'ENOENT' });
+  assert.equal(await store.has('waw'), false);
+  await store.save('waw', 'fresh-secret');
+  assert.equal(await store.get('waw'), 'fresh-secret');
+  assert.equal((await fs.readdir(path.dirname(file))).length, 2);
+  assert.equal((await fs.readdir(dir)).length, 1);
+}));

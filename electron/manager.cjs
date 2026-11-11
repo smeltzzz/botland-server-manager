@@ -210,18 +210,37 @@ class ServerManager {
         (instance.status === 'running' || instance.status === 'starting' || instance.status === 'stopping');
     });
   }
-  async keyStatus(id) {
-    if (profileFor(id).executable !== 'plutonium') return 'not-required';
-    if (!this.keyStore) return 'missing';
-    try { return await this.keyStore.has(id) ? 'stored' : 'missing'; }
-    catch { return 'unavailable'; }
+  // `reason` is only set for 'unavailable' and is never secret: 'unreadable' (the
+  // stored key cannot be decrypted by this Windows profile), 'damaged' (keys.json
+  // is malformed) or 'encryption-unavailable' (Windows encryption is not usable).
+  async keyState(id) {
+    if (profileFor(id).executable !== 'plutonium') return { status: 'not-required', reason: null };
+    if (!this.keyStore) return { status: 'missing', reason: null };
+    try { return { status: await this.keyStore.has(id) ? 'stored' : 'missing', reason: null }; }
+    catch (error) {
+      const reason = ['damaged', 'unreadable', 'encryption-unavailable'].includes(error?.code) ? error.code : 'unreadable';
+      return { status: 'unavailable', reason };
+    }
   }
   async saveKey(id, key) {
     if (profileFor(id).executable !== 'plutonium') throw new Error('This game does not use a Plutonium server key.');
     if (!this.keyStore) throw new Error('Secure key storage is unavailable.');
-    await this.keyStore.save(id, key);
+    try { await this.keyStore.save(id, key); }
+    catch (error) {
+      if (error?.code === 'damaged') throw new Error('The saved key file (keys.json) is damaged. Click Reset key storage, then paste the key again.');
+      if (error?.code === 'encryption-unavailable') throw new Error('Windows encryption is unavailable for this user, so the key cannot be stored securely.');
+      throw error;
+    }
     // The key is stored; a failed refresh must not report the save as failed.
     await this.broadcastState().catch(() => {});
+  }
+  // Sets a damaged keys.json aside (never deletes it) so keys can be pasted again.
+  // Resolves false, changing nothing, when the file is readable.
+  async resetKeyStore() {
+    if (!this.keyStore || typeof this.keyStore.resetDamaged !== 'function') throw new Error('Secure key storage is unavailable.');
+    const moved = await this.keyStore.resetDamaged();
+    if (moved !== null) await this.broadcastState().catch(() => {});
+    return moved !== null;
   }
   async removeKey(id) {
     if (profileFor(id).executable !== 'plutonium') throw new Error('This game does not use a Plutonium server key.');
@@ -375,7 +394,7 @@ class ServerManager {
     const pathSource = options.gamePath ? 'manual' : gamePath ? 'steam' : 'none';
     const inspected = this.detected && gamePath ? await inspectGameFolder(id, gamePath) : null;
     const installed = inspected ? inspected.installed : Boolean(gamePath && await exists(gamePath));
-    const keyStatus = await this.keyStatus(id);
+    const { status: keyStatus, reason: keyReason } = await this.keyState(id);
     let configMissing = false;
     // Structured readiness for the setup checklist: true/false per step, or
     // null when the step does not apply to this game.
@@ -413,7 +432,11 @@ class ServerManager {
       setup.plutonium = await exists(bootstrapPath());
       if (!setup.plutonium) blockers.push(`Plutonium is not installed (expected at ${bootstrapPath()}). Click Install Plutonium in this game's setup checklist.`);
       if (keyStatus === 'missing') blockers.push(`Plutonium server key needed for ${profile.short}. Paste your key in this game's setup checklist.`);
-      if (keyStatus === 'unavailable') blockers.push('Encrypted server keys cannot be read for this Windows user. Sign in with the original account and check Windows encryption. If keys.json in the app data folder is damaged, back it up before removing it, then paste fresh keys; plaintext storage is never used.');
+      if (keyStatus === 'unavailable') {
+        if (keyReason === 'damaged') blockers.push(`The saved key file (keys.json) is damaged. Click Reset key storage in the ${profile.short} Server key panel (the old file is kept), then paste your key again.`);
+        else if (keyReason === 'encryption-unavailable') blockers.push('Encrypted server keys cannot be read for this Windows user because Windows encryption is unavailable. Sign in with a normal Windows account and check Windows encryption; plaintext storage is never used.');
+        else blockers.push(`The saved ${profile.short} server key cannot be read by this Windows profile (it was probably saved under another account or profile). Paste your key again in the Server key panel to replace it.`);
+      }
       if (profile.id === 'bo1') warnings.push('BO1 has no -lan launch flag. Create the LAN firewall rule from the Overview tab to restrict network access.');
       const botsStart = count();
       if (id === 'mw3') {
@@ -475,7 +498,7 @@ class ServerManager {
       } catch { blockers.push(`Could not read server config: ${profile.config.replaceAll('/', '\\')}`); }
     }
     setup.config = installed && !configMissing && count() === configStart;
-    return { gamePath, installed, pathSource, keyStatus, configMissing, setup, blockers, warnings, options };
+    return { gamePath, installed, pathSource, keyStatus, keyReason, configMissing, setup, blockers, warnings, options };
   }
   async snapshot() {
     const games = await Promise.all(order.map(async id => {
@@ -494,7 +517,7 @@ class ServerManager {
       }
       return { id, title: profile.title, short: profile.short, subtitle: profile.subtitle, family: profile.family, engine: profile.engine,
         configPath: result.gamePath ? path.join(result.gamePath, profile.config) : '',
-        gamePath: result.gamePath, installed: result.installed, pathSource: result.pathSource, keyStatus: result.keyStatus,
+        gamePath: result.gamePath, installed: result.installed, pathSource: result.pathSource, keyStatus: result.keyStatus, keyReason: result.keyReason ?? null,
         configMissing: result.configMissing, setup: result.setup,
         modBusy: this.modBusy.has(id), config, options: result.options, blockers: result.blockers, warnings: result.warnings,
         status: instance?.status || 'stopped', pid: instance?.child?.pid ?? null, startedAt: instance?.startedAt ?? null,

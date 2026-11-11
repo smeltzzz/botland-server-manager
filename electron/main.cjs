@@ -188,6 +188,7 @@ if (primaryInstance) app.whenReady().then(() => {
       case 'setUpdateChecks': return manager.setUpdateChecks(payload.enabled);
       case 'saveKey': return manager.saveKey(id, payload.key);
       case 'removeKey': return manager.removeKey(id);
+      case 'resetKeyStore': return manager.resetKeyStore();
       case 'updatePlutonium': return manager.updatePlutonium();
       case 'openKeyPage': return shell.openExternal('https://platform.plutonium.pw/serverkeys/');
       case 'openEngineGuide': return shell.openExternal(engineGuides[profileFor(id).id]);

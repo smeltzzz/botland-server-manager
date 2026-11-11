@@ -23,6 +23,8 @@ export interface Game {
   installed: boolean;
   pathSource: 'manual' | 'steam' | 'none';
   keyStatus: 'not-required' | 'stored' | 'missing' | 'unavailable';
+  /** Why keyStatus is 'unavailable'; never contains key material. */
+  keyReason?: 'unreadable' | 'damaged' | 'encryption-unavailable' | null;
   /** The game is installed but its server config file does not exist yet. */
   configMissing?: boolean;
   /** Setup checklist steps: done (true), to do (false) or not applicable (null). */
@@ -79,6 +81,8 @@ export interface ManagerApi {
   setUpdateChecks(enabled: boolean): Promise<void>;
   saveKey(id: GameId, key: string): Promise<void>;
   removeKey(id: GameId): Promise<void>;
+  /** Sets a damaged keys.json aside (kept, not deleted). Resolves false when the file was readable. */
+  resetKeyStore(): Promise<boolean>;
   updatePlutonium(): Promise<boolean>;
   openKeyPage(): Promise<void>;
   openEngineGuide(id: GameId): Promise<void>;

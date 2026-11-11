@@ -7,6 +7,15 @@ const maxFileBytes = 64 * 1024;
 const maxCipherBytes = 16 * 1024;
 const invalidStore = 'Stored server keys are unavailable.';
 
+// Failure reasons are safe to publish: 'damaged' (keys.json is unreadable or
+// malformed), 'unreadable' (an entry cannot be decrypted, e.g. it was written
+// under another Windows profile) and 'encryption-unavailable'.
+function storeError(message, code) {
+  const error = new Error(message);
+  error.code = code;
+  return error;
+}
+
 function validId(id) {
   if (typeof id !== 'string' || !gameIds.has(id)) throw new Error('Invalid Plutonium game ID.');
 }
@@ -17,9 +26,9 @@ function plainObject(value) {
 
 function decodeCipher(value) {
   if (typeof value !== 'string' || value.length === 0 || value.length > maxCipherBytes * 4 / 3 + 4 ||
-      !/^(?:[A-Za-z0-9+/]{4})*(?:[A-Za-z0-9+/]{2}==|[A-Za-z0-9+/]{3}=)?$/.test(value)) throw new Error(invalidStore);
+      !/^(?:[A-Za-z0-9+/]{4})*(?:[A-Za-z0-9+/]{2}==|[A-Za-z0-9+/]{3}=)?$/.test(value)) throw storeError(invalidStore, 'damaged');
   const bytes = Buffer.from(value, 'base64');
-  if (!bytes.length || bytes.length > maxCipherBytes || bytes.toString('base64') !== value) throw new Error(invalidStore);
+  if (!bytes.length || bytes.length > maxCipherBytes || bytes.toString('base64') !== value) throw storeError(invalidStore, 'damaged');
   return bytes;
 }
 
@@ -30,7 +39,8 @@ async function decryptKey(safeStorage, stored, asyncProvider) {
     if (typeof key !== 'string' || !key) throw new Error(invalidStore);
     return key;
   } catch {
-    throw new Error(invalidStore);
+    // Well-formed ciphertext that this Windows profile cannot decrypt.
+    throw storeError(invalidStore, 'unreadable');
   } finally {
     bytes.fill(0);
   }
@@ -62,7 +72,7 @@ class KeyStore {
         ? await this.safeStorage.isAsyncEncryptionAvailable()
         : this.safeStorage.isEncryptionAvailable()) === true;
     } catch { /* unavailable */ }
-    if (!available) throw new Error('Secure key storage is unavailable.');
+    if (!available) throw storeError('Secure key storage is unavailable.', 'encryption-unavailable');
   }
 
   run(work) {
@@ -79,7 +89,7 @@ class KeyStore {
       body = await fs.readFile(this.filePath, 'utf8');
     } catch (error) {
       if (error.code === 'ENOENT') return {};
-      throw new Error(invalidStore);
+      throw storeError(invalidStore, 'damaged');
     }
     try {
       if (Buffer.byteLength(body, 'utf8') > maxFileBytes) throw new Error(invalidStore);
@@ -93,8 +103,25 @@ class KeyStore {
       return document.keys;
     } catch {
       // Neither malformed file content nor decryptor exceptions should reach UI/logs.
-      throw new Error(invalidStore);
+      throw storeError(invalidStore, 'damaged');
     }
+  }
+
+  // Recovery for a keys.json that can never be read again: keep the bad file
+  // beside the store under a new name (never deleted) so fresh keys can be saved.
+  // Returns the new file name, or null when the file is readable and was left alone.
+  async resetDamaged() {
+    return this.run(async () => {
+      try {
+        await this.read();
+        return null;
+      } catch (error) {
+        if (error.code !== 'damaged') throw error;
+      }
+      const name = `${path.basename(this.filePath)}.corrupt-${new Date().toISOString().replace(/[:.]/g, '-')}`;
+      await fs.rename(this.filePath, path.join(path.dirname(this.filePath), name));
+      return name;
+    });
   }
 
   async write(keys) {

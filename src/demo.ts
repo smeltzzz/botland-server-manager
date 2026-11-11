@@ -169,6 +169,7 @@ export function createDemoManager(): ManagerApi {
     setUpdateChecks: async enabled => { snapshot.updatesEnabled = enabled; emit(); },
     saveKey: async (id, key) => { if (!key.trim()) throw new Error('A key is required.'); fakeKeyPresence.add(id); updateDemoReadiness(id); },
     removeKey: async id => { fakeKeyPresence.delete(id); updateDemoReadiness(id); },
+    resetKeyStore: async () => false,
     updatePlutonium: async () => { snapshot.plutonium = { ...snapshot.plutonium, installed: true, updating: false, lastUpdated: new Date().toISOString(), error: null }; snapshot.games.forEach(readiness); emit(); return true; },
     openKeyPage: async () => {}, openEngineGuide: async () => {}, openConfig: async () => false,
     document: async (id, target, mode) => demoDocument(id, target, mode),

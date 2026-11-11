@@ -236,3 +236,54 @@ test('a pasted Plutonium key is stored encrypted; only its status is ever publis
   await manager.removeKey('waw');
   assert.equal(game(await manager.snapshot(), 'waw').keyStatus, 'missing');
 }));
+
+test('an unreadable or damaged key store is explained, can be fixed by pasting or resetting, and never leaks a key', async () => fixture(async root => {
+  const keyFile = path.join(root, 'private', 'keys.json');
+  const settings = path.join(root, 'settings.json');
+  const oldProfile = new KeyStore(keyFile, fakeSafeStorage());
+  await oldProfile.save('waw', 'previous-profile-key-111');
+  await oldProfile.save('bo1', 'previous-profile-key-222');
+  const store = new KeyStore(keyFile, fakeSafeStorage());
+  const events = [];
+  const manager = new ServerManager(settings, event => events.push(event), { keyStore: store, detectInstallations: async () => detection() });
+  await manager.initialize();
+  await manager.rescanInstallations();
+
+  // Another Windows profile wrote these keys: unreadable, and pasting must work.
+  let waw = game(await manager.snapshot(), 'waw');
+  assert.equal(waw.keyStatus, 'unavailable');
+  assert.equal(waw.keyReason, 'unreadable');
+  assert.equal(waw.setup.key, false);
+  assert.match(waw.blockers.join(' '), /cannot be read by this Windows profile.*Paste your key again/);
+  assert.equal(game(await manager.snapshot(), 'bo2').keyStatus, 'missing');
+  assert.equal(game(await manager.snapshot(), 'bo2').keyReason, null);
+  assert.equal(game(await manager.snapshot(), 'cod4').keyReason, null);
+  assert.equal(await manager.resetKeyStore(), false, 'an unreadable (not damaged) key is not reset');
+  await manager.saveKey('waw', 'fresh-key-abcdef');
+  waw = game(await manager.snapshot(), 'waw');
+  assert.equal(waw.keyStatus, 'stored');
+  assert.equal(waw.keyReason, null);
+  assert.equal(game(await manager.snapshot(), 'bo1').keyReason, 'unreadable');
+
+  // A damaged keys.json blocks saving until it is reset; the old file is kept.
+  const damaged = '{"version":1,"keys":';
+  await fs.writeFile(keyFile, damaged);
+  const blocked = game(await manager.snapshot(), 'mw3');
+  assert.equal(blocked.keyStatus, 'unavailable');
+  assert.equal(blocked.keyReason, 'damaged');
+  assert.match(blocked.blockers.join(' '), /Reset key storage/);
+  await assert.rejects(manager.saveKey('mw3', 'mw3-key-12345'), /damaged.*Reset key storage/);
+  assert.equal(await manager.resetKeyStore(), true);
+  assert.equal(game(await manager.snapshot(), 'mw3').keyStatus, 'missing');
+  const kept = (await fs.readdir(path.dirname(keyFile))).filter(name => name.startsWith('keys.json.corrupt-'));
+  assert.equal(kept.length, 1);
+  assert.equal(await fs.readFile(path.join(path.dirname(keyFile), kept[0]), 'utf8'), damaged);
+  await manager.saveKey('mw3', 'mw3-key-12345');
+  assert.equal(game(await manager.snapshot(), 'mw3').keyStatus, 'stored');
+
+  const published = JSON.stringify({ snapshot: await manager.snapshot(), events, settings: manager.data });
+  for (const secret of ['fresh-key-abcdef', 'mw3-key-12345', 'previous-profile-key']) assert.equal(published.includes(secret), false);
+
+  const noReset = new ServerManager(settings, () => {}, { detectInstallations: async () => detection() });
+  await assert.rejects(noReset.resetKeyStore(), /unavailable/);
+}));
