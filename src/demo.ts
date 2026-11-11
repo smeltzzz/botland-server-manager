@@ -69,7 +69,6 @@ const demoManifest = (id: GameId, ref: string, channel: 'stable' | 'development'
 const botStatuses: Record<GameId, BotStatus> = Object.fromEntries(definitions.map(([id]) => [id, {
   state: id === 'cod4' ? 'installed' : id === 'bo1' ? 'unknown' : 'not-installed', targetPath: '',
   manifest: id === 'cod4' ? demoManifest(id, 'v2.0.0') : null,
-  versions: id === 'cod4' ? [{ versionId: 'demo-previous', date: '2026-09-01T12:00:00.000Z', manifest: { ref: 'v1.9.0', channel: 'stable' } }] : [],
   channel: 'stable', source: { supported: true, ref: 'v2.1.0', notes: 'Demo release summary. No download occurs in browser preview.', status: 'Sample release available' },
 }])) as Record<GameId, BotStatus>;
 // Derive the checklist flags and blockers the same way the real preflight does.
@@ -141,19 +140,14 @@ export function createDemoManager(): ManagerApi {
     restoreConfigBackup: async () => { throw new Error('No sample backups are available.'); },
     pruneConfigBackups: async () => { throw new Error('No sample backups are available.'); },
     botStatus: async id => structuredClone({ ...botStatuses[id], targetPath: `${find(id).gamePath}\\mods\\bots` }),
-    botAction: async (id, operation, versionId) => {
+    botAction: async (id, operation) => {
       const game = find(id);
       const bot = botStatuses[id];
       if (!game.installed || game.status !== 'stopped' || game.modBusy) throw new Error('Stop the server and choose a game folder first.');
       if (operation === 'update' && bot.state !== 'installed') throw new Error('No managed version to update.');
-      if (operation === 'restore' && !bot.versions.some(version => version.versionId === versionId)) throw new Error('Choose a previous managed version.');
       game.modBusy = true; emit();
       try {
-        if ((operation === 'update' || operation === 'reinstall') && bot.manifest) bot.versions.unshift({ versionId: `demo-${Date.now()}`, date: bot.manifest.date, manifest: { ref: bot.manifest.ref, channel: bot.manifest.channel } });
-        if (operation === 'restore') {
-          const version = bot.versions.find(entry => entry.versionId === versionId)!;
-          bot.manifest = demoManifest(id, version.manifest?.ref || 'previous', version.manifest?.channel === 'development' ? 'development' : 'stable');
-        } else if (operation === 'remove') bot.manifest = null;
+        if (operation === 'remove') bot.manifest = null;
         else bot.manifest = demoManifest(id, bot.source.ref || 'v2.1.0', bot.channel);
         bot.state = operation === 'remove' ? 'not-installed' : 'installed';
         snapshot.updates[id] = { status: 'current', latest: { tag: 'v2.1.0' }, updateAvailable: false };

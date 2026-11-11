@@ -182,7 +182,7 @@ if (primaryInstance) app.whenReady().then(() => {
       case 'rescanInstallations': return manager.rescanInstallations();
       case 'createStarterConfig': return manager.createStarterConfig(id);
       case 'botStatus': return manager.botStatus(id);
-      case 'botAction': return manager.botAction(id, payload.operation, payload.versionId);
+      case 'botAction': return manager.botAction(id, payload.operation);
       case 'setBotChannel': return manager.setBotChannel(id, payload.channel);
       case 'checkBotUpdates': return manager.checkBotUpdates(true);
       case 'setUpdateChecks': return manager.setUpdateChecks(payload.enabled);

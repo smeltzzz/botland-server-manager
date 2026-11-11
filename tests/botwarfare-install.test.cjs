@@ -122,10 +122,14 @@ test('rejects invalid folders, Plutonium root, mismatched ZIP hash, unsupported 
   assert.deepEqual(await fs.readdir(outside), []);
 });
 
-test('updates preserve unrelated files and modified waypoints; removal only deletes unchanged owned files', async t => {
+// Version history is gone: the installer keeps no copy of what it replaces.
+const historyFolders = async parent => (await fs.readdir(parent)).filter(name => name.startsWith('.botland-versions-'));
+
+test('an update overwrites every managed file, edited ones included, and keeps unrelated files', async t => {
   const f = await fixture(t, 'cod4');
   await f.installer.install('cod4', f.game);
   const base = path.join(f.game, 'mods', 'mp_bots');
+  const mod = path.join(base, 'z_svr_bots.iwd');
   const wp = path.join(base, 'scriptdata', 'waypoints', 'mp_crash_wp.csv');
   const userFile = path.join(base, 'server.cfg');
   const log = path.join(base, 'logs', 'console.log');
@@ -133,30 +137,58 @@ test('updates preserve unrelated files and modified waypoints; removal only dele
   await fs.writeFile(log, 'keep log');
   await fs.writeFile(userFile, 'keep cfg');
   await fs.writeFile(wp, 'custom waypoint');
+  await fs.writeFile(mod, 'hand-edited mod');
   f.setVersion('two');
   await f.installer.install('cod4', f.game);
-  assert.equal(await read(path.join(base, 'z_svr_bots.iwd')), 'release-two');
-  assert.equal(await read(wp), 'custom waypoint');
-  const versions = (await f.installer.status('cod4', f.game)).versions;
-  assert.equal(versions.length, 1);
-  assert.equal((await f.installer.listVersions('cod4', f.game)).length, 1);
+  assert.equal(await read(mod), 'release-two');
+  assert.equal(await read(wp), 'waypoint-two');
+  assert.equal(await read(userFile), 'keep cfg');
+  assert.equal(await read(log), 'keep log');
+  const status = await f.installer.status('cod4', f.game);
+  assert.equal(status.manifest.ref, 'v-two');
+  assert.equal(Object.hasOwn(status, 'versions'), false);
+  for (const file of status.manifest.files) assert.equal(file.sha256, hash(await fs.readFile(path.join(base, ...file.path.split('/')))));
+  assert.deepEqual(await historyFolders(path.join(f.game, 'mods')), []);
+  assert.equal(typeof f.installer.restore, 'undefined');
+  assert.equal(typeof f.installer.listVersions, 'undefined');
+});
+
+test('Remove deletes unchanged managed files but still leaves a file you edited', async t => {
+  const f = await fixture(t, 'cod4');
+  await f.installer.install('cod4', f.game);
+  const base = path.join(f.game, 'mods', 'mp_bots');
+  const wp = path.join(base, 'scriptdata', 'waypoints', 'mp_crash_wp.csv');
+  const userFile = path.join(base, 'server.cfg');
+  await fs.writeFile(userFile, 'keep cfg');
+  await fs.writeFile(wp, 'custom waypoint');
   await f.installer.remove('cod4', f.game);
   assert.equal(await exists(path.join(base, 'z_svr_bots.iwd')), false);
   assert.equal(await exists(path.join(base, 'botland-install.json')), false);
   assert.equal(await read(wp), 'custom waypoint');
   assert.equal(await read(userFile), 'keep cfg');
-  assert.equal(await read(log), 'keep log');
   assert.equal((await f.installer.status('cod4', f.game)).state, 'not-installed');
-  await f.installer.restore('cod4', f.game, versions[0].versionId);
-  assert.equal(await read(wp), 'custom waypoint');
-  assert.equal(await read(userFile), 'keep cfg');
-  assert.equal(await read(log), 'keep log');
-  assert.equal(await read(path.join(base, 'z_svr_bots.iwd')), 'release-one');
-  await f.installer.remove('cod4', f.game);
-  assert.equal(await read(wp), 'custom waypoint');
 });
 
-test('explicit install backs up pre-existing unmanifested mod; Restore recovers its bytes', async t => {
+test('an update deletes a managed file the new release no longer ships, even if it was edited', async t => {
+  const f = await fixture(t, 'cod4');
+  await f.installer.install('cod4', f.game);
+  const base = path.join(f.game, 'mods', 'mp_bots');
+  // An earlier release shipped this waypoint; the user has since edited it.
+  const stale = path.join(base, 'scriptdata', 'waypoints', 'mp_old_wp.csv');
+  await fs.writeFile(stale, 'edited stale waypoint');
+  const manifestFile = path.join(base, 'botland-install.json');
+  const manifest = JSON.parse(await read(manifestFile));
+  manifest.files.push({ path: 'scriptdata/waypoints/mp_old_wp.csv', sha256: hash('what the release shipped') });
+  await fs.writeFile(manifestFile, JSON.stringify(manifest));
+  f.setVersion('two');
+  await f.installer.install('cod4', f.game);
+  assert.equal(await exists(stale), false);
+  assert.equal(await read(path.join(base, 'z_svr_bots.iwd')), 'release-two');
+  const files = (await f.installer.status('cod4', f.game)).manifest.files.map(file => file.path);
+  assert.equal(files.includes('scriptdata/waypoints/mp_old_wp.csv'), false);
+});
+
+test('explicit install overwrites a pre-existing unmanaged mod with the latest version and keeps other files', async t => {
   const f = await fixture(t, 'mw3');
   const base = path.join(f.localAppData, 'Plutonium', 'storage', 'iw5', 'mods', 'bots');
   await fs.mkdir(base, { recursive: true });
@@ -165,26 +197,25 @@ test('explicit install backs up pre-existing unmanifested mod; Restore recovers 
   assert.equal((await f.installer.status('mw3', f.game)).state, 'unknown');
   await assert.rejects(f.installer.remove('mw3', f.game), /Unknown/u);
   await f.installer.install('mw3', f.game);
-  const unknown = (await f.installer.status('mw3', f.game)).versions.find(v => v.manifest === null);
-  assert.ok(unknown);
-  await f.installer.restore('mw3', f.game, unknown.versionId);
-  assert.equal(await read(path.join(base, 'z_svr_bots.iwd')), 'original user mod');
+  assert.equal(await read(path.join(base, 'z_svr_bots.iwd')), 'release-one');
   assert.equal(await read(path.join(base, 'notes.txt')), 'user notes');
-  assert.equal(await exists(path.join(base, 'botland-install.json')), false);
+  assert.equal((await f.installer.status('mw3', f.game)).state, 'installed');
+  assert.deepEqual(await historyFolders(path.dirname(base)), [], 'the replaced mod is not kept');
 });
 
-test('pre-existing unowned waypoints are never overwritten, adopted or removed', async t => {
+test('a pre-existing waypoint is overwritten by install and managed from then on', async t => {
   const f = await fixture(t, 'mw2');
   const waypoint = path.join(f.game, 'userraw', 'scriptdata', 'waypoints', 'mp_rust_wp.csv');
   await fs.mkdir(path.dirname(waypoint), { recursive: true });
   await fs.writeFile(waypoint, 'my waypoint');
   await f.installer.install('mw2', f.game);
-  assert.equal(await read(waypoint), 'my waypoint');
-  assert.equal((await f.installer.status('mw2', f.game)).manifest.files.some(file => file.path.includes('waypoints')), false);
+  assert.equal(await read(waypoint), 'waypoint-one');
+  assert.equal((await f.installer.status('mw2', f.game)).manifest.files.some(file => file.path.includes('waypoints')), true);
   f.setVersion('two');
   await f.installer.install('mw2', f.game);
+  assert.equal(await read(waypoint), 'waypoint-two');
   await f.installer.remove('mw2', f.game);
-  assert.equal(await read(waypoint), 'my waypoint');
+  assert.equal(await exists(waypoint), false);
 });
 
 test('fault after a partial update rolls every written file and manifest back byte-for-byte', async t => {
@@ -198,7 +229,7 @@ test('fault after a partial update rolls every written file and manifest back by
   fail = true;
   await assert.rejects(f.installer.install('bo1', f.game), /injected failure/u);
   for (let i = 0; i < names.length; i++) assert.deepEqual(await fs.readFile(path.join(base, names[i])), before[i]);
-  assert.equal((await f.installer.status('bo1', f.game)).versions.length, 0);
+  assert.deepEqual(await historyFolders(path.dirname(base)), []);
 });
 
 const interrupted = count => { if (count === 2) throw Object.assign(new Error('simulated process death'), { simulateCrash: true }); };
@@ -223,34 +254,58 @@ test('a fresh process recovers interrupted creation before status and a subseque
   assert.equal((await fresh.status('cod4', f.game)).state, 'installed');
 });
 
-test('interrupted update and remove recover originals and keep snapshot history', async t => {
+test('an interrupted update or remove is rolled back to the original files before the next action', async t => {
   let crash = false;
   const f = await fixture(t, 'bo2', { fault(count) { if (crash) interrupted(count); } });
   await f.installer.install('bo2', f.game);
   const base = path.join(f.localAppData, 'Plutonium', 'storage', 't6', 'scripts', 'mp');
   const names = ['bots.gsc', 'bots_adapter_pt6.gsc', 'botland-install.json'];
   const original = await Promise.all(names.map(name => fs.readFile(path.join(base, name))));
+  const intact = async () => { for (let i = 0; i < names.length; i++) assert.deepEqual(await fs.readFile(path.join(base, names[i])), original[i]); };
   f.setVersion('two'); crash = true;
   await assert.rejects(f.installer.install('bo2', f.game), /simulated process death/u);
   const fresh = new BotWarfareInstaller({ source: f.installer.source, download: f.installer.download,
     localAppData: f.localAppData });
-  // Remove must recover the update before it reads ownership.
-  await fresh.remove('bo2', f.game);
-  const prior = (await fresh.listVersions('bo2', f.game)).find(v => v.manifest?.ref === 'v-one');
-  assert.ok(prior);
-  await fresh.restore('bo2', f.game, prior.versionId);
-  for (let i = 0; i < names.length; i++) assert.deepEqual(await fs.readFile(path.join(base, names[i])), original[i]);
+  // A fresh process finishes the rollback before it reads anything.
+  const recovered = await fresh.status('bo2', f.game);
+  assert.equal(recovered.state, 'installed');
+  assert.equal(recovered.manifest.ref, 'v-one');
+  await intact();
   crash = false;
-  await fresh.remove('bo2', f.game);
   const removeCrash = new BotWarfareInstaller({ source: f.installer.source, download: f.installer.download,
     localAppData: f.localAppData, fault: interrupted });
-  await fresh.restore('bo2', f.game, prior.versionId);
   await assert.rejects(removeCrash.remove('bo2', f.game), /simulated process death/u);
-  // Restore also performs recovery before reading the requested snapshot.
-  await fresh.restore('bo2', f.game, prior.versionId);
   assert.equal((await fresh.status('bo2', f.game)).state, 'installed');
-  assert.equal(await read(path.join(base, 'bots.gsc')), 'release-one');
-  assert.ok((await fresh.listVersions('bo2', f.game)).length <= 3);
+  await intact();
+  await fresh.remove('bo2', f.game);
+  assert.equal((await fresh.status('bo2', f.game)).state, 'not-installed');
+  assert.deepEqual(await historyFolders(path.dirname(base)), []);
+});
+
+test('a journal written by an earlier release (with a snapshot) still rolls back and is cleaned up', async t => {
+  let crash = false;
+  const f = await fixture(t, 'bo1', { fault(count) { if (crash) interrupted(count); } });
+  await f.installer.install('bo1', f.game);
+  const base = path.join(f.localAppData, 'Plutonium', 'storage', 't5', 'mods', 'mp_bots');
+  const parent = path.dirname(base);
+  const before = await fs.readFile(path.join(base, 'mod.ff'));
+  f.setVersion('two'); crash = true;
+  await assert.rejects(f.installer.install('bo1', f.game), /simulated process death/u);
+  const stage = path.join(parent, (await stages(parent, 'bo1'))[0]);
+  // Earlier releases journaled a snapshot of the replaced files next to the stage.
+  const snapshotDir = path.join(stage, 'version');
+  await fs.mkdir(snapshotDir);
+  await fs.writeFile(path.join(snapshotDir, 'version.json'), '{"legacy":true}');
+  const journalFile = path.join(stage, 'transaction.json');
+  const journal = JSON.parse(await read(journalFile));
+  journal.snapshot = { versionId: '11111111-1111-4111-8111-111111111111', sha256: hash('{"legacy":true}') };
+  await fs.writeFile(journalFile, JSON.stringify(journal));
+  const fresh = new BotWarfareInstaller({ source: f.installer.source, download: f.installer.download,
+    localAppData: f.localAppData });
+  assert.equal((await fresh.status('bo1', f.game)).manifest.ref, 'v-one');
+  assert.deepEqual(await fs.readFile(path.join(base, 'mod.ff')), before);
+  assert.deepEqual(await stages(parent, 'bo1'), []);
+  assert.deepEqual(await historyFolders(parent), []);
 });
 
 test('recovery preserves conflicting user edits and retains journal until conflict is fixed', async t => {
@@ -323,7 +378,7 @@ test('cleanup interrupted after recovery is safe to resume', async t => {
   assert.equal(await exists(done), false);
 });
 
-test('a durable commit marker finalizes history rather than undoing a complete publish', async t => {
+test('a durable commit marker finalizes the update rather than undoing a complete publish', async t => {
   let crash = false;
   const f = await fixture(t, 'bo1', { fault(count, name) {
     if (crash && name === 'botland-install.json') throw Object.assign(new Error('simulated process death'), { simulateCrash: true });
@@ -338,12 +393,12 @@ test('a durable commit marker finalizes history rather than undoing a complete p
     localAppData: f.localAppData });
   const status = await fresh.status('bo1', f.game);
   assert.equal(status.manifest.ref, 'v-two');
-  assert.equal(status.versions.length, 1);
-  assert.equal(status.versions[0].manifest.ref, 'v-one');
+  assert.equal(await read(path.join(base, 'mod.ff')), 'release-two');
   assert.deepEqual(await stages(path.dirname(base), 'bo1'), []);
+  assert.deepEqual(await historyFolders(path.dirname(base)), []);
 });
 
-test('restore prior version, retain three snapshots, refuse running/starting and serialize same-game operations', async t => {
+test('refuse running/starting and serialize same-game operations', async t => {
   let running = false;
   let pendingRelease;
   let entered;
@@ -365,21 +420,20 @@ test('restore prior version, retain three snapshots, refuse running/starting and
   await Promise.all([initial, second]);
   const base = path.join(f.localAppData, 'Plutonium', 'storage', 't6', 'scripts', 'mp');
   assert.equal(await read(path.join(base, 'bots.gsc')), 'release-two');
-  const previous = (await f.installer.status('bo2', f.game)).versions.find(v => v.manifest?.ref === 'v-one');
-  assert.ok(previous);
-  await f.installer.restore('bo2', f.game, previous.versionId);
-  assert.equal(await read(path.join(base, 'bots.gsc')), 'release-one');
   running = 'starting';
   await assert.rejects(f.installer.remove('bo2', f.game), /Stop the starting or running/u);
   await assert.rejects(f.installer.install('bo2', f.game), /Stop the starting or running/u);
   running = true;
-  await assert.rejects(f.installer.restore('bo2', f.game, previous.versionId), /Stop the starting or running/u);
+  await assert.rejects(f.installer.install('bo2', f.game), /Stop the starting or running/u);
+  assert.equal(await read(path.join(base, 'bots.gsc')), 'release-two', 'a refused action changes nothing');
   running = false;
-  for (const v of ['three', 'four', 'five']) { f.setVersion(v); await f.installer.install('bo2', f.game); }
-  assert.equal((await f.installer.status('bo2', f.game)).versions.length, 3);
+  f.setVersion('three');
+  await f.installer.install('bo2', f.game);
+  assert.equal(await read(path.join(base, 'bots.gsc')), 'release-three');
+  assert.deepEqual(await historyFolders(path.dirname(base)), []);
 });
 
-test('invalid manifest cannot claim arbitrary user config, and tampered history cannot be restored', async t => {
+test('an invalid manifest cannot claim arbitrary user config', async t => {
   const f = await fixture(t, 'mw2');
   await f.installer.install('mw2', f.game);
   const base = path.join(f.game, 'userraw');
@@ -393,11 +447,8 @@ test('invalid manifest cannot claim arbitrary user config, and tampered history 
   await fs.writeFile(manifestFile, JSON.stringify(manifest));
   f.setVersion('two');
   await f.installer.install('mw2', f.game);
-  const version = (await f.installer.status('mw2', f.game)).versions.find(v => v.manifest?.ref === 'v-one');
-  const snapshot = path.join(path.dirname(base), '.botland-versions-mw2-userraw', version.versionId, 'z_svr_bots.iwd');
-  await fs.writeFile(snapshot, 'corrupt');
-  await assert.rejects(f.installer.restore('mw2', f.game, version.versionId), /SHA-256 mismatch/u);
   assert.equal(await read(path.join(base, 'z_svr_bots.iwd')), 'release-two');
+  assert.equal((await f.installer.status('mw2', f.game)).manifest.ref, 'v-two');
 });
 
 test('an abandoned stage without a journal is discarded instead of blocking every action', async t => {
@@ -416,17 +467,41 @@ test('an abandoned stage without a journal is discarded instead of blocking ever
   assert.equal(await exists(path.join(stage, 'unexpected.txt')), true);
 });
 
-test('foreign or damaged entries in version history are skipped, not fatal', async t => {
+test('version history left by earlier releases is deleted, whatever it contains, and never blocks an action', async t => {
   const f = await fixture(t, 'cod4');
   await f.installer.install('cod4', f.game);
-  f.setVersion('two');
-  await f.installer.install('cod4', f.game);
-  const history = path.join(f.game, 'mods', '.botland-versions-cod4-mp_bots');
-  await fs.mkdir(history, { recursive: true });
-  const before = (await f.installer.status('cod4', f.game)).versions.length;
+  const mods = path.join(f.game, 'mods');
+  const base = path.join(mods, 'mp_bots');
+  const history = path.join(mods, '.botland-versions-cod4-mp_bots');
+  const snapshot = path.join(history, '11111111-1111-4111-8111-111111111111');
+  await fs.mkdir(snapshot, { recursive: true });
+  await fs.writeFile(path.join(snapshot, 'version.json'), '{"old":true}');
+  await fs.writeFile(path.join(snapshot, 'z_svr_bots.iwd'), 'an older release');
   await fs.writeFile(path.join(history, 'desktop.ini'), '[.ShellClassInfo]');
   await fs.mkdir(path.join(history, '00000000-0000-4000-8000-000000000000'));
+  // Other games' history lives under a different name and is not this installer's to touch.
+  const foreign = path.join(mods, '.botland-versions-mw2-userraw');
+  await fs.mkdir(foreign);
+  await fs.writeFile(path.join(base, 'server.cfg'), 'keep cfg');
+
   const status = await f.installer.status('cod4', f.game);
   assert.equal(status.state, 'installed');
-  assert.equal(status.versions.length, before);
+  assert.equal(await exists(history), false);
+  assert.equal(await exists(foreign), true);
+  assert.deepEqual((await fs.readdir(mods)).filter(name => name.startsWith('.botland-done-')), []);
+  assert.equal(await read(path.join(base, 'server.cfg')), 'keep cfg');
+  assert.equal(await read(path.join(base, 'z_svr_bots.iwd')), 'release-one');
+});
+
+test('legacy history is also removed by install and by the pre-launch recovery', async t => {
+  const f = await fixture(t, 'mw3');
+  const parent = path.join(f.localAppData, 'Plutonium', 'storage', 'iw5', 'mods');
+  const history = path.join(parent, '.botland-versions-mw3-bots');
+  await fs.mkdir(path.join(history, '22222222-2222-4222-8222-222222222222'), { recursive: true });
+  await f.installer.prepareLaunch('mw3', f.game);
+  assert.equal(await exists(history), false);
+  await fs.mkdir(path.join(history, '33333333-3333-4333-8333-333333333333'), { recursive: true });
+  await f.installer.install('mw3', f.game);
+  assert.equal(await exists(history), false);
+  assert.equal((await f.installer.status('mw3', f.game)).state, 'installed');
 });

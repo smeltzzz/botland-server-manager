@@ -352,9 +352,9 @@ class ServerManager {
         notes: 'Update checks are off. Use Check now to see upstream release notes.', status: 'disabled' };
     return { ...status, channel: this.botChannel(id), source };
   }
-  async botAction(id, operation, versionId) {
+  async botAction(id, operation) {
     profileFor(id);
-    if (!['install', 'update', 'reinstall', 'remove', 'restore'].includes(operation)) throw new Error('Unknown Bot Warfare action.');
+    if (!['install', 'update', 'reinstall', 'remove'].includes(operation)) throw new Error('Unknown Bot Warfare action.');
     if (!this.modInstaller) throw new Error('Bot Warfare installer is unavailable.');
     // A pending restart has no live process; changing mod files cancels that retry.
     if (this.instances.get(id)?.status === 'restarting') this.cancelRestart(id);
@@ -370,11 +370,10 @@ class ServerManager {
       if (operation === 'install' && status.state === 'installed') throw new Error('Bot Warfare is already managed. Use Update or Reinstall.');
       if (operation === 'update' && status.state !== 'installed') throw new Error('Install Bot Warfare before updating it.');
       if (operation === 'remove') await this.modInstaller.remove(id, gamePath);
-      else if (operation === 'restore') await this.modInstaller.restore(id, gamePath, versionId);
       else await this.modInstaller.install(id, gamePath, this.botChannel(id));
       if (this.botUpdates[id]) {
-        // A fresh install is current; after a remove or an older restore the
-        // answer is unknown until the next check, which runs in the background.
+        // A fresh install is current; after a remove the answer is unknown until
+        // the next check, which runs in the background.
         const fresh = ['install', 'update', 'reinstall'].includes(operation);
         this.botUpdates[id] = { ...this.botUpdates[id], updateAvailable: fresh ? false : null };
         if (!fresh) Promise.resolve().then(() => this.checkBotUpdates(false)).catch(() => {});

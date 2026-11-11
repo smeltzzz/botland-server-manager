@@ -13,7 +13,6 @@ const TARGETS = Object.freeze({
 });
 const HASH = /^[a-f0-9]{64}$/u;
 const ID = /^[a-f0-9-]{36}$/u;
-const MAX_VERSIONS = 3;
 const digest = bytes => createHash('sha256').update(bytes).digest('hex');
 
 function safeName(name) {
@@ -122,17 +121,6 @@ async function stageBytes(stage, name, expected) {
   if (!bytes || digest(bytes) !== expected) throw journalError();
   return bytes;
 }
-async function verifySnapshot(dir, id, snapshot) {
-  await noLinks(dir);
-  if (!(await fs.lstat(dir)).isDirectory()) throw journalError();
-  const bytes = await stageBytes(dir, 'version.json', snapshot.sha256);
-  let version;
-  try { version = JSON.parse(bytes.toString('utf8')); } catch { throw journalError(); }
-  if (!version || version.version !== 1 || version.versionId !== snapshot.versionId || version.id !== id ||
-      !Number.isFinite(Date.parse(version.date)) || (version.manifest !== null && !version.manifest)) throw journalError();
-  if (version.manifest) validateManifest(version.manifest, id);
-  for (const file of records(id, version.files)) await stageBytes(dir, file.path, file.sha256);
-}
 async function readManifest(base, id) {
   const bytes = await regular(path.join(base, MANIFEST));
   if (!bytes) return null;
@@ -184,10 +172,24 @@ class BotWarfareInstaller {
     const folder = target === 'game' ? path.resolve(root, ...base.split('/')) :
       path.resolve(root, 'Plutonium', 'storage', code, ...base.split('/'));
     const parent = path.dirname(folder);
+    // Earlier releases kept snapshots of replaced files here. Nothing reads them
+    // any more; discardLegacyHistory() removes them.
     const history = path.join(parent, `.botland-versions-${id}-${path.basename(folder)}`);
     await noLinks(folder);
-    await noLinks(history);
     return { folder, parent, history, target, code, base };
+  }
+  // Best effort: a leftover or unreadable folder must never block a Bot Warfare action.
+  async discardLegacyHistory(id, paths) {
+    try {
+      await noLinks(paths.history);
+      const stat = await fs.lstat(paths.history).catch(() => null);
+      if (!stat?.isDirectory()) return;
+      // Rename into the disposable .done namespace first so an interrupted delete
+      // is finished by the next recover().
+      const done = path.join(paths.parent, donePrefix(id) + randomUUID().replace(/-/gu, '').slice(0, 6));
+      await fs.rename(paths.history, done);
+      await fs.rm(done, { recursive: true }).catch(() => {});
+    } catch { /* Retried on the next Bot Warfare action. */ }
   }
   async checkRunning(id) {
     const state = await this.isRunning(id);
@@ -196,61 +198,17 @@ class BotWarfareInstaller {
       throw new Error('Stop the starting or running game before changing Bot Warfare.');
     }
   }
-  async versions(paths, id) {
-    await noLinks(paths.history);
-    let names;
-    try { names = await fs.readdir(paths.history); }
-    catch (error) { if (error.code === 'ENOENT') return []; throw error; }
-    const result = [];
-    for (const name of names) {
-      // Skip foreign files (desktop.ini, Thumbs.db) and damaged or half-pruned
-      // versions instead of blocking every Bot Warfare action for this game.
-      if (!ID.test(name)) continue;
-      const dir = path.join(paths.history, name);
-      await noLinks(dir);
-      if (!(await fs.lstat(dir)).isDirectory()) continue;
-      try {
-        const stat = await fs.lstat(path.join(dir, 'version.json')).catch(() => null);
-        if (!stat?.isFile() || stat.size > 1024 * 1024) continue;
-        const bytes = await regular(path.join(dir, 'version.json'));
-        if (!bytes) continue;
-        const entry = JSON.parse(bytes.toString('utf8'));
-        if (entry.version !== 1 || entry.versionId !== name || entry.id !== id ||
-            !Number.isFinite(Date.parse(entry.date)) ||
-            (entry.manifest !== null && !entry.manifest) || !Array.isArray(entry.files)) continue;
-        if (entry.manifest) validateManifest(entry.manifest, id);
-        entry.files = records(id, entry.files);
-        result.push({ ...entry, dir });
-      } catch { /* Damaged version entry: not offered for restore. */ }
-    }
-    return result.sort((a, b) => b.date.localeCompare(a.date) || b.versionId.localeCompare(a.versionId));
-  }
-  async prune(paths, id) {
-    // Housekeeping must never undo a successful publish or recovered rollback.
-    try {
-      const versions = await this.versions(paths, id);
-      for (const old of versions.slice(MAX_VERSIONS)) {
-        await noLinks(old.dir);
-        // Move into the disposable .done namespace first so an interrupted
-        // delete never leaves a half-removed version inside the history.
-        const done = path.join(paths.parent, donePrefix(id) + randomUUID().replace(/-/gu, '').slice(0, 6));
-        await fs.rename(old.dir, done);
-        await fs.rm(done, { recursive: true }).catch(() => {});
-      }
-    } catch { /* A later status call will report damaged history. */ }
-  }
   async status(id, gamePath) {
     return this.queued(id, async () => {
       const paths = await this.paths(id, gamePath);
       await this.recover(id, paths);
       const manifest = await readManifest(paths.folder, id);
-      const versions = await this.versions(paths, id);
       const markers = id === 'bo1' ? ['mod.ff', 'mp_bots.iwd'] :
         id === 'bo2' ? ['bots.gsc', 'bots_adapter_pt6.gsc'] : ['z_svr_bots.iwd'];
       const unknown = !manifest && (await Promise.all(markers.map(name => regular(within(paths.folder, name)))))
         .some(bytes => bytes !== null);
       return { state: manifest ? 'installed' : unknown ? 'unknown' : 'not-installed',
-        targetPath: paths.folder, manifest, versions: versions.map(({ dir, ...entry }) => entry) };
+        targetPath: paths.folder, manifest };
     });
   }
   // Called before a server starts. An install interrupted by a crash or quit
@@ -264,33 +222,9 @@ class BotWarfareInstaller {
       await this.recover(id, paths);
     });
   }
-  async listVersions(id, gamePath) {
-    return this.queued(id, async () => {
-      const paths = await this.paths(id, gamePath);
-      await this.recover(id, paths);
-      return (await this.versions(paths, id)).map(({ dir, ...entry }) => entry);
-    });
-  }
-  async snapshot(paths, id, previous, capture, stage) {
-    const versionId = randomUUID();
-    const dir = path.join(stage, 'version');
-    await mkdirSafe(dir);
-    const files = [];
-    for (const name of capture) {
-      const bytes = await regular(within(paths.folder, name));
-      if (bytes === null) continue;
-      files.push({ path: name, sha256: digest(bytes) });
-      const dest = within(dir, name);
-      await mkdirSafe(path.dirname(dest));
-      await durableFile(dest, bytes);
-    }
-    const record = { version: 1, versionId, id, date: new Date(this.now()).toISOString(),
-      manifest: previous, files };
-    await durableFile(path.join(dir, 'version.json'), Buffer.from(JSON.stringify(record)));
-    return { dir, record };
-  }
   async recover(id, paths) {
     await noLinks(paths.parent);
+    await this.discardLegacyHistory(id, paths);
     let names;
     try { names = (await fs.readdir(paths.parent)).filter(name =>
       name.startsWith(stagePrefix(id)) || name.startsWith(donePrefix(id))); }
@@ -308,7 +242,6 @@ class BotWarfareInstaller {
         await syncDir(paths.parent);
       } else {
         await this.recoverStage(id, paths, dir);
-        await this.prune(paths, id);
       }
     }
   }
@@ -363,23 +296,10 @@ class BotWarfareInstaller {
     }
     const marker = await regular(path.join(stage, COMMITTED));
     if (marker && !marker.equals(Buffer.from(digest(raw)))) throw journalError();
-    if (!marker && journal.snapshot) await verifySnapshot(path.join(stage, 'version'), id, journal.snapshot);
-    if (marker) {
-      if (journal.snapshot) {
-        const dest = path.join(paths.history, journal.snapshot.versionId);
-        const staged = path.join(stage, 'version');
-        const stagedStat = await fs.lstat(staged).catch(error => { if (error.code === 'ENOENT') return null; throw error; });
-        const destStat = await fs.lstat(dest).catch(error => { if (error.code === 'ENOENT') return null; throw error; });
-        if (Boolean(stagedStat) === Boolean(destStat)) throw journalError();
-        const dir = stagedStat ? staged : dest;
-        await verifySnapshot(dir, id, journal.snapshot);
-        if (stagedStat) {
-          await mkdirSafe(paths.history);
-          await fs.rename(staged, dest);
-          await syncDir(paths.history);
-        }
-      }
-    } else {
+    // A committed transaction is complete: nothing to undo. (Journals written by
+    // earlier releases may carry a snapshot of the replaced files; it is simply
+    // discarded with the rest of the stage.)
+    if (!marker) {
       // Validate the *entire* transaction before undoing any file. A changed
       // file (or symlink) is a user conflict, not permission to discard data.
       const undo = [];
@@ -415,7 +335,9 @@ class BotWarfareInstaller {
       await syncDir(paths.parent);
     } catch { /* Leftover .done data is removed by the next recover(). */ }
   }
-  async transition(id, paths, desired, nextManifest, capture, snapshot = true) {
+  // `overwrite` (installs) replaces or deletes every managed file even when it was
+  // edited since the last install; otherwise (Remove) edited owned files are left alone.
+  async transition(id, paths, desired, nextManifest, { overwrite = false } = {}) {
     await this.checkRunning(id);
     await noLinks(paths.folder);
     const previous = await readManifest(paths.folder, id);
@@ -426,9 +348,9 @@ class BotWarfareInstaller {
       if (!allowed(id, name)) throw new Error('Invalid Bot Warfare managed path.');
       const current = await regular(within(paths.folder, name));
       const hash = current && digest(current);
-      // Never replace or delete a user-modified owned file. A new unowned name
-      // can be overwritten only by an explicit install, and is snapshotted.
-      if (owned.has(name) && current && hash !== owned.get(name)) continue;
+      // Remove never deletes a user-modified owned file. An install always
+      // replaces whatever is there with the latest version.
+      if (!overwrite && owned.has(name) && current && hash !== owned.get(name)) continue;
       if (!desired.has(name) && !owned.has(name)) continue;
       const wanted = desired.get(name);
       if (wanted && !Buffer.isBuffer(wanted)) throw new Error('Invalid Bot Warfare payload.');
@@ -445,13 +367,6 @@ class BotWarfareInstaller {
     let prepared = false;
     let committed = false;
     try {
-      let hasPrior = Boolean(previous);
-      if (snapshot && !hasPrior) {
-        for (const name of capture) {
-          if (await regular(within(paths.folder, name))) { hasPrior = true; break; }
-        }
-      }
-      const prior = snapshot && hasPrior ? await this.snapshot(paths, id, previous, capture, stage) : null;
       const entries = [];
       for (const [name, bytes] of changes) {
         const index = entries.length;
@@ -461,10 +376,7 @@ class BotWarfareInstaller {
         entries.push({ path: name, before: original === null ? null : digest(original),
           after: bytes === null ? null : digest(bytes) });
       }
-      const versionBytes = prior && await fs.readFile(path.join(prior.dir, 'version.json'));
-      const journal = Buffer.from(JSON.stringify({ version: 1, id, folder: paths.folder,
-        snapshot: prior ? { versionId: prior.record.versionId, sha256: digest(versionBytes) } : null,
-        changes: entries }));
+      const journal = Buffer.from(JSON.stringify({ version: 1, id, folder: paths.folder, snapshot: null, changes: entries }));
       await durableFile(path.join(stage, JOURNAL), journal);
       prepared = true;
       await this.checkRunning(id);
@@ -496,7 +408,6 @@ class BotWarfareInstaller {
       } else if (!prepared) await fs.rm(stage, { recursive: true }).catch(() => {});
       throw error;
     }
-    await this.prune(paths, id);
     return { state: nextManifest ? 'installed' : 'not-installed', targetPath: paths.folder, manifest: nextManifest };
   }
   async install(id, gamePath, channel = 'stable') {
@@ -521,34 +432,15 @@ class BotWarfareInstaller {
         if (!allowed(id, name) || !Buffer.isBuffer(body)) throw new Error('Invalid Bot Warfare recipe payload.');
         files.set(name, body);
       }
-      const previous = await readManifest(paths.folder, id);
-      const existing = new Map((previous?.files || []).map(item => [item.path, item.sha256]));
-      const managed = new Map();
-      for (const [name, body] of files) {
-        const current = await regular(within(paths.folder, name));
-        // Existing unowned waypoints are user data, even if they predate the
-        // first manifest. Do not adopt or overwrite them on explicit install.
-        if (current && !existing.has(name) && name.startsWith('scriptdata/waypoints/')) {
-          files.delete(name);
-          continue;
-        }
-        // A changed waypoint (or any other owned file) remains untouched and
-        // retains its original recorded hash, so Remove never deletes it.
-        managed.set(name, existing.has(name) && current && digest(current) !== existing.get(name) ?
-          existing.get(name) : digest(body));
-      }
-      for (const [name, hash] of existing) {
-        if (!managed.has(name)) {
-          const current = await regular(within(paths.folder, name));
-          if (current && digest(current) !== hash) managed.set(name, hash);
-        }
-      }
+      // The latest version always wins: every file in the release replaces whatever
+      // is on disk (edited files and pre-existing waypoints included), and files an
+      // earlier install owned that the release no longer ships are deleted.
       const manifest = { version: 1, id, target: paths.target, storageCode: paths.code, base: paths.base,
         repo: source.repo, refType: source.refType, ref: source.ref, channel, sha256,
         date: new Date(this.now()).toISOString(), patches: plan.patches,
-        files: [...managed].map(([name, hash]) => ({ path: name, sha256: hash })) };
+        files: [...files].map(([name, body]) => ({ path: name, sha256: digest(body) })) };
       validateManifest(manifest, id);
-      return this.transition(id, paths, files, manifest, new Set([...existing.keys(), ...files.keys()]));
+      return this.transition(id, paths, files, manifest, { overwrite: true });
     });
   }
   async remove(id, gamePath) {
@@ -558,39 +450,7 @@ class BotWarfareInstaller {
       await this.checkRunning(id);
       const manifest = await readManifest(paths.folder, id);
       if (!manifest) throw new Error('Unknown Bot Warfare installation; nothing owned to remove.');
-      return this.transition(id, paths, new Map(), null, new Set(manifest.files.map(file => file.path)));
-    });
-  }
-  async restore(id, gamePath, versionId) {
-    return this.queued(id, async () => {
-      const paths = await this.paths(id, gamePath);
-      await this.recover(id, paths);
-      await this.checkRunning(id);
-      const version = (await this.versions(paths, id)).find(item => item.versionId === versionId);
-      if (!version) throw new Error('Unknown Bot Warfare version.');
-      const desired = new Map();
-      for (const file of version.files) {
-        const bytes = await regular(within(version.dir, file.path));
-        if (!bytes || digest(bytes) !== file.sha256) throw new Error('Bot Warfare version snapshot SHA-256 mismatch.');
-        desired.set(file.path, bytes);
-      }
-      const previous = await readManifest(paths.folder, id);
-      const owned = new Map((previous?.files || []).map(file => [file.path, file.sha256]));
-      const manifest = version.manifest ? structuredClone(version.manifest) : null;
-      // Never overwrite a newly created unowned file or a user-modified owned
-      // file during Restore. Preserve old ownership for any such conflict.
-      for (const [name] of desired) {
-        const current = await regular(within(paths.folder, name));
-        if (current && (!owned.has(name) || digest(current) !== owned.get(name))) {
-          desired.delete(name);
-          if (manifest) {
-            manifest.files = manifest.files.filter(file => file.path !== name);
-            if (owned.has(name)) manifest.files.push({ path: name, sha256: owned.get(name) });
-          }
-        }
-      }
-      if (manifest) validateManifest(manifest, id);
-      return this.transition(id, paths, desired, manifest, new Set([...owned.keys(), ...desired.keys()]));
+      return this.transition(id, paths, new Map(), null);
     });
   }
 }

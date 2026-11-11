@@ -2,6 +2,14 @@
 
 Notable changes to botLANd Server Manager are recorded here. This project follows [Semantic Versioning](https://semver.org/).
 
+## 1.2.2
+
+### Bot Warfare
+
+- Removed previous managed versions. Install, Update and Reinstall now always provide the latest Bot Warfare and overwrite every Bot Warfare file in place, including files you edited, waypoints that already existed and unrecognized mods. Nothing is kept as a backup and the **Previous managed version** list and **Restore previous** button are gone.
+- Version history folders (`.botland-versions-*`) left by earlier releases are deleted automatically the next time that game's Bot Warfare is checked, installed or removed.
+- An interrupted or failed install still rolls back to the files that were there before it started. Remove still skips a managed file you edited.
+
 ## 1.1.1 (unreleased)
 
 Bug-fix and polish release from full-pass sweep 7; see [`docs/sweep-7-plan.md`](docs/sweep-7-plan.md).

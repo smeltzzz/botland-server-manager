@@ -135,8 +135,10 @@ test('unknown mod, pending install/start guard, manifest provenance, update badg
   assert.equal(status.manifest.channel, 'stable');
   assert.equal(status.manifest.sha256, sha256(f.fixtureArchive));
   assert.deepEqual(status.manifest, JSON.parse(await fs.readFile(path.join(base, 'botland-install.json'), 'utf8')));
-  assert.equal(status.versions.length, 1); // The unknown mod was snapshotted before replacement.
-  assert.equal(status.versions[0].manifest, null);
+  // The unmanaged mod was replaced by the latest version, and nothing keeps a copy of it.
+  assert.notEqual(await fs.readFile(path.join(base, 'z_svr_bots.iwd'), 'utf8'), 'unmanaged fixture mod');
+  assert.equal(Object.hasOwn(status, 'versions'), false);
+  assert.deepEqual((await fs.readdir(f.gamePath)).filter(name => name.startsWith('.botland-versions-')), []);
   assert.equal(f.downloads.length, 1);
   assert.match(f.downloads[0].url, /\/v2\.4\.0\/iw4bw240\.zip$/);
   assert.equal(f.downloads[0].options.expectedHash, undefined);

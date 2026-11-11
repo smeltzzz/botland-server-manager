@@ -82,7 +82,7 @@ app.whenReady().then(async () => {
       case 'maps': return { maps: mapsVersion === 1 ? ['mp_crash'] : ['mp_crash', 'mp_second'], modes: [{ value: 'dom', label: 'Domination' }] };
       case 'firewallStatus': return { name: 'botLANd CoD4 UDP', port: 28962, state: 'missing' };
       case 'botStatus': return { state: 'not-installed', targetPath: 'C:\\Example\\Game\\mods', manifest: null,
-        versions: [], channel: 'stable', source: { supported: false, ref: null, notes: '', status: 'offline' } };
+        channel: 'stable', source: { supported: false, ref: null, notes: '', status: 'offline' } };
       case 'document': return structuredClone(documentFixture);
       case 'listConfigBackups': return [];
       case 'previewSettings': return { token: '0'.repeat(64), changed: true, changes: [

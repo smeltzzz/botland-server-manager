@@ -44,7 +44,7 @@ export interface Game {
   logs: LogEntry[];
 }
 export interface BotManifest { channel: string; ref: string; refType: 'tag' | 'commit'; sha256: string; date: string; repo: string; patches: string[] }
-export interface BotStatus { state: 'installed' | 'unknown' | 'not-installed'; targetPath: string; manifest: BotManifest | null; versions: { versionId: string; date: string; manifest: { ref: string; channel: string } | null }[]; channel: 'stable' | 'development'; source: { supported: boolean; ref: string | null; notes: string; status: string } }
+export interface BotStatus { state: 'installed' | 'unknown' | 'not-installed'; targetPath: string; manifest: BotManifest | null; channel: 'stable' | 'development'; source: { supported: boolean; ref: string | null; notes: string; status: string } }
 export interface BotUpdate { status: string; latest: { tag?: string; commit?: string; developmentCommit?: string | null }; updateAvailable: boolean | null }
 export interface PlutoniumStatus { available: boolean; installed: boolean; updating: boolean; lastUpdated: string | null; error: string | null }
 export interface Snapshot { games: Game[]; updatesEnabled: boolean; updates: Partial<Record<GameId, BotUpdate>>; plutonium: PlutoniumStatus }
@@ -75,7 +75,7 @@ export interface ManagerApi {
   restoreConfigBackup(id: GameId, target: ConfigTarget, mode: string, backupId: string, token: string): Promise<{ backupId: string }>;
   pruneConfigBackups(id: GameId, target: ConfigTarget, mode: string, ids: string[]): Promise<{ removed: number }>;
   botStatus(id: GameId): Promise<BotStatus>;
-  botAction(id: GameId, operation: 'install' | 'update' | 'reinstall' | 'remove' | 'restore', versionId?: string): Promise<void>;
+  botAction(id: GameId, operation: 'install' | 'update' | 'reinstall' | 'remove'): Promise<void>;
   setBotChannel(id: GameId, channel: 'stable' | 'development'): Promise<void>;
   checkBotUpdates(): Promise<void>;
   setUpdateChecks(enabled: boolean): Promise<void>;

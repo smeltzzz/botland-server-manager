@@ -16,7 +16,7 @@ contextBridge.exposeInMainWorld('manager', {
   rescanInstallations: () => invoke('rescanInstallations'),
   createStarterConfig: (id) => invoke('createStarterConfig', { id }),
   botStatus: (id) => invoke('botStatus', { id }),
-  botAction: (id, operation, versionId) => invoke('botAction', { id, operation, versionId }),
+  botAction: (id, operation) => invoke('botAction', { id, operation }),
   setBotChannel: (id, channel) => invoke('setBotChannel', { id, channel }),
   checkBotUpdates: () => invoke('checkBotUpdates'),
   setUpdateChecks: (enabled) => invoke('setUpdateChecks', { enabled }),

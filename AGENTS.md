@@ -44,7 +44,7 @@
 Other main-process modules, grouped by feature:
 
 - Detection/setup: `detection.cjs` (Steam registry + `libraryfolders.vdf`), `starter-config.cjs`.
-- Bot Warfare: `botwarfare-source.cjs` → `botwarfare-download.cjs` → `botwarfare-recipes.cjs` → `botwarfare-install.cjs`, plus `mod-archive.cjs`. Explicit, upstream-only, SHA-256/inspection-checked, journaled installs; preserve rollback/version-retention behavior.
+- Bot Warfare: `botwarfare-source.cjs` → `botwarfare-download.cjs` → `botwarfare-recipes.cjs` → `botwarfare-install.cjs`, plus `mod-archive.cjs`. Explicit, upstream-only, SHA-256/inspection-checked, journaled installs. Install/Update/Reinstall always overwrite every managed file with the latest version; there is deliberately no version history, snapshot or Restore (leftover `.botland-versions-*` folders from old releases are deleted). Keep the transaction journal: it only rolls back an interrupted install, it does not retain old versions.
 - Plutonium: `plutonium-update.cjs` downloads the pinned official updater from `cdn.plutonium.pw` and runs `plutonium.exe -update-only` (visible window, no pipes — it hangs otherwise). It runs before a Plutonium launch at most every 6 h, is skipped while another Plutonium server or the Plutonium launcher is open, closes only the launcher process it spawned, and only blocks a launch when Plutonium is not installed.
 - Config/runtime: `config-backups.cjs`, `session-logs.cjs` + `log-tail.cjs`, `connect-address.cjs`, `orphan-detect.cjs`, `diagnostics.cjs`, `key-store.cjs`, `firewall-rule.cjs`.
 
