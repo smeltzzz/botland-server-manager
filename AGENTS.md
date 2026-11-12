@@ -6,7 +6,7 @@
 - This repo is `ServerManager/` (in this checkout under `D:\GameServers`). The app is the only way servers are set up and launched: there are no batch launchers or legacy script folders, and no code reads them. It writes configs/rotations into the _installed game folder_.
 - Setup is click-by-click: each game's Overview has a setup checklist driven by the snapshot's per-game `setup` flags (`folder`, `engine`, `plutonium`, `key`, `bots`, `config`, `maps`; `null` = not applicable), computed in `check()`.
 - Direct commits to `main`; PRs are not used (see `CONTRIBUTING.md`). CI runs on push to `main` and tags `v*`.
-- Runtime state lives in `%APPDATA%\botland-server-manager` (`settings.json`, `keys.json`, `botwarfare-sources.json`, `session-logs/`), not in the repo. Old settings in `%APPDATA%\BotLANd Server Manager` are migrated on launch.
+- Runtime state lives in Electron `userData` under `%APPDATA%` (`settings.json`, `keys.json`, `botwarfare-sources.json`, `session-logs/`), not in the repo. Old settings in `%APPDATA%\BotLANd Server Manager` are migrated on launch (`migrateSettings` in `main.cjs`).
 
 ## Commands (repo root)
 
@@ -17,7 +17,7 @@
 | `npm run build`          | `tsc --noEmit && vite build`. Typechecks only `src` + `vite.config.ts`; `electron/*.cjs` is not typechecked.                                      |
 | `npm run lint`           | ESLint over `src`, `electron`, `scripts`, `tests`, `vite.config.ts`, `eslint.config.mjs`.                                                         |
 | `npm run format:check`   | Prettier check limited to `.prettierrc.json`, `eslint.config.mjs`, `.github`.                                                                     |
-| `npm test`               | Node test runner: `node --test tests/*.test.cjs` (~250 tests, ~10 s, no game install or network).                                                 |
+| `npm test`               | Node test runner: `node --test tests/*.test.cjs` (no game install or network needed).                                                 |
 | `npm run dist:win`       | Build + electron-builder (NSIS + portable) → `release/`, then prune old artifacts.                                                                |
 
 - Before committing (per `CONTRIBUTING.md` + CI): `npm test`, `npm run build`, `npm run lint`, `npm run format:check`.
@@ -71,7 +71,7 @@ Renderer:
 
 On push to `main` and tags `v*`: `npm ci` → `npm test` → `npm run build` → packaged smoke → `npm run lint` → `npm run format:check` → `npm audit --audit-level=high` → Gitleaks full-history scan.
 
-Tag releases (`v*`) additionally require the tag to equal `v<package.json version>`, run `npm run dist:win`, verify exactly two EXEs (installer + portable), write `release/SHA256SUMS.txt`, and upload provenance attestations. Builds are unsigned, so SmartScreen warnings are expected. `dist/` and `release/` are generated/gitignored; use `npm run build` for routine verification mid-work, and `dist:win` only at the end of a sweep (see below).
+Tag releases (`v*`) additionally require the tag to equal `v<package.json version>`, run `npm run dist:win`, verify exactly two EXEs (installer + portable), write `release/SHA256SUMS.txt`, upload provenance attestations, and upload the EXEs + checksums as a workflow artifact. CI does **not** create a GitHub Release; publishing is a separate owner decision. Builds are unsigned, so SmartScreen warnings are expected. `dist/` and `release/` are generated/gitignored; use `npm run build` for routine verification mid-work, and `dist:win` only at the end of a sweep (see below).
 
 ## End of every sweep (required)
 
@@ -83,7 +83,7 @@ A "sweep" is a batch of fixes/features the user asks for. When one is finished, 
 4. Commit the sweep's changes plus `package.json`/`package-lock.json` to `main` with a descriptive "Sweep N: …" message. Never commit protected data (see below).
 5. `npm run dist:win` to rebuild the installer and portable exe in `release/`.
 6. Create an annotated tag matching the version: `git tag -a v<version> -m "Release <version>"`.
-7. `git push origin main`, then `git push origin v<version>`. CI publishes the GitHub release with both exes and `SHA256SUMS.txt`.
+7. `git push origin main`, then `git push origin v<version>`. CI then builds the tag and uploads the exes + `SHA256SUMS.txt` as a workflow artifact (it does not publish a GitHub Release).
 8. Confirm `git status -sb` shows `main...origin/main` with nothing ahead/behind, then report the version, the exe paths in `release/`, and the pushed commit/tag.
 
 ## Testing quirks
