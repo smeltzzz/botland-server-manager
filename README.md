@@ -67,9 +67,9 @@ On first launch, the app detects Steam libraries from your Windows user registry
 
 ## Release
 
-The current release is **botLANd Server Manager 1.1.0**, available from the [GitHub Releases page](https://github.com/smeltzzz/botland-server-manager/releases/tag/v1.1.0). Download the NSIS installer or the portable executable. `SHA256SUMS.txt` lists the SHA-256 checksum for each file, and both executables carry GitHub build-provenance attestations.
+The source on `main` is **botLANd Server Manager 1.2.3** (see [CHANGELOG.md](CHANGELOG.md)). The latest version published on the [GitHub Releases page](https://github.com/smeltzzz/botland-server-manager/releases) is **1.0.0**, which includes the NSIS installer and the portable executable. `SHA256SUMS.txt` lists the SHA-256 checksum for each file, and both executables carry GitHub build-provenance attestations.
 
-Development continues directly on `main`; new versions will be published as they are ready.
+Versions 1.1.0 to 1.2.3 are tagged in Git and built by CI, but not yet published as GitHub Releases; to run them now, [build locally](#build-locally). Development continues directly on `main`.
 
 Windows builds are **unsigned**, so SmartScreen may warn when you run the installer or the portable executable. A checksum confirms that a download matches the published file, but it is not a code signature.
 

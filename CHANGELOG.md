@@ -18,9 +18,18 @@ Notable changes to botLANd Server Manager are recorded here. This project follow
 - Version history folders (`.botland-versions-*`) left by earlier releases are deleted automatically the next time that game's Bot Warfare is checked, installed or removed.
 - An interrupted or failed install still rolls back to the files that were there before it started. Remove still skips a managed file you edited.
 
-## 1.1.1 (unreleased)
+## 1.2.1 (2026-11-10)
 
-Bug-fix and polish release from full-pass sweep 7; see [`docs/sweep-7-plan.md`](docs/sweep-7-plan.md).
+### Plutonium keys
+
+- Fixed the unusable server-key paste when stored keys cannot be read. The key store now reports why (unreadable, damaged, or encryption unavailable), and the paste form stays available to replace an unreadable key.
+- **Reset key storage** keeps a damaged `keys.json` aside instead of discarding it.
+- The green **Paste key** button now explains what is wrong instead of doing nothing.
+- A failed key save restores the previously stored key.
+
+## 1.2.0 (2026-11-10)
+
+Standalone-setup release. It also carries the bug-fix and polish work from sweeps 7 and 8; see [`docs/sweep-7-plan.md`](docs/sweep-7-plan.md). (Previously tracked here as "1.1.1 (unreleased)".)
 
 ### Standalone setup
 
