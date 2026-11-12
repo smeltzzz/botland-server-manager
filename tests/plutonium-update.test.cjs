@@ -20,11 +20,11 @@ function respond(bytes = payload, status = 200, headers = {}) {
   return new Response(bytes === null ? null : new ReadableStream({ start(controller) { controller.enqueue(bytes); controller.close(); } }), { status, headers });
 }
 // An updater whose download and run are both synthetic; "running" creates the bootstrapper.
-function fixture(dir, { run, fetch, now } = {}) {
+function fixture(dir, { run, fetch, now, launchers = async () => [] } = {}) {
   const bootstrapper = path.join(dir, 'local', 'Plutonium', 'bin', 'plutonium-bootstrapper-win32.exe');
   const calls = { fetch: 0, run: [] };
   const updater = new PlutoniumUpdater({
-    userData: path.join(dir, 'user'), bootstrapper: () => bootstrapper, launchers: async () => [], now,
+    userData: path.join(dir, 'user'), bootstrapper: () => bootstrapper, launchers, now, sha256: digest,
     fetch: fetch || (async url => { calls.fetch++; assert.equal(url, UPDATER_URL); return respond(); }),
     run: run || (async (file, args, options) => {
       calls.run.push([file, args, options.cwd]);
@@ -34,17 +34,6 @@ function fixture(dir, { run, fetch, now } = {}) {
   });
   return { updater, bootstrapper, calls };
 }
-// The real pinned digest cannot match synthetic bytes, so tests pin their own.
-function pinned(updater, hash = digest) {
-  const original = updater.ensureUpdater.bind(updater);
-  updater.ensureUpdater = async () => {
-    if (await fs.access(updater.exe).then(() => true, () => false)) return;
-    await fs.mkdir(updater.dir, { recursive: true });
-    await fs.writeFile(updater.exe, await downloadUpdater({ fetch: updater.fetch, sha256: hash }));
-  };
-  return original;
-}
-
 test('the updater download is pinned, size-limited and only follows plutonium.pw redirects', async () => {
   assert.deepEqual(await downloadUpdater({ fetch: async () => respond(), sha256: digest }), payload);
   await assert.rejects(downloadUpdater({ fetch: async () => respond() }), /did not match the verified version/);
@@ -71,7 +60,6 @@ test('the updater download is pinned, size-limited and only follows plutonium.pw
 test('install downloads the updater once, runs -update-only and records the time', async t => {
   const dir = await temporary(t);
   const { updater, bootstrapper, calls } = fixture(dir, { now: () => Date.parse('2026-11-10T12:00:00Z') });
-  pinned(updater);
   assert.deepEqual(await updater.status(), { installed: false, updating: false, lastUpdated: null, error: null });
   await updater.update();
   assert.equal(calls.fetch, 1);
@@ -81,6 +69,34 @@ test('install downloads the updater once, runs -update-only and records the time
   await updater.update();
   assert.equal(calls.fetch, 1, 'an existing updater is reused');
   assert.equal(calls.run.length, 2);
+});
+
+test('a modified cached updater is replaced before execution, or blocks execution offline', async t => {
+  const dir = await temporary(t);
+  const { updater, calls } = fixture(dir);
+  await updater.update();
+  await fs.writeFile(updater.exe, 'MZ tampered');
+  updater.fetch = async () => { calls.fetch++; throw new Error('offline'); };
+  await assert.rejects(updater.update(), /Could not download Plutonium/);
+  assert.equal(calls.run.length, 1, 'the tampered file was not executed');
+  updater.fetch = async () => { calls.fetch++; return respond(); };
+  await updater.update();
+  assert.equal(calls.fetch, 3, 'the damaged cache was downloaded again');
+  assert.equal(calls.run.length, 2);
+  assert.deepEqual(await fs.readFile(updater.exe), payload);
+  await updater.update();
+  assert.equal(calls.fetch, 3, 'the repaired cache is verified and reused');
+});
+
+test('a replacement with the wrong digest never runs, even with an installed version', async t => {
+  const dir = await temporary(t);
+  const { updater, bootstrapper, calls } = fixture(dir, { fetch: async () => respond(Buffer.from('MZ unexpected updater')) });
+  await fs.mkdir(path.dirname(bootstrapper), { recursive: true });
+  await fs.writeFile(bootstrapper, 'MZ');
+  const logs = [];
+  assert.deepEqual(await updater.prepareLaunch({ log: (text, level) => logs.push([level, text]) }), { updated: false });
+  assert.equal(calls.run.length, 0);
+  assert.ok(logs.some(([level, text]) => level === 'error' && /did not match the verified version/.test(text)));
 });
 
 test('concurrent update requests share one run', async t => {
@@ -93,7 +109,6 @@ test('concurrent update requests share one run', async t => {
     await fs.mkdir(path.dirname(bootstrapper), { recursive: true });
     await fs.writeFile(bootstrapper, 'MZ');
   } });
-  pinned(updater);
   const first = updater.update();
   const second = updater.update();
   assert.equal(first, second);
@@ -107,7 +122,6 @@ test('concurrent update requests share one run', async t => {
 test('a failed update reports a readable error and never claims success', async t => {
   const dir = await temporary(t);
   const { updater } = fixture(dir, { run: async () => { throw new Error('The Plutonium updater exited with code 5.'); } });
-  pinned(updater);
   await assert.rejects(updater.update(), /exited with code 5/);
   const status = await updater.status();
   assert.equal(status.installed, false);
@@ -115,7 +129,6 @@ test('a failed update reports a readable error and never claims success', async 
   assert.match(status.error, /exited with code 5/);
   // An updater that "succeeds" without producing Plutonium is still a failure.
   const quiet = fixture(path.join(dir, 'quiet'), { run: async () => {} });
-  pinned(quiet.updater);
   await assert.rejects(quiet.updater.update(), /was not found afterwards/);
 });
 
@@ -126,14 +139,13 @@ test('launch preparation updates at most every six hours and only blocks when Pl
   const runs = [];
   const bootstrapper = path.join(dir, 'local', 'Plutonium', 'bin', 'plutonium-bootstrapper-win32.exe');
   const updater = new PlutoniumUpdater({ userData: path.join(dir, 'user'), bootstrapper: () => bootstrapper, launchers: async () => [], now: () => clock,
-    fetch: async () => respond(),
+    sha256: digest, fetch: async () => respond(),
     run: async () => {
       runs.push(clock);
       if (fail) throw new Error('The Plutonium updater exited with code 1.');
       await fs.mkdir(path.dirname(bootstrapper), { recursive: true });
       await fs.writeFile(bootstrapper, 'MZ');
     } });
-  pinned(updater);
   const logs = [];
   const log = (text, level = 'info') => logs.push([level, text]);
   // Missing Plutonium: a failed install blocks the launch.
@@ -219,7 +231,7 @@ test('an open Plutonium launcher blocks the update, and only the launcher the up
   const killed = [];
   let runs = 0;
   const updater = new PlutoniumUpdater({
-    userData: path.join(dir, 'user'), bootstrapper: () => bootstrapper, launchers: async () => [], fetch: async () => respond(),
+    userData: path.join(dir, 'user'), bootstrapper: () => bootstrapper, sha256: digest, fetch: async () => respond(),
     launchers: async () => running, kill: pid => { killed.push(pid); running = running.filter(item => item.pid !== pid); },
     run: async (file, args, { onSpawn }) => {
       runs++;
@@ -230,7 +242,6 @@ test('an open Plutonium launcher blocks the update, and only the launcher the up
       running.push({ pid: 900, ppid: 4242 });
     },
   });
-  pinned(updater);
   await assert.rejects(updater.update(), /Close the Plutonium launcher window first/);
   assert.equal(runs, 0, 'the updater never starts while the launcher is open');
   running = [];
@@ -247,6 +258,87 @@ test('an open Plutonium launcher blocks the update, and only the launcher the up
   await fs.rm(updater.stateFile, { force: true }); // Make the last update stale.
   assert.deepEqual(await updater.prepareLaunch({ log: text => logs.push(text) }), { updated: false });
   assert.ok(logs.some(text => /Close the Plutonium launcher window first/.test(text)));
+});
+
+test('unknown launcher inspection fails closed before downloading or running', async t => {
+  const dir = await temporary(t);
+  const { updater, bootstrapper, calls } = fixture(dir, { launchers: async () => null });
+  await assert.rejects(updater.update(), /Could not check whether the Plutonium launcher is open/);
+  assert.equal(calls.fetch, 0);
+  assert.equal(calls.run.length, 0);
+  await assert.rejects(updater.prepareLaunch(), /Plutonium could not be installed: .*Could not check/);
+  await fs.mkdir(path.dirname(bootstrapper), { recursive: true });
+  await fs.writeFile(bootstrapper, 'MZ');
+  const logs = [];
+  assert.deepEqual(await updater.prepareLaunch({ log: (text, level) => logs.push([level, text]) }), { updated: false });
+  assert.ok(logs.some(([level, text]) => level === 'error' && /Could not check/.test(text)));
+  assert.deepEqual(await updater.prepareLaunch({ skip: true }), { updated: false });
+  assert.equal(calls.fetch, 0);
+  assert.equal(calls.run.length, 0);
+});
+
+test('a launch waits for an explicit update even when fresh or skipped', async t => {
+  const dir = await temporary(t);
+  let release;
+  let started;
+  const gate = new Promise(resolve => { release = resolve; });
+  const running = new Promise(resolve => { started = resolve; });
+  const { updater, bootstrapper, calls } = fixture(dir, { run: async () => {
+    calls.run.push('manual update');
+    started();
+    await gate;
+  } });
+  await fs.mkdir(path.dirname(bootstrapper), { recursive: true });
+  await fs.writeFile(bootstrapper, 'MZ');
+  await fs.mkdir(updater.dir, { recursive: true });
+  await fs.writeFile(updater.stateFile, JSON.stringify({ lastUpdated: new Date().toISOString() }));
+  const manual = updater.update();
+  await running;
+  let finished = false;
+  const fresh = updater.prepareLaunch().then(result => { finished = true; return result; });
+  const skipped = updater.prepareLaunch({ skip: true });
+  await new Promise(resolve => setImmediate(resolve));
+  assert.equal(finished, false, 'a fresh launch still waits for the manual update');
+  release();
+  assert.deepEqual(await Promise.all([manual, fresh, skipped]), [undefined, { updated: true }, { updated: true }]);
+  assert.equal(calls.run.length, 1, 'launch preparation did not start another update');
+});
+
+test('waiting for a failed explicit update honors installed-versus-missing launch policy', async t => {
+  for (const installed of [false, true]) {
+    const dir = await temporary(t);
+    let release;
+    let started;
+    const gate = new Promise(resolve => { release = resolve; });
+    const running = new Promise(resolve => { started = resolve; });
+    const { updater, bootstrapper, calls } = fixture(dir, { run: async () => {
+      calls.run.push('manual update');
+      started();
+      await gate;
+      throw new Error('The Plutonium updater exited with code 7.');
+    } });
+    if (installed) {
+      await fs.mkdir(path.dirname(bootstrapper), { recursive: true });
+      await fs.writeFile(bootstrapper, 'MZ');
+    }
+    const manual = updater.update();
+    await running;
+    const logs = [];
+    let finished = false;
+    const launch = updater.prepareLaunch({ skip: true, log: (text, level) => logs.push([level, text]) })
+      .finally(() => { finished = true; });
+    await new Promise(resolve => setImmediate(resolve));
+    assert.equal(finished, false, 'a skipped launch cannot overtake an in-progress update');
+    release();
+    await assert.rejects(manual, /code 7/);
+    if (installed) {
+      assert.deepEqual(await launch, { updated: false });
+      assert.ok(logs.some(([level, text]) => level === 'error' && /Starting with the installed version/.test(text)));
+    } else {
+      await assert.rejects(launch, /Plutonium could not be installed: .*code 7/);
+    }
+    assert.equal(calls.run.length, 1);
+  }
 });
 
 test('the updater requires an absolute app data folder', () => {

@@ -80,28 +80,45 @@ async function regularLog(candidate) {
 }
 
 const HEAD_BYTES = 64;
-async function readHead(file) {
+// A bounded sample catches ordinary same-size rewrites (including changes past
+// the head) without scanning an unbounded log on every timestamp-only touch.
+// Changes solely in the unsampled middle of a large file cannot be detected.
+const TAIL_SAMPLE_BYTES = CHUNK_BYTES;
+function identity(stat) { return `${stat.dev}:${stat.ino}`; }
+
+async function fingerprint(candidate, stat, budget) {
+  const tailLength = Math.min(stat.size, TAIL_SAMPLE_BYTES);
+  const headLength = stat.size > TAIL_SAMPLE_BYTES ? HEAD_BYTES : 0;
+  if (headLength + tailLength > budget.remaining) return null;
   let handle;
   try {
-    handle = await fs.open(file, 'r');
-    const buffer = Buffer.alloc(HEAD_BYTES);
-    const { bytesRead } = await handle.read(buffer, 0, HEAD_BYTES, 0);
-    return buffer.subarray(0, bytesRead);
+    const allowed = await regularLog(candidate);
+    if (!allowed || identity(allowed) !== identity(stat)) return null;
+    handle = await fs.open(candidate.file, 'r');
+    const opened = await handle.stat();
+    if (!opened.isFile() || identity(opened) !== identity(stat) ||
+        opened.size !== stat.size || opened.mtimeMs !== stat.mtimeMs) return null;
+    // Do not read through a path swapped to a symlink or junction during open.
+    const stillAllowed = await regularLog(candidate);
+    if (!stillAllowed || identity(stillAllowed) !== identity(opened)) return null;
+    const result = Buffer.alloc(headLength + tailLength);
+    for (const [start, length, position] of [[0, headLength, 0], [headLength, tailLength, stat.size - tailLength]]) {
+      let read = 0;
+      while (read < length) {
+        const { bytesRead } = await handle.read(result, start + read, length - read, position + read);
+        if (!bytesRead) return null;
+        read += bytesRead;
+        budget.remaining -= bytesRead;
+      }
+    }
+    const after = await handle.stat();
+    if (after.size !== opened.size || after.mtimeMs !== opened.mtimeMs) return null;
+    return result;
   } catch { return null; } finally { await handle?.close().catch(() => {}); }
 }
-// Compares the shared prefix, since a short file may have grown since it was sampled.
-async function sameHead(file, state) {
-  const head = await readHead(file);
-  if (!head || !state.head) return false;
-  const length = Math.min(head.length, state.head.length);
-  if (!head.subarray(0, length).equals(state.head.subarray(0, length))) return false;
-  if (head.length > state.head.length) state.head = head;
-  return true;
-}
 
-function identity(stat) { return `${stat.dev}:${stat.ino}`; }
 function freshState(stat, offset = 0) {
-  return { identity: identity(stat), offset, mtimeMs: stat.mtimeMs, pending: '', partial: '', dropping: false, decoder: new StringDecoder('utf8') };
+  return { identity: identity(stat), offset, mtimeMs: stat.mtimeMs, fingerprint: null, pending: '', partial: '', dropping: false, decoder: new StringDecoder('utf8') };
 }
 
 class ServerLogTail {
@@ -151,6 +168,7 @@ class ServerLogTail {
 
   async scan(initial) {
     const present = [];
+    const byteBudget = { remaining: MAX_BYTES_PER_POLL };
     for (const candidate of this.candidates) {
       if (!this.running) return;
       const stat = await regularLog(candidate);
@@ -158,17 +176,25 @@ class ServerLogTail {
       let state = this.states.get(candidate.file);
       if (!state) {
         state = freshState(stat, initial ? stat.size : 0);
-        state.head = await readHead(candidate.file);
         this.states.set(candidate.file, state);
-      } else if (state.identity !== identity(stat) || stat.size < state.offset ||
-                 (stat.size === state.offset && stat.mtimeMs !== state.mtimeMs && !await sameHead(candidate.file, state))) {
-        // NTFS can update the write time after the last bytes were read, with
-        // no size change. Only a changed beginning means the file was rewritten.
+      } else if (state.identity !== identity(stat) || stat.size < state.offset) {
         state = freshState(stat);
-        state.head = await readHead(candidate.file);
         this.states.set(candidate.file, state);
-      } else if ((!state.head || state.head.length < HEAD_BYTES) && stat.size > (state.head?.length ?? 0)) {
-        state.head = await readHead(candidate.file);
+      } else if (stat.size === state.offset && stat.mtimeMs !== state.mtimeMs && state.fingerprint) {
+        // NTFS may update mtime after the last read without changing bytes.
+        const current = await fingerprint(candidate, stat, byteBudget);
+        if (current && !current.equals(state.fingerprint)) {
+          state = freshState(stat);
+          this.states.set(candidate.file, state);
+        } else if (!current) {
+          // A transient read failure or exhausted budget is not proof of a rewrite.
+          // Keep the old mtime so the comparison can be retried next poll.
+          present.push({ candidate, stat, state });
+          continue;
+        }
+      }
+      if (state.offset === stat.size && !state.fingerprint) {
+        state.fingerprint = await fingerprint(candidate, stat, byteBudget);
       }
       state.mtimeMs = stat.mtimeMs;
       present.push({ candidate, stat, state });
@@ -179,7 +205,7 @@ class ServerLogTail {
     present.sort((a, b) => b.stat.mtimeMs - a.stat.mtimeMs);
     const selected = present[0];
     this.active = selected.candidate.file;
-    if (!initial && this.running) await this.readSelected(selected);
+    if (!initial && this.running) await this.readSelected(selected, byteBudget);
   }
 
   drain(state, budget) {
@@ -206,29 +232,38 @@ class ServerLogTail {
     }
   }
 
-  async readSelected({ candidate, stat, state }) {
+  async readSelected({ candidate, stat, state }, byteBudget) {
     const budget = { count: 0 };
     this.drain(state, budget);
     if (budget.count >= MAX_LINES_PER_POLL || !this.running || state.offset >= stat.size) return;
     let handle;
     try {
       // Verify again after opening; refuse a path replaced between stat/open.
-      if (!await regularLog(candidate)) return;
+      const allowed = await regularLog(candidate);
+      if (!allowed || identity(allowed) !== state.identity) return;
       handle = await fs.open(candidate.file, 'r');
       const opened = await handle.stat();
       if (!opened.isFile() || identity(opened) !== state.identity) return;
-      let remaining = Math.min(MAX_BYTES_PER_POLL, stat.size - state.offset);
+      const stillAllowed = await regularLog(candidate);
+      if (!stillAllowed || identity(stillAllowed) !== state.identity) return;
+      // Reserve enough for a fresh fingerprint if this read reaches EOF.
+      let remaining = Math.min(Math.max(0, byteBudget.remaining - TAIL_SAMPLE_BYTES - HEAD_BYTES), stat.size - state.offset);
       while (this.running && remaining > 0 && budget.count < MAX_LINES_PER_POLL) {
         const block = Buffer.allocUnsafe(Math.min(CHUNK_BYTES, remaining));
         const { bytesRead } = await handle.read(block, 0, block.length, state.offset);
         if (!bytesRead) break;
         state.offset += bytesRead;
+        state.fingerprint = null;
         remaining -= bytesRead;
+        byteBudget.remaining -= bytesRead;
         state.pending += state.decoder.write(block.subarray(0, bytesRead));
         this.drain(state, budget);
       }
     } catch { /* Missing, locked, or replaced logs are retried on the next poll. */ }
     finally { await handle?.close().catch(() => {}); }
+    if (this.running && state.offset === stat.size && !state.fingerprint) {
+      state.fingerprint = await fingerprint(candidate, stat, byteBudget);
+    }
   }
 }
 

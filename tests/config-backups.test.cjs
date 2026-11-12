@@ -95,6 +95,35 @@ test('two simultaneous restores with the same token cannot both commit', async (
   assert.equal((await listBackups(file)).length, 2);
 }));
 
+test('failed restore publish preserves the config and removes staged files and the new backup', async () => fixture(async dir => {
+  const file = path.join(dir, 'server.cfg');
+  const item = await savedConfig(file, bomConfig);
+  const edited = await fs.readFile(file);
+  const { token } = await previewRestore(file, item.id);
+  const before = (await fs.readdir(dir)).sort();
+  const rename = fs.rename;
+  let attempts = 0;
+  let staged = [];
+  try {
+    fs.rename = async (...args) => {
+      if (args[1] !== file) return rename(...args);
+      attempts++;
+      staged = (await fs.readdir(dir)).filter(name => !before.includes(name));
+      throw Object.assign(new Error('simulated publish failure'), { code: 'EPERM' });
+    };
+    await assert.rejects(restoreBackup(file, item.id, token), /Could not write server\.cfg.*read-only or in use/);
+  } finally { fs.rename = rename; }
+  assert.equal(attempts, 1);
+  assert.equal(staged.filter(name => name.endsWith('.tmp')).length, 1);
+  assert.equal(staged.filter(name => name.startsWith('server.cfg.bak-')).length, 1);
+  assert.deepEqual(await fs.readFile(file), edited);
+  assert.deepEqual(await fs.readdir(dir).then(names => names.sort()), before);
+  assert.deepEqual((await listBackups(file)).map(entry => entry.id), [item.id]);
+  const result = await restoreBackup(file, item.id, token);
+  assert.deepEqual(await fs.readFile(file), bomConfig);
+  assert.equal((await listBackups(file)).some(entry => entry.id === result.backupId && entry.bytes === edited.length), true);
+}));
+
 test('duplicate timestamps remain distinct; prune requires explicit own IDs and does not delete foreign files', async () => fixture(async dir => {
   const file = path.join(dir, 'server.cfg');
   const other = path.join(dir, 'other.cfg');
@@ -117,6 +146,38 @@ test('duplicate timestamps remain distinct; prune requires explicit own IDs and 
   await pruneBackups(file, [item.id]);
   assert.equal((await listBackups(file)).length, 1);
   assert.equal((await listBackups(other)).length, 1);
+}));
+
+test('failed prune reports partial progress and continues deleting the other selected backups', async () => fixture(async dir => {
+  const file = path.join(dir, 'server.cfg');
+  const other = path.join(dir, 'other.cfg');
+  await savedConfig(file, Buffer.from('set sv_hostname "Before"\n'));
+  for (const hostname of ['Second', 'Third']) {
+    const preview = await previewConfig(file, { sv_hostname: hostname });
+    await saveConfig(file, { sv_hostname: hostname }, { token: preview.token });
+  }
+  const selected = await listBackups(file);
+  assert.equal(selected.length, 3);
+  const failed = selected[0];
+  const name = (await fs.readdir(dir)).find(name => name.startsWith('server.cfg.bak-') && crypto.createHash('sha256').update(JSON.stringify(['config-backup-v1', file, name])).digest('hex') === failed.id);
+  assert.ok(name);
+  const otherBackup = await savedConfig(other, Buffer.from('set sv_hostname "Other"\n'));
+  const unlink = fs.unlink;
+  const attempted = [];
+  try {
+    fs.unlink = async backup => {
+      attempted.push(backup);
+      if (backup === path.join(dir, name)) throw Object.assign(new Error('simulated locked backup'), { code: 'EBUSY' });
+      return unlink(backup);
+    };
+    await assert.rejects(pruneBackups(file, selected.map(entry => entry.id)), /Removed 2 of 3 backups;.*read-only or in use/);
+  } finally { fs.unlink = unlink; }
+  assert.equal(attempted.length, 3);
+  assert.equal(attempted[0], path.join(dir, name));
+  assert.deepEqual((await listBackups(file)).map(entry => entry.id), [failed.id]);
+  assert.deepEqual((await listBackups(other)).map(entry => entry.id), [otherBackup.id]);
+  assert.deepEqual(await pruneBackups(file, [failed.id]), { removed: 1 });
+  assert.deepEqual(await listBackups(file), []);
 }));
 
 test('rejects linked config files and backups', async t => fixture(async dir => {

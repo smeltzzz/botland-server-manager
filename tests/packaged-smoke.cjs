@@ -39,11 +39,26 @@ const documentFixture = {
   fields: [{ key: 'sv_hostname', sourceKey: 'sv_hostname', label: 'Server name', section: 'Server & access', type: 'text', default: 'Synthetic server' }],
 };
 let failSnapshotOnce = false;
+let failMapsOnce = false;
 let mapsVersion = 1;
+let bo1Rule = { name: 'botLANd BO1 UDP', port: 28961, state: 'missing' };
+let botFixture = { state: 'not-installed', targetPath: 'C:\\Example\\Game\\mods', manifest: null,
+  channel: 'stable', source: { supported: false, ref: null, notes: '', status: 'offline' } };
 
 function gameSnapshot(overrides) {
   const next = structuredClone(snapshot);
   Object.assign(next.games.find(game => game.id === 'cod4'), overrides);
+  return next;
+}
+function bo1Snapshot() {
+  const next = structuredClone(snapshot);
+  next.plutonium.installed = true;
+  Object.assign(next.games.find(game => game.id === 'bo1'), {
+    installed: true, pathSource: 'manual', gamePath: 'C:\\Example\\BO1',
+    configPath: 'C:\\Example\\BO1\\main\\server.cfg', blockers: [],
+    keyStatus: 'stored', setup: { folder: true, engine: null, plutonium: true, key: true,
+      bots: true, config: true, maps: true },
+  });
   return next;
 }
 
@@ -71,7 +86,7 @@ async function waitForAbsent(win, selector) {
 }
 
 app.whenReady().then(async () => {
-  ipcMain.handle('manager:action', (_event, action) => {
+  ipcMain.handle('manager:action', (_event, action, payload) => {
     switch (action) {
       case 'snapshot':
         if (failSnapshotOnce) { failSnapshotOnce = false; throw new Error('Synthetic status refresh failure.'); }
@@ -79,10 +94,11 @@ app.whenReady().then(async () => {
       case 'start': return undefined;
       case 'setUnsavedChanges': return true;
       case 'artwork': return null;
-      case 'maps': return { maps: mapsVersion === 1 ? ['mp_crash'] : ['mp_crash', 'mp_second'], modes: [{ value: 'dom', label: 'Domination' }] };
-      case 'firewallStatus': return { name: 'botLANd CoD4 UDP', port: 28962, state: 'missing' };
-      case 'botStatus': return { state: 'not-installed', targetPath: 'C:\\Example\\Game\\mods', manifest: null,
-        channel: 'stable', source: { supported: false, ref: null, notes: '', status: 'offline' } };
+      case 'maps':
+        if (failMapsOnce) { failMapsOnce = false; throw new Error('Synthetic map scan failure.'); }
+        return { maps: mapsVersion === 1 ? ['mp_crash'] : ['mp_crash', 'mp_second'], modes: [{ value: 'dom', label: 'Domination' }] };
+      case 'firewallStatus': return payload?.id === 'bo1' ? structuredClone(bo1Rule) : { name: 'botLANd CoD4 UDP', port: 28962, state: 'missing' };
+      case 'botStatus': return structuredClone(botFixture);
       case 'document': return structuredClone(documentFixture);
       case 'listConfigBackups': return [];
       case 'previewSettings': return { token: '0'.repeat(64), changed: true, changes: [
@@ -156,7 +172,15 @@ app.whenReady().then(async () => {
       input[props].onChange({ target: { value: 'Synthetic edited name' } });
     })()`);
     await waitFor(win, '.config-savebar button:not(:disabled)');
-    await win.webContents.executeJavaScript("document.querySelector('.config-savebar button').click()");
+    const unsavedStart = await win.webContents.executeJavaScript(`({
+      disabled: document.querySelector('.detail-hero-action .primary-button')?.disabled,
+      reason: document.querySelector('.detail-hero-action .primary-button')?.title,
+      name: document.querySelector('.detail-hero-action .primary-button')?.getAttribute('aria-label'),
+    })`);
+    assert.equal(unsavedStart.disabled, true, 'Start must not silently ignore an unsaved config draft');
+    assert.match(unsavedStart.reason, /Save or discard changes/);
+    assert.equal(unsavedStart.name, 'Start Call of Duty 4 server');
+    await win.webContents.executeJavaScript("(() => { const button = document.querySelector('.config-savebar button'); button.focus(); button.click(); })()");
     await waitFor(win, 'dialog[open]');
     const focused = await win.webContents.executeJavaScript("document.querySelector('dialog')?.contains(document.activeElement)");
     assert.equal(focused, true, 'Review dialog must take focus');
@@ -171,9 +195,17 @@ app.whenReady().then(async () => {
       const timer = setInterval(() => {
         if (!document.querySelector('dialog[open]') && document.activeElement?.textContent?.includes('Review changes')) {
           clearInterval(timer); resolve(true);
-        } else if (++attempts > 100) { clearInterval(timer); reject(new Error('Review focus did not return')); }
+        } else if (++attempts > 100) { clearInterval(timer); reject(new Error('Review focus did not return: ' + document.activeElement?.outerHTML?.slice(0, 300) + '; dialog=' + !!document.querySelector('dialog[open]'))); }
       }, 50);
     })`);
+    // A rejected commit closes the review but retains the edited draft and
+    // reports an actionable error; the synthetic IPC never writes a config.
+    await win.webContents.executeJavaScript("(() => { const button = document.querySelector('.config-savebar button'); button.focus(); button.click(); })()");
+    await waitFor(win, 'dialog[open]');
+    await win.webContents.executeJavaScript("document.querySelector('dialog .review-actions .primary-button').click()");
+    await waitForAbsent(win, 'dialog[open]');
+    await waitFor(win, '.config-main .config-notice.error');
+    assert.equal(await win.webContents.executeJavaScript("document.querySelector('.config-field-grid input')?.value"), 'Synthetic edited name');
     const guardedClose = await win.webContents.executeJavaScript(`(() => {
       const event = new Event('beforeunload', { cancelable: true });
       window.dispatchEvent(event);
@@ -188,6 +220,19 @@ app.whenReady().then(async () => {
     win.webContents.send('manager:event', { type: 'state', snapshot: unavailable });
     await waitFor(win, '.detail-hero-action .stop-button');
     assert.equal(await win.webContents.executeJavaScript("document.querySelectorAll('.detail-hero-action .stop-button').length"), 1);
+    const retainedConfig = await win.webContents.executeJavaScript(`({
+      tab: document.querySelector('main')?.getAttribute('aria-label'),
+      draft: document.querySelector('.config-field-grid input')?.value,
+      saveDisabled: document.querySelector('.config-savebar button')?.disabled,
+      warning: document.querySelector('.config-notice.error')?.textContent,
+    })`);
+    assert.equal(retainedConfig.tab, 'Call of Duty 4 — Configuration');
+    assert.equal(retainedConfig.draft, 'Synthetic edited name', 'Installation loss must not discard an unsaved config edit');
+    assert.equal(retainedConfig.saveDisabled, true, 'Saving must wait for the folder to return');
+    assert.match(retainedConfig.warning, /game folder is unavailable/i);
+    await win.webContents.executeJavaScript("window.confirm = () => false; document.querySelector('.detail-back button').click()");
+    assert.equal(await win.webContents.executeJavaScript("document.querySelector('main')?.getAttribute('aria-label')"), retainedConfig.tab,
+      'Declining discard must leave the editor open');
     await win.webContents.executeJavaScript("window.confirm = () => true; document.querySelector('.detail-back button').click()");
     await waitFor(win, '.server-card .stop-button');
     const unavailableDashboard = await win.webContents.executeJavaScript(`({
@@ -210,17 +255,33 @@ app.whenReady().then(async () => {
     await waitFor(win, '.detail-tabs button:nth-child(3):not(:disabled)');
     await win.webContents.executeJavaScript("[...document.querySelectorAll('.detail-tabs button')].find(button => button.textContent.includes('Maps & modes')).click()");
     await waitFor(win, '.map-option');
+    await win.webContents.executeJavaScript("document.querySelector('.map-option').click()");
+    await waitFor(win, '.rotation-panel .form-footer-actions button.outline-button');
     mapsVersion = 2;
+    win.webContents.send('manager:event', { type: 'state', snapshot: gameSnapshot({ installed: false, status: 'running', pid: 4321,
+      activePort: 28962, startedAt: new Date().toISOString(), blockers: ['Synthetic game folder became unavailable.'] }) });
+    await waitForAbsent(win, '.map-option');
+    assert.match(await win.webContents.executeJavaScript("document.querySelector('main')?.getAttribute('aria-label')"), /Maps & modes/,
+      'An unavailable folder must not close an editor with unsaved rotation changes');
+    win.webContents.send('manager:event', { type: 'state', snapshot: gameSnapshot({ installed: true, status: 'running', pid: 4321,
+      activePort: 28962, startedAt: new Date().toISOString(), blockers: [] }) });
+    await waitFor(win, '.map-grid .map-option:nth-child(2)');
+    const rescannedMaps = await win.webContents.executeJavaScript("document.querySelectorAll('.map-option').length");
+    assert.equal(rescannedMaps, 2);
+    assert.equal(await win.webContents.executeJavaScript("document.querySelectorAll('.map-option.chosen').length"), 0,
+      'A refreshed map scan must not replace unsaved rotation changes');
+    // A failed rescan must clear stale results, block Save, and offer a retry.
+    failMapsOnce = true;
     win.webContents.send('manager:event', { type: 'state', snapshot: gameSnapshot({ installed: false, status: 'running', pid: 4321,
       activePort: 28962, startedAt: new Date().toISOString(), blockers: ['Synthetic game folder became unavailable.'] }) });
     await waitForAbsent(win, '.map-option');
     win.webContents.send('manager:event', { type: 'state', snapshot: gameSnapshot({ installed: true, status: 'running', pid: 4321,
       activePort: 28962, startedAt: new Date().toISOString(), blockers: [] }) });
-    // The disabled Maps tab fell back to Overview while the folder was missing.
-    await waitFor(win, '.detail-tabs button:nth-child(3):not(:disabled)');
-    await win.webContents.executeJavaScript("[...document.querySelectorAll('.detail-tabs button')].find(button => button.textContent.includes('Maps & modes')).click()");
+    await waitFor(win, '.map-scan-error button');
+    assert.equal(await win.webContents.executeJavaScript("document.querySelector('.rotation-panel .primary-button')?.disabled"), true);
+    assert.equal(await win.webContents.executeJavaScript("document.querySelectorAll('.map-option').length"), 0);
+    await win.webContents.executeJavaScript("document.querySelector('.map-scan-error button').click()");
     await waitFor(win, '.map-grid .map-option:nth-child(2)');
-    const rescannedMaps = await win.webContents.executeJavaScript("document.querySelectorAll('.map-option').length");
     // Verify connect panel copy, stopping state, and starting state
     await win.webContents.executeJavaScript("[...document.querySelectorAll('.detail-tabs button')].find(button => button.textContent.includes('Overview')).click()");
     await waitFor(win, '.connect-panel');
@@ -277,6 +338,69 @@ app.whenReady().then(async () => {
     assert.match(consoleStarting.state, /STARTING/);
     assert.match(consoleStarting.live, /STARTING/);
 
-    console.log('Synthetic packaged renderer: startup fallback, dashboard, navigation, lifecycle state, map rescan, narrow layout and modal keyboard smoke passed.');
+    // The setup checklist must agree with the mod panel when upstream status
+    // is offline or unsupported, rather than offering an action that will fail.
+    win.webContents.send('manager:event', { type: 'state', snapshot: gameSnapshot({ status: 'stopped',
+      setup: { ...snapshot.games[0].setup, bots: false }, blockers: ['Bot Warfare missing.'] }) });
+    await win.webContents.executeJavaScript("[...document.querySelectorAll('.detail-tabs button')].find(button => button.textContent.includes('Overview')).click()");
+    await waitFor(win, '.setup-step');
+    const unsupportedMod = await win.webContents.executeJavaScript(`(() => {
+      const step = [...document.querySelectorAll('.setup-step')].find(item => item.textContent.includes('Install Bot Warfare'));
+      return { disabled: step?.querySelector('button.button')?.disabled, detail: step?.textContent };
+    })()`);
+    assert.equal(unsupportedMod.disabled, true);
+    assert.match(unsupportedMod.detail, /No verified release is available/);
+    botFixture = { ...botFixture, state: 'installed', source: { ...botFixture.source, supported: true, ref: 'v-fixture' } };
+    await win.webContents.executeJavaScript("document.querySelector('.detail-back button').click()");
+    await waitFor(win, '.server-card .card-open');
+    await win.webContents.executeJavaScript("document.querySelector('.server-card .card-open').click()");
+    await win.webContents.executeJavaScript(`new Promise((resolve, reject) => {
+      const check = () => [...document.querySelectorAll('.setup-step button')].some(button => button.textContent.includes('Reinstall Bot Warfare'));
+      if (check()) return resolve();
+      const observer = new MutationObserver(() => { if (check()) { observer.disconnect(); resolve(); } });
+      observer.observe(document.body, { subtree: true, childList: true, attributes: true });
+      setTimeout(() => { observer.disconnect(); reject(new Error('Incomplete managed mod did not offer Reinstall')); }, 10000);
+    })`);
+    const managedMod = await win.webContents.executeJavaScript(`(() => {
+      const step = [...document.querySelectorAll('.setup-step')].find(item => item.textContent.includes('Reinstall Bot Warfare'));
+      return { disabled: step?.querySelector('button.button')?.disabled, detail: step?.textContent };
+    })()`);
+    assert.equal(managedMod.disabled, false);
+    assert.match(managedMod.detail, /managed mod is incomplete/);
+
+    // BO1 is bound publicly by its engine. A matching, owned LocalSubnet rule
+    // must be verified before either dashboard or Overview offers Start.
+    win.webContents.send('manager:event', { type: 'state', snapshot: bo1Snapshot() });
+    await win.webContents.executeJavaScript("document.querySelector('.sidebar > .nav-item').click()");
+    await waitFor(win, '.server-card.accent-bo');
+    const bo1Card = await win.webContents.executeJavaScript(`({
+      start: document.querySelector('.server-card.accent-bo .primary-button')?.textContent,
+      setup: document.querySelector('.server-card.accent-bo .setup-button')?.textContent,
+      state: document.querySelector('.server-card.accent-bo .state-chip')?.textContent,
+    })`);
+    assert.equal(bo1Card.start, undefined);
+    assert.match(bo1Card.setup, /Finish setup/);
+    assert.match(bo1Card.state, /Check LAN firewall/);
+    await win.webContents.executeJavaScript("document.querySelector('.server-card.accent-bo .card-open').click()");
+    await waitFor(win, '.setup-wizard');
+    const bo1Blocked = await win.webContents.executeJavaScript(`({
+      startDisabled: document.querySelector('.detail-hero-action .primary-button')?.disabled,
+      heading: document.querySelector('.setup-wizard .section-kicker')?.textContent,
+      warning: document.querySelector('.check-list')?.textContent,
+    })`);
+    assert.equal(bo1Blocked.startDisabled, true);
+    assert.equal(bo1Blocked.heading, 'GETTING STARTED');
+    assert.match(bo1Blocked.warning, /verified botLANd local-subnet firewall rule/i);
+    bo1Rule = { name: 'botLANd BO1 UDP', port: 28961, state: 'lan', managed: true };
+    await win.webContents.executeJavaScript("document.querySelector('.detail-back button').click()");
+    await waitFor(win, '.server-card.accent-bo .primary-button');
+    await win.webContents.executeJavaScript("document.querySelector('.server-card.accent-bo .card-open').click()");
+    await waitFor(win, '.setup-wizard .readiness-pill.good');
+    assert.equal(await win.webContents.executeJavaScript("document.querySelector('.detail-hero-action .primary-button')?.disabled"), false);
+    win.setSize(400, 850);
+    const narrow = await win.webContents.executeJavaScript('({ width: innerWidth, scrollWidth: document.documentElement.scrollWidth })');
+    assert.ok(narrow.scrollWidth <= narrow.width, 'BO1 Overview must not clip at a narrow window');
+
+    console.log('Synthetic packaged renderer: startup fallback, dashboard, BO1 LAN guard, draft retention, lifecycle, map recovery, narrow layout and modal keyboard smoke passed.');
   } finally { win.destroy(); app.quit(); }
 }).catch(error => { console.error(error); app.exit(1); });

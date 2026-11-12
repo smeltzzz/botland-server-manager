@@ -8,9 +8,17 @@ function rule(port, remoteAddress, overrides = {}) {
     enabled: overrides.enabled ?? 'True',
     direction: overrides.direction ?? 'Inbound',
     action: overrides.action ?? 'Allow',
+    group: overrides.group ?? 'botLANd.ServerManager',
+    description: overrides.description ?? 'Managed by botLANd Server Manager (UDP)',
+    source: overrides.source ?? 'Local',
+    profile: overrides.profile ?? 'Any',
     protocol: overrides.protocol ?? 'UDP',
     localPort: overrides.localPort ?? [String(port)],
+    remotePort: overrides.remotePort ?? ['Any'],
+    localAddress: overrides.localAddress ?? ['Any'],
     remoteAddress: overrides.remoteAddress ?? [remoteAddress],
+    program: overrides.program ?? 'Any',
+    service: overrides.service ?? 'Any',
   };
 }
 
@@ -27,13 +35,15 @@ test('reads missing, lan, any, drift and unknown rule states', async () => {
   respond([rule(28962, 'LocalSubnet')]);
   assert.equal((await manager.firewallStatus('cod4')).state, 'lan');
   assert.equal(queried[0], 'botLANd CoD4 UDP');
-  respond([rule(28962, 'Any')]);
+  respond([rule(28962, 'Any', { protocol: '17' })]);
   assert.equal((await manager.firewallStatus('cod4')).state, 'any');
   // Single values (not arrays) are accepted too.
   respond([rule(28962, null, { localPort: '28962', remoteAddress: 'LocalSubnet' })]);
   assert.equal((await manager.firewallStatus('cod4')).state, 'lan');
   for (const overrides of [{ localPort: ['12'] }, { enabled: 'False' }, { direction: 'Outbound' }, { action: 'Block' }, { protocol: 'TCP' },
-    { remoteAddress: ['172.16.0.0/12'] }, { remoteAddress: ['LocalSubnet', '10.0.0.0/8'] }, { localPort: ['28962', '28963'] }]) {
+    { remoteAddress: ['172.16.0.0/12'] }, { remoteAddress: ['LocalSubnet', '10.0.0.0/8'] }, { localPort: ['28962', '28963'] },
+    { source: 'GroupPolicy' }, { profile: 'Private' }, { remotePort: ['28961'] }, { localAddress: ['127.0.0.1'] },
+    { program: 'C:\\other.exe' }, { service: 'other' }, { group: 'Other app' }]) {
     respond([rule(28962, 'LocalSubnet', overrides)]);
     assert.equal((await manager.firewallStatus('cod4')).state, 'drift', JSON.stringify(overrides));
   }
@@ -77,7 +87,7 @@ test('a running server keeps its rule on the launched port; scope follows saved 
   const runs = [];
   manager.runElevated = async lines => { runs.push(lines); };
   manager.firewallQuery = async () => [rule(28962, 'LocalSubnet')];
-  assert.deepEqual(await manager.firewallStatus('cod4'), { name: 'botLANd CoD4 UDP', port: 28962, state: 'lan' });
+  assert.deepEqual(await manager.firewallStatus('cod4'), { name: 'botLANd CoD4 UDP', port: 28962, state: 'lan', managed: true });
   await manager.firewallApply('cod4');
   assert.match(runs[0].join('\n'), /\$targetPort = '28962'/);
   assert.match(runs[0].join('\n'), /\$targetScope = 'LocalSubnet'/);
@@ -88,7 +98,7 @@ test('a running server keeps its rule on the launched port; scope follows saved 
   assert.match(runs[1].join('\n'), /\$targetScope = 'Any'/);
   // Once stopped, the saved port applies and the old rule reads as a mismatch.
   manager.instances.delete('cod4');
-  assert.deepEqual(await manager.firewallStatus('cod4'), { name: 'botLANd CoD4 UDP', port: 30000, state: 'drift' });
+  assert.deepEqual(await manager.firewallStatus('cod4'), { name: 'botLANd CoD4 UDP', port: 30000, state: 'drift', managed: true });
 });
 
 test('BO1 always gets a LAN-scoped rule because its launch stays public', async () => {

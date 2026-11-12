@@ -133,7 +133,8 @@ function listLaunchers() {
       if (error) return resolve(null); // Unknown: callers must not assume "closed".
       try {
         const parsed = JSON.parse(String(stdout).trim() || '[]');
-        resolve((Array.isArray(parsed) ? parsed : [parsed]).filter(item => Number.isInteger(item?.pid) && Number.isInteger(item?.ppid)));
+        const items = Array.isArray(parsed) ? parsed : [parsed];
+        resolve(items.every(item => Number.isInteger(item?.pid) && Number.isInteger(item?.ppid)) ? items : null);
       } catch { resolve(null); }
     });
   });
@@ -142,9 +143,10 @@ function killProcess(pid) { try { process.kill(pid); } catch { /* Already closed
 
 class PlutoniumUpdater {
   /** @param {{ userData: string, fetch?: typeof fetch, run?: typeof runUpdater, now?: () => number,
-   *  bootstrapper?: () => string, maxAgeMs?: number, launchers?: typeof listLaunchers, kill?: (pid: number) => void }} options */
+   *  bootstrapper?: () => string, maxAgeMs?: number, launchers?: typeof listLaunchers, kill?: (pid: number) => void,
+   *  sha256?: string }} options */
   constructor({ userData, fetch, run = runUpdater, now = Date.now, bootstrapper = bootstrapPath, maxAgeMs = MAX_AGE_MS,
-    launchers = listLaunchers, kill = killProcess }) {
+    launchers = listLaunchers, kill = killProcess, sha256 = UPDATER_SHA256 }) {
     this.launchers = launchers;
     this.kill = kill;
     if (typeof userData !== 'string' || !path.isAbsolute(userData)) throw new Error('An absolute app data folder is required.');
@@ -152,6 +154,7 @@ class PlutoniumUpdater {
     this.exe = path.join(this.dir, 'plutonium.exe');
     this.stateFile = path.join(this.dir, 'state.json');
     this.fetch = fetch;
+    this.sha256 = sha256;
     this.run = run;
     this.now = now;
     this.bootstrapper = bootstrapper;
@@ -175,13 +178,23 @@ class PlutoniumUpdater {
     return { installed, updating: this.updating, lastUpdated: state.lastUpdated || null, error: this.lastError || null };
   }
   async ensureUpdater() {
-    if (await exists(this.exe)) return;
+    let cached;
+    try { cached = await fs.readFile(this.exe); }
+    catch (error) { if (error.code !== 'ENOENT') throw error; }
+    if (cached && crypto.createHash('sha256').update(cached).digest('hex') === this.sha256) return;
     await fs.mkdir(this.dir, { recursive: true });
-    const bytes = await downloadUpdater({ fetch: this.fetch });
+    const bytes = await downloadUpdater({ fetch: this.fetch, sha256: this.sha256 });
     const temp = `${this.exe}.${crypto.randomUUID()}.tmp`;
     try {
       await fs.writeFile(temp, bytes);
+      // Windows cannot rename over an existing file. Never run the old copy if
+      // it changed: replacement failure leaves the update failed, not trusted.
+      if (cached) await fs.rm(this.exe);
       await fs.rename(temp, this.exe);
+      const installed = await fs.readFile(this.exe);
+      if (crypto.createHash('sha256').update(installed).digest('hex') !== this.sha256) {
+        throw new Error('The cached Plutonium updater did not match the verified version, so it was not used.');
+      }
     } finally { await fs.rm(temp, { force: true }).catch(() => {}); }
   }
   /** Install or update Plutonium. Concurrent callers share one run. */
@@ -192,7 +205,9 @@ class PlutoniumUpdater {
         if (!path.isAbsolute(this.bootstrapper() || '')) throw new Error('The Windows LOCALAPPDATA folder is not set, so Plutonium cannot be installed.');
         // With the launcher open, the updater waits for it to close and never
         // finishes, so do not start an update that cannot complete.
-        if ((await this.launchers())?.length) throw new Error('Close the Plutonium launcher window first; Plutonium cannot update while it is open.');
+        const launchers = await this.launchers();
+        if (launchers === null) throw new Error('Could not check whether the Plutonium launcher is open; the update was not started.');
+        if (launchers.length) throw new Error('Close the Plutonium launcher window first; Plutonium cannot update while it is open.');
         await this.ensureUpdater();
         let updaterPid = null;
         try {
@@ -224,11 +239,14 @@ class PlutoniumUpdater {
    * @param {{ log?: (text: string, level?: string) => void, skip?: boolean }} [options]
    */
   async prepareLaunch({ log = () => {}, skip = false } = {}) {
+    // Capture a manual update before any awaits: even a fresh/skipped launch
+    // must not proceed until that update has finished (or failed).
+    const pending = this.running;
     const installed = await this.installed();
-    if (installed && (skip || await this.fresh())) return { updated: false };
+    if (!pending && installed && (skip || await this.fresh()) && !this.running) return { updated: false };
     log(installed ? 'Checking for Plutonium updates…' : 'Installing Plutonium…');
     try {
-      await this.update();
+      await (pending || this.running || this.update());
       log(installed ? 'Plutonium is up to date.' : 'Plutonium installed.');
       return { updated: true };
     } catch (error) {

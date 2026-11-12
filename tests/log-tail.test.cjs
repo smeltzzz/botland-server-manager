@@ -122,6 +122,40 @@ test('starts over after truncation or replacement without joining partial old te
   } finally { await reader.stop(); }
 }));
 
+test('detects same-size rewrites beyond the head but ignores timestamp-only touches', async () => fixture(async ({ gamePath, localAppData }) => {
+  const file = path.join(gamePath, 'main', 'console_mp.log');
+  const header = `${'H'.repeat(63)}\n`;
+  const padding = `${'x'.repeat(20_000)}\n`;
+  await put(file, `${header}${padding}old-entry\n`);
+  const lines = [];
+  const reader = tail('cod4', gamePath, localAppData, lines);
+  const mtime = Date.now() + 30_000;
+  try {
+    await reader.start();
+    assert.deepEqual(lines, []);
+    await fs.utimes(file, new Date(mtime), new Date(mtime));
+    await reader.poll();
+    assert.deepEqual(lines, []);
+
+    const handle = await fs.open(file, 'r+');
+    try { await handle.write(Buffer.from('new-entry\n'), 0, 10, Buffer.byteLength(header + padding)); }
+    finally { await handle.close(); }
+    assert.equal((await fs.stat(file)).size, Buffer.byteLength(`${header}${padding}old-entry\n`));
+    await fs.utimes(file, new Date(mtime + 10_000), new Date(mtime + 10_000));
+    await reader.poll();
+    assert.deepEqual(lines, [header.trimEnd(), 'new-entry']);
+    await fs.utimes(file, new Date(mtime + 20_000), new Date(mtime + 20_000));
+    await reader.poll();
+    assert.deepEqual(lines, [header.trimEnd(), 'new-entry']);
+    await fs.appendFile(file, 'fresh\n');
+    await fs.utimes(file, new Date(mtime + 30_000), new Date(mtime + 30_000));
+    await reader.poll();
+    await fs.utimes(file, new Date(mtime + 40_000), new Date(mtime + 40_000));
+    await reader.poll();
+    assert.deepEqual(lines, [header.trimEnd(), 'new-entry', 'fresh']);
+  } finally { await reader.stop(); }
+}));
+
 test('bounds bytes, callbacks, and partial lines; never reads unknown files', async () => fixture(async ({ gamePath, localAppData }) => {
   const file = path.join(gamePath, 'userraw', 'console_mp.log');
   const unrelated = path.join(gamePath, 'userraw', 'private.cfg');

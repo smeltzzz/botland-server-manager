@@ -121,6 +121,34 @@ test('whole-line redaction and optional session service cover stdout, stderr, fi
   assert.equal(manager.hasRunning(), false);
 });
 
+test('a long key crossing the log input cap never leaks a prefix to events, snapshots or session JSONL', async t => {
+  const dir = await fixture(t);
+  const { SessionLogs } = require('../electron/session-logs.cjs');
+  const prefix = 'boundary-private-fixture-';
+  const key = prefix + 'x'.repeat(4096 - prefix.length);
+  const sessionLogs = new SessionLogs({ userData: dir });
+  const file = await sessionLogs.start('bo2', { key });
+  const events = [];
+  const manager = new ServerManager(path.join(dir, 'settings.json'), event => events.push(event), { sessionLogs });
+  manager.instances.set('bo2', { logKey: key, sessionOpen: true });
+  // The key starts before both the 2000-character output cap and the
+  // 4000-character input cap, but ends beyond the input cap.
+  manager.addLog('bo2', 'a'.repeat(1900) + key + ' public tail');
+  manager.addLog('bo2', 'b'.repeat(2100) + key);
+  await sessionLogs.close('bo2');
+  const messages = events.filter(event => event.type === 'log').map(event => event.entry.message);
+  const snapshot = await manager.snapshot();
+  const jsonl = await fs.readFile(file, 'utf8');
+  assert.equal(messages[0], 'a'.repeat(1900));
+  assert.equal(messages[1].length, 2000);
+  assert.equal(snapshot.games.find(item => item.id === 'bo2').logs.length, 2);
+  assert.equal(jsonl.trim().split('\n').length, 2);
+  for (const published of [JSON.stringify(events), JSON.stringify(snapshot), jsonl]) {
+    assert.equal(published.includes(prefix), false);
+    assert.equal(published.includes(key), false);
+  }
+});
+
 test('a fresh launch waits for the previous tail and session to close', async t => {
   const dir = await fixture(t);
   await fs.mkdir(path.join(dir, 'main'));

@@ -1,10 +1,11 @@
 const test = require('node:test');
 const assert = require('node:assert/strict');
 const { spawnSync } = require('node:child_process');
-const { buildFirewallApplyLines } = require('../electron/firewall-rule.cjs');
+const { buildFirewallApplyLines, buildFirewallRemoveLines } = require('../electron/firewall-rule.cjs');
 
 const input = { name: 'botLANd BO1 UDP', port: 28961, scope: 'localsubnet' };
 const lines = () => buildFirewallApplyLines(input);
+const removeLines = () => buildFirewallRemoveLines({ name: input.name });
 
 function rule(name = 'old', display = input.name, group = 'botLANd.ServerManager') {
   return { Name: name, DisplayName: display, Group: group, Description: 'Managed by botLANd Server Manager (UDP)', Direction: 'Inbound', Action: 'Allow', Enabled: 'True', Profile: 'Any', Protocol: 'UDP', LocalPort: '12345', RemotePort: 'Any', LocalAddress: 'Any', RemoteAddress: 'Any', Program: 'Any', Service: 'Any' };
@@ -15,7 +16,7 @@ function legacy(name = 'old', overrides = {}) {
   return { ...rule(name), Group: '', Description: '', LocalPort: String(input.port), ...overrides };
 }
 
-function mockRun(scenario, initial = []) {
+function mockRun(scenario, initial = [], generator = lines) {
   // This harness shadows every NetSecurity cmdlet in a child PowerShell process.
   // It has no elevation, no import of NetSecurity and no real firewall writes.
   const prelude = `
@@ -26,12 +27,28 @@ $script:failed = $false
 foreach ($item in (ConvertFrom-Json -InputObject '${JSON.stringify(initial).replaceAll("'", "''")}')) { [void]$script:rules.Add($item) }
 function Get-NetFirewallRule {
   [CmdletBinding()] param([string]$PolicyStore, [string]$DisplayName, [string]$Name)
+  if ($PSBoundParameters.ContainsKey('Name') -and -not $script:failed) {
+    if ($script:scenario -eq 'remove-owner-drift') {
+      $script:failed = $true
+      $script:rules[0].Group = 'administrator'
+    }
+    if ($script:scenario -eq 'remove-new-policy') {
+      $script:failed = $true
+      [void]$script:rules.Add([pscustomobject]@{ Name='policy'; DisplayName='botLANd BO1 UDP'; Group=''; Description=''; Store='GPO' })
+    }
+  }
   foreach ($item in $script:rules) {
     if ($PolicyStore -eq 'ActiveStore' -or $PolicyStore -eq 'PersistentStore') {
       if ($PolicyStore -eq 'PersistentStore' -and $item.PSObject.Properties['Store'] -and $item.Store -eq 'GPO') { continue }
+      if ($script:scenario -eq 'remove-policy-shadow' -and $PolicyStore -eq 'ActiveStore' -and -not ($item.PSObject.Properties['Store'] -and $item.Store -eq 'GPO')) { continue }
       if ($PSBoundParameters.ContainsKey('Name') -and $item.Name -cne $Name) { continue }
       if ($PSBoundParameters.ContainsKey('DisplayName') -and $item.DisplayName -cne $DisplayName) { continue }
-      $item
+      if ($PolicyStore -eq 'ActiveStore') {
+        $copy = $item.PSObject.Copy()
+        $source = if ($item.PSObject.Properties['Store'] -and $item.Store -eq 'GPO') { 'GroupPolicy' } else { 'Local' }
+        $copy | Add-Member -NotePropertyName PolicyStoreSourceType -NotePropertyValue $source -Force
+        $copy
+      } else { $item }
     }
   }
 }
@@ -51,8 +68,12 @@ function Set-NetFirewallRule {
 function Remove-NetFirewallRule {
   [CmdletBinding()] param([string]$PolicyStore, [string]$Name)
   if ($script:scenario -eq 'cleanup' -and $Name -eq 'old') { throw 'mock cleanup failure' }
+  if ($script:scenario -eq 'remove-noop') { return }
   $item = @($script:rules | Where-Object Name -CEQ $Name)[0]
   if ($item) { [void]$script:rules.Remove($item) }
+  if ($script:scenario -eq 'remove-policy-after-write') {
+    [void]$script:rules.Add([pscustomobject]@{ Name='policy'; DisplayName='botLANd BO1 UDP'; Group=''; Description=''; Store='GPO' })
+  }
   if ($script:scenario -eq 'cleanup-after-write' -and $Name -eq 'old') { throw 'mock post-write cleanup failure' }
 }
 function Get-NetFirewallPortFilter {
@@ -72,7 +93,7 @@ function Get-NetFirewallServiceFilter {
   process { [pscustomobject]@{ Service=$InputObject.Service } }
 }
 `;
-  const script = `${prelude}\n$problem = ''\ntry {\n${lines().join('\n')}\n} catch { $problem = [string]$_ }\n@{ error=$problem; rules=@($script:rules.ToArray()) } | ConvertTo-Json -Depth 5 -Compress`;
+  const script = `${prelude}\n$problem = ''\ntry {\n${generator().join('\n')}\n} catch { $problem = [string]$_ }\n@{ error=$problem; rules=@($script:rules.ToArray()) } | ConvertTo-Json -Depth 5 -Compress`;
   const result = spawnSync('powershell.exe', ['-NoProfile', '-NonInteractive', '-EncodedCommand', Buffer.from(script, 'utf16le').toString('base64')], { encoding: 'utf8', timeout: 20000 });
   assert.equal(result.status, 0, result.stderr || result.error?.message);
   return JSON.parse(result.stdout.trim());
@@ -120,6 +141,83 @@ test('candidate precedes old rule mutation; removal is last and by immutable Nam
   }
   assert.match(script, /\$promotionVerified = \$true/);
   assert.doesNotMatch(script, /netsh|Remove-NetFirewallRule -DisplayName/);
+});
+
+test('remove generator requires a unique marked identity and checks active rules after deletion', () => {
+  const script = removeLines().join('\n');
+  const local = script.indexOf('$originals = @(Get-ExactRules PersistentStore)');
+  const active = script.indexOf('$active = @(Get-ExactRules ActiveStore)');
+  const nameLookup = script.indexOf('Get-NetFirewallRule -PolicyStore PersistentStore -Name $ruleName');
+  const recheck = script.indexOf('$currentActive = @(Get-ExactRules ActiveStore)');
+  const remove = script.indexOf('Remove-NetFirewallRule -PolicyStore PersistentStore -Name ([string]$rule.Name)');
+  const verify = script.lastIndexOf('Get-ExactRules ActiveStore');
+  assert.ok(local >= 0 && local < active && active < nameLookup && nameLookup < recheck && recheck < remove && remove < verify);
+  assert.match(script, /\$originals\.Count -ne 1 -or \$active\.Count -ne 1/);
+  assert.match(script, /\$rule\.Name -cne \$ruleName/);
+  assert.match(script, /\$rule\.Group -cne \$owner/);
+  assert.match(script, /\$rule\.Description -cne \$description/);
+  assert.match(script, /\$rule\.PolicyStoreSourceType -ne 'Local'/);
+  assert.match(script, /Assert-OwnedIdentity \$active\[0\] \$true/);
+  assert.match(script, /Assert-OwnedIdentity \$byName\[0\]/);
+  assert.doesNotMatch(script, /\$legacy|Remove-NetFirewallRule -DisplayName|foreach \(\$rule in/);
+  for (const name of ['botLANd Unknown UDP', "botLANd BO1 UDP'; Remove-NetFirewallRule -Name X; #"]) {
+    assert.throws(() => buildFirewallRemoveLines({ name }), /Unknown/);
+  }
+});
+
+test('mock: remove deletes only the unique marked local rule', { skip: !windows }, () => {
+  const { error, rules } = mockRun('normal', [rule()], removeLines);
+  assert.equal(error, '');
+  assert.deepEqual(rules, []);
+});
+
+test('mock: remove refuses absent, duplicate, policy and unmarked rules without writes', { skip: !windows }, () => {
+  const cases = [
+    [],
+    [legacy()],
+    [rule('old', input.name, '')],
+    [{ ...rule(), Description: '' }],
+    [{ ...rule(), Description: 'administrator note' }],
+    [rule('one'), rule('two')],
+    [rule(), legacy('other')],
+    [{ ...rule('policy'), Store: 'GPO' }],
+    [rule(), { ...rule('policy'), Store: 'GPO' }],
+  ];
+  for (const initial of cases) {
+    const { error, rules } = mockRun('normal', initial, removeLines);
+    assert.notEqual(error, '', JSON.stringify(initial));
+    assert.deepEqual(rules, initial);
+  }
+});
+
+test('mock: remove rechecks ownership and policy before deleting', { skip: !windows }, () => {
+  const drift = mockRun('remove-owner-drift', [rule()], removeLines);
+  assert.match(drift.error, /ownership changed/);
+  assert.equal(drift.rules.length, 1);
+  assert.equal(drift.rules[0].Group, 'administrator');
+
+  const policy = mockRun('remove-new-policy', [rule()], removeLines);
+  assert.match(policy.error, /changed during removal/);
+  assert.equal(policy.rules.length, 2);
+  assert.ok(policy.rules.some(item => item.Name === 'old'));
+
+  // A GPO rule can shadow the local rule in ActiveStore, even if it copies
+  // the same Name and ownership marker; count and Name checks alone are insufficient.
+  const shadow = [rule(), { ...rule(), Store: 'GPO' }];
+  const result = mockRun('remove-policy-shadow', shadow, removeLines);
+  assert.match(result.error, /not from the local policy store/);
+  assert.deepEqual(result.rules, shadow);
+});
+
+test('mock: remove reports rules still active after a no-op or new policy rule', { skip: !windows }, () => {
+  const noop = mockRun('remove-noop', [rule()], removeLines);
+  assert.match(noop.error, /still active/);
+  assert.equal(noop.rules.length, 1);
+
+  const policy = mockRun('remove-policy-after-write', [rule()], removeLines);
+  assert.match(policy.error, /still active/);
+  assert.equal(policy.rules.length, 1);
+  assert.equal(policy.rules[0].Store, 'GPO');
 });
 
 test('mock: create and update work without losing a rule', { skip: !windows }, () => {

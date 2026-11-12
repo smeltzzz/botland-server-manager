@@ -114,15 +114,15 @@ function buildFirewallApplyLines({ name, port, scope }) {
   ];
 }
 
-// Removes the local rules with exactly this botLANd display name, including
-// legacy netsh rules created before ownership markers existed. Unlike the old
-// netsh call, failures are reported instead of being discarded, and a rule
-// that is still active afterwards (for example one pushed by Group Policy)
-// is reported rather than shown as removed.
+// Remove only a unique, strictly marked local rule. Legacy unmarked rules can
+// be replaced through Apply (after verifying their full fingerprint), not
+// removed by display name. Display names can be duplicated by users or GPO.
 function buildFirewallRemoveLines({ name }) {
   if (!managedNames.has(name)) throw new Error('Unknown botLANd firewall rule.');
   return [
     `$targetName = '${name}'`,
+    "$owner = 'botLANd.ServerManager'",
+    "$description = 'Managed by botLANd Server Manager (UDP)'",
     'function Get-ExactRules($store) {',
     '  $lookupErrors = @()',
     '  $found = @(Get-NetFirewallRule -PolicyStore $store -DisplayName $targetName -ErrorAction SilentlyContinue -ErrorVariable lookupErrors)',
@@ -130,8 +130,30 @@ function buildFirewallRemoveLines({ name }) {
     '  if ($failure.Count) { throw $failure[0] }',
     '  return @($found | Where-Object { [string]$_.DisplayName -ceq $targetName })',
     '}',
-    'foreach ($rule in @(Get-ExactRules PersistentStore)) { Remove-NetFirewallRule -PolicyStore PersistentStore -Name ([string]$rule.Name) -ErrorAction Stop }',
-    "if (@(Get-ExactRules ActiveStore).Count) { throw ('A rule named ' + $targetName + ' is still active, probably from Group Policy. Ask your administrator to remove it.') }",
+    '$originals = @(Get-ExactRules PersistentStore)',
+    '$active = @(Get-ExactRules ActiveStore)',
+    "if ($originals.Count -ne 1 -or $active.Count -ne 1) { throw 'Expected exactly one local, active botLANd firewall rule; resolve duplicate or policy rules manually.' }",
+    '$ruleName = [string]$originals[0].Name',
+    "if ([string]::IsNullOrWhiteSpace($ruleName)) { throw 'Firewall rule has no stable identity.' }",
+    'function Assert-OwnedIdentity($rule, $activeRule = $false) {',
+    "  if ([string]$rule.Name -cne $ruleName -or [string]$rule.DisplayName -cne $targetName -or [string]$rule.Group -cne $owner -or [string]$rule.Description -cne $description) { throw 'Firewall rule identity or botLANd ownership changed; review it manually.' }",
+    "  if ($activeRule -and [string]$rule.PolicyStoreSourceType -ne 'Local') { throw 'Active firewall rule is not from the local policy store.' }",
+    '}',
+    'Assert-OwnedIdentity $originals[0]',
+    'Assert-OwnedIdentity $active[0] $true',
+    '$byName = @(Get-NetFirewallRule -PolicyStore PersistentStore -Name $ruleName -ErrorAction Stop)',
+    "if ($byName.Count -ne 1) { throw 'Firewall rule identity changed.' }",
+    'Assert-OwnedIdentity $byName[0]',
+    // Recheck both stores immediately before removal, not just the Name lookup:
+    // another local or GPO rule may have acquired this display name meanwhile.
+    '$current = @(Get-ExactRules PersistentStore)',
+    '$currentActive = @(Get-ExactRules ActiveStore)',
+    "if ($current.Count -ne 1 -or $currentActive.Count -ne 1) { throw 'Firewall rules changed during removal.' }",
+    'Assert-OwnedIdentity $current[0]',
+    'Assert-OwnedIdentity $currentActive[0] $true',
+    '$rule = $current[0]',
+    'Remove-NetFirewallRule -PolicyStore PersistentStore -Name ([string]$rule.Name) -ErrorAction Stop',
+    "if (@(Get-ExactRules ActiveStore).Count) { throw ('A rule named ' + $targetName + ' is still active. Inspect local and Group Policy rules manually.') }",
   ];
 }
 

@@ -11,7 +11,7 @@ const backupMethods = ['listConfigBackups', 'previewConfigRestore', 'restoreConf
 
 // Run both entry points with only in-memory dependencies. In particular, never
 // load the real manager, profiles, networking, Electron, or private launchers.
-async function ipcFixture() {
+async function ipcFixture(options = {}) {
   const [mainSource, preloadSource] = await Promise.all([
     fs.readFile(path.join(electronDir, 'main.cjs'), 'utf8'),
     fs.readFile(path.join(electronDir, 'preload.cjs'), 'utf8'),
@@ -22,10 +22,14 @@ async function ipcFixture() {
   let windowLoaded;
   const loaded = new Promise(resolve => { windowLoaded = resolve; });
   const startupErrors = [];
+  const recoveryDialogs = [];
+  const migrationCalls = [];
+  const startupCalls = [];
   const writes = [];
   const discoveries = [];
   const calls = [];
   const invocations = [];
+  let quits = 0;
   let addresses = ['192.168.10.5'];
 
   const profileFor = id => {
@@ -34,8 +38,15 @@ async function ipcFixture() {
   };
   const manager = {
     instances: new Map(),
-    async initialize() { return null; },
-    async rescanInstallations() {},
+    async initialize() {
+      startupCalls.push('initialize');
+      if (options.initializeError) throw options.initializeError;
+      return options.recoveredSettings || null;
+    },
+    async rescanInstallations() {
+      startupCalls.push('rescanInstallations');
+      if (options.rescanError) throw options.rescanError;
+    },
     async checkBotUpdates() {},
     setAutoRestart(id, enabled) {
       calls.push(['setAutoRestart', id, enabled]);
@@ -50,6 +61,10 @@ async function ipcFixture() {
     async snapshot() { return manager.diagnosticSnapshot; },
     diagnosticSnapshot: { games: [] },
   };
+  for (const method of ['start', 'stop', 'saveKey', 'removeKey', 'resetKeyStore', 'commitSettings',
+    'firewallApply', 'firewallRemove', 'botAction', 'chooseFolder', 'setUpdateChecks', 'updatePlutonium']) {
+    manager[method] = (...args) => { calls.push([method, ...args]); return Promise.resolve(true); };
+  }
   for (const method of backupMethods) {
     manager[method] = (...args) => {
       calls.push([method, ...args]);
@@ -87,16 +102,22 @@ async function ipcFixture() {
       requestSingleInstanceLock: () => true,
       whenReady: () => Promise.resolve(),
       on() {},
-      getPath: name => name === 'appData' ? appData : path.join(appData, 'BotLANd Server Manager'),
-      quit() { throw new Error('Unexpected quit.'); },
+      getPath: name => name === 'appData' ? appData : path.join(appData, 'botLANd'),
+      quit() { if (!options.expectStartupError) throw new Error('Unexpected quit.'); quits++; windowLoaded(); },
     },
     BrowserWindow: FakeWindow,
     clipboard: { writeText(text) { writes.push(text); } },
-    dialog: { showErrorBox(_title, message) { startupErrors.push(message); } },
+    dialog: {
+      showErrorBox(title, message) { startupErrors.push([title, message]); },
+      showMessageBox(_window, details) { recoveryDialogs.push(details); return Promise.resolve({ response: 0 }); },
+    },
     ipcMain: { handle(channel, callback) { assert.equal(channel, 'manager:action'); handler = callback; } },
     safeStorage: {},
     session: { defaultSession: { setPermissionRequestHandler() {}, setPermissionCheckHandler() {} } },
-    shell: {},
+    shell: {
+      openExternal(url) { calls.push(['openExternal', url]); return Promise.resolve(); },
+      openPath(file) { calls.push(['openPath', file]); return Promise.resolve(''); },
+    },
     contextBridge: { exposeInMainWorld(name, value) { assert.equal(name, 'manager'); api = value; } },
     ipcRenderer: {
       invoke(channel, action, payload) {
@@ -108,7 +129,18 @@ async function ipcFixture() {
   const mocks = {
     electron,
     'node:path': path,
-    'node:fs/promises': { mkdir() { throw new Error('Unexpected disk write.'); }, copyFile() { throw new Error('Unexpected disk copy.'); } },
+    'node:fs/promises': {
+      async mkdir(directory, settings) {
+        migrationCalls.push(['mkdir', directory, settings]);
+        if (options.migrationMkdirError) throw options.migrationMkdirError;
+      },
+      async copyFile(from, to, flag) {
+        migrationCalls.push(['copyFile', from, to, flag]);
+        if (options.migrationCopyError) throw options.migrationCopyError;
+        // Simulate an absent legacy settings file without touching the disk.
+        throw Object.assign(new Error('No legacy settings.'), { code: 'ENOENT' });
+      },
+    },
     'node:fs': { constants: { COPYFILE_EXCL: 1 } },
     './manager.cjs': { ServerManager: class { constructor() { return manager; } } },
     './key-store.cjs': { KeyStore: class {} },
@@ -132,12 +164,14 @@ async function ipcFixture() {
   } };
   vm.runInNewContext(mainSource, sandbox, { filename: 'electron/main.cjs' });
   await loaded;
-  assert.deepEqual(startupErrors, []);
+  await new Promise(resolve => setImmediate(resolve)); // Allow post-load recovery notice to be scheduled.
+  if (!options.expectStartupError) assert.deepEqual(startupErrors, []);
   assert.equal(typeof handler, 'function');
   vm.runInNewContext(preloadSource, sandbox, { filename: 'electron/preload.cjs' });
   assert.ok(api);
   function validEvent() { return { sender: window.webContents, senderFrame: window.webContents.mainFrame }; }
   return { api, handler, validEvent, window, manager, writes, discoveries, calls, invocations,
+    startupErrors, recoveryDialogs, migrationCalls, startupCalls, get quits() { return quits; },
     setAddresses(next) { addresses = next; } };
 }
 
@@ -304,4 +338,102 @@ test('Phase 4 actions refuse forged sender/frame and malformed requests before a
   assert.deepEqual(calls, []);
   assert.deepEqual(writes, []);
   assert.deepEqual(discoveries, []);
+});
+
+test('sensitive IPC actions reject forged sender and subframe before calling manager, shell, or clipboard', async () => {
+  const { handler, validEvent, window, calls, writes } = await ipcFixture();
+  // Establish that these stand-ins record authorized side effects.
+  assert.equal(await handler(validEvent(), 'saveKey', { id: 'cod4', key: 'synthetic-key' }), true);
+  assert.deepEqual(calls, [['saveKey', 'cod4', 'synthetic-key']]);
+  calls.length = 0;
+  const requests = [
+    ['start', { id: 'cod4' }],
+    ['stop', { id: 'cod4' }],
+    ['saveKey', { id: 'cod4', key: 'synthetic-key' }],
+    ['removeKey', { id: 'cod4' }],
+    ['resetKeyStore', {}],
+    ['commitSettings', { id: 'cod4', target: 'base', mode: 'dom', values: {}, token: 'a'.repeat(64) }],
+    ['firewallApply', { id: 'bo1' }],
+    ['firewallRemove', { id: 'bo1' }],
+    ['botAction', { id: 'cod4', operation: 'install' }],
+    ['chooseFolder', { id: 'cod4' }],
+    ['setUpdateChecks', { enabled: false }],
+    ['updatePlutonium', {}],
+    ['openDocs', { id: 'cod4' }],
+    ['openKeyPage', {}],
+    ['copyDiagnostics', {}],
+  ];
+  for (const [action, payload] of requests) {
+    for (const event of [
+      { sender: {}, senderFrame: window.webContents.mainFrame },
+      { sender: window.webContents, senderFrame: {} },
+      { sender: window.webContents },
+    ]) {
+      await assert.rejects(handler(event, action, payload), /Invalid window/, `${action} accepted a forged sender/frame`);
+    }
+  }
+  assert.deepEqual(calls, []);
+  assert.deepEqual(writes, []);
+});
+
+test('malformed IPC envelopes and action names are rejected before any sensitive side effects', async () => {
+  const { handler, validEvent, calls, writes, discoveries } = await ipcFixture();
+  for (const action of ['saveKey', 'start', 'firewallApply', 'copyDiagnostics', 'copyConnectAddress', 'openKeyPage']) {
+    for (const payload of [null, [], 'text', 42, false]) {
+      await assert.rejects(handler(validEvent(), action, payload), /Invalid request/, `${action} accepted ${String(payload)}`);
+    }
+  }
+  for (const action of [null, 42, [], {}, 'unknown-action']) {
+    await assert.rejects(handler(validEvent(), action, { id: 'cod4' }), /Invalid request|Unknown action/);
+  }
+  await assert.rejects(handler(validEvent(), 'setUnsavedChanges', { dirty: 'true' }), /Invalid unsaved-changes state/);
+  await assert.rejects(handler(validEvent(), 'copyConnectAddress', { id: 'cod4', address: { toString: () => '192.168.10.5:28962' } }), /Invalid connect address/);
+  assert.deepEqual(calls, []);
+  assert.deepEqual(writes, []);
+  assert.deepEqual(discoveries, []);
+});
+
+test('startup migrates settings in memory, tolerating missing or already-migrated legacy files', async () => {
+  for (const code of ['ENOENT', 'EEXIST']) {
+    const fixture = await ipcFixture({ migrationCopyError: Object.assign(new Error('synthetic migration conflict'), { code }) });
+    assert.deepEqual(fixture.startupCalls, ['initialize', 'rescanInstallations']);
+    assert.equal(fixture.migrationCalls.length, 2);
+    assert.equal(fixture.migrationCalls[0][0], 'mkdir');
+    assert.equal(fixture.migrationCalls[1][0], 'copyFile');
+    assert.equal(fixture.migrationCalls[1][3], 1); // COPYFILE_EXCL must not overwrite current settings.
+    assert.deepEqual(fixture.startupErrors, []);
+    assert.equal(fixture.quits, 0);
+  }
+});
+
+test('recovered corrupt settings show a warning after successful bootstrap without quitting', async () => {
+  const recovered = path.join(__dirname, 'synthetic-settings-backup.json');
+  const fixture = await ipcFixture({ recoveredSettings: recovered });
+  assert.deepEqual(fixture.startupCalls, ['initialize', 'rescanInstallations']);
+  assert.equal(fixture.recoveryDialogs.length, 1);
+  assert.match(fixture.recoveryDialogs[0].message, /started with defaults/);
+  assert.ok(fixture.recoveryDialogs[0].detail.includes(recovered));
+  assert.deepEqual(fixture.startupErrors, []);
+  assert.equal(fixture.quits, 0);
+});
+
+test('migration and bootstrap failures report the error and quit without opening a window', async () => {
+  for (const [options, expectedCalls, expectedMigration] of [
+    [{ migrationMkdirError: new Error('synthetic mkdir failure') }, [], ['mkdir']],
+    [{ migrationCopyError: Object.assign(new Error('synthetic copy failure'), { code: 'EACCES' }) }, [], ['mkdir', 'copyFile']],
+    [{ initializeError: new Error('synthetic initialize failure') }, ['initialize'], ['mkdir', 'copyFile']],
+    [{ rescanError: new Error('synthetic scan failure') }, ['initialize', 'rescanInstallations'], ['mkdir', 'copyFile']],
+  ]) {
+    const fixture = await ipcFixture({ ...options, expectStartupError: true });
+    assert.equal(fixture.window, undefined);
+    assert.equal(fixture.quits, 1);
+    assert.deepEqual(fixture.startupCalls, expectedCalls);
+    assert.deepEqual(fixture.migrationCalls.map(call => call[0]), expectedMigration);
+    assert.equal(fixture.startupErrors.length, 1);
+    assert.deepEqual(fixture.startupErrors[0], ['botLANd could not start', Object.values(options)[0].message]);
+    assert.deepEqual(fixture.recoveryDialogs, []);
+    await assert.rejects(fixture.handler({ sender: {}, senderFrame: {} }, 'saveKey', { id: 'cod4', key: 'synthetic-key' }),
+      /Server manager is not ready|Invalid window/);
+    assert.deepEqual(fixture.calls, []);
+  }
 });

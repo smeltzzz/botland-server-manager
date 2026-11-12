@@ -436,7 +436,7 @@ class ServerManager {
         else if (keyReason === 'encryption-unavailable') blockers.push('Encrypted server keys cannot be read for this Windows user because Windows encryption is unavailable. Sign in with a normal Windows account and check Windows encryption; plaintext storage is never used.');
         else blockers.push(`The saved ${profile.short} server key cannot be read by this Windows profile (it was probably saved under another account or profile). Paste your key again in the Server key panel to replace it.`);
       }
-      if (profile.id === 'bo1') warnings.push('BO1 has no -lan launch flag. Create the LAN firewall rule from the Overview tab to restrict network access.');
+      if (profile.id === 'bo1') warnings.push('BO1 has no -lan launch flag. Keep its LAN firewall rule active from the Overview tab to restrict network access.');
       const botsStart = count();
       if (id === 'mw3') {
         const storageArchive = path.join(process.env.LOCALAPPDATA || '', 'Plutonium', 'storage', 'iw5', ...profile.mod.split('/'), 'z_svr_bots.iwd');
@@ -545,9 +545,17 @@ class ServerManager {
     this.notify({ type: 'state', snapshot });
   }
   addLog(id, text, level = 'info', key = '', source = 'manager') {
-    // Bound the input before redacting so very long lines cannot make the
-    // redaction patterns slow; the published message is capped at 2000 anyway.
-    const message = redactLog(String(text).slice(0, 4000), key || this.instances.get(id)?.logKey || '').slice(0, 2000);
+    // Bound the input before running the redaction patterns. If a key crosses
+    // that boundary, drop its partial prefix rather than publishing it.
+    const activeKey = key || this.instances.get(id)?.logKey || '';
+    const raw = String(text);
+    let end = Math.min(raw.length, 4000);
+    if (raw.length > end && typeof activeKey === 'string' && activeKey.length > 1) {
+      for (let start = Math.max(0, end - activeKey.length + 1); start < end; start++) {
+        if (activeKey.startsWith(raw.slice(start, end))) { end = start; break; }
+      }
+    }
+    const message = redactLog(raw.slice(0, end), activeKey).slice(0, 2000);
     const entry = { at: new Date().toISOString(), level, message, source };
     const lines = this.logs.get(id) || [];
     lines.push(entry);
@@ -776,7 +784,9 @@ class ServerManager {
       '$rules = foreach ($rule in $found) {',
       '  $ports = $rule | Get-NetFirewallPortFilter',
       '  $addresses = $rule | Get-NetFirewallAddressFilter',
-      '  [pscustomobject]@{ group = [string]$rule.Group; description = [string]$rule.Description; enabled = [string]$rule.Enabled; direction = [string]$rule.Direction; action = [string]$rule.Action; protocol = [string]$ports.Protocol; localPort = @($ports.LocalPort | ForEach-Object { [string]$_ }); remoteAddress = @($addresses.RemoteAddress | ForEach-Object { [string]$_ }) }',
+      '  $apps = $rule | Get-NetFirewallApplicationFilter',
+      '  $services = $rule | Get-NetFirewallServiceFilter',
+      '  [pscustomobject]@{ group = [string]$rule.Group; description = [string]$rule.Description; source = [string]$rule.PolicyStoreSourceType; enabled = [string]$rule.Enabled; direction = [string]$rule.Direction; action = [string]$rule.Action; profile = [string]$rule.Profile; protocol = [string]$ports.Protocol; localPort = @($ports.LocalPort | ForEach-Object { [string]$_ }); remotePort = @($ports.RemotePort | ForEach-Object { [string]$_ }); localAddress = @($addresses.LocalAddress | ForEach-Object { [string]$_ }); remoteAddress = @($addresses.RemoteAddress | ForEach-Object { [string]$_ }); program = [string]$apps.Program; service = [string]$services.Service }',
       '}',
       'ConvertTo-Json -InputObject @($rules) -Compress -Depth 4',
     ].join('\n');
@@ -802,18 +812,22 @@ class ServerManager {
     const enabled = String(rule.enabled).toLowerCase() === 'true';
     const inbound = String(rule.direction).toLowerCase() === 'inbound';
     const allowed = String(rule.action).toLowerCase() === 'allow';
-    const udp = String(rule.protocol).toLowerCase() === 'udp';
+    const udp = ['udp', '17'].includes(String(rule.protocol).toLowerCase());
     const ports = list(rule.localPort);
     const portOk = ports.length === 1 && ports[0] === String(port);
     const remote = list(rule.remoteAddress);
-    const state = !enabled || !inbound || !allowed || !udp || !portOk || remote.length !== 1 ? 'drift'
-      : remote[0] === 'localsubnet' ? 'lan' : remote[0] === 'any' ? 'any' : 'drift';
-    // A rule made by the old launcher scripts has no botLANd owner or description.
-    // Update replaces it (see firewall-rule.cjs); the panel explains that.
-    // Only when the query actually reported both fields: a missing field is unknown, not empty.
+    const owned = rule.group === 'botLANd.ServerManager' && rule.description === 'Managed by botLANd Server Manager (UDP)';
     const legacy = typeof rule.group === 'string' && typeof rule.description === 'string' &&
       !rule.group.trim() && !rule.description.trim();
-    return legacy ? { name, port, state, legacy: true } : { name, port, state };
+    const exact = String(rule.source).toLowerCase() === 'local' && String(rule.profile).toLowerCase() === 'any' &&
+      list(rule.remotePort).join() === 'any' && list(rule.localAddress).join() === 'any' &&
+      String(rule.program).toLowerCase() === 'any' && String(rule.service).toLowerCase() === 'any';
+    const state = (!owned && !legacy) || !exact || !enabled || !inbound || !allowed || !udp || !portOk || remote.length !== 1 ? 'drift'
+      : remote[0] === 'localsubnet' ? 'lan' : remote[0] === 'any' ? 'any' : 'drift';
+    // Only a correctly filtered, strictly marked local rule may guard BO1.
+    // An unmarked legacy rule can be replaced by Apply after its full elevated
+    // fingerprint check, but must not be mistaken for botLANd ownership here.
+    return { name, port, state, ...(owned ? { managed: true } : {}), ...(legacy ? { legacy: true } : {}) };
   }
   async runElevated(lines) {
     const workspace = await fs.mkdtemp(path.join(os.tmpdir(), 'botland-elevate-'));
@@ -986,6 +1000,12 @@ class ServerManager {
       if (check.blockers.length) throw new Error(check.blockers.join(' '));
       const { gamePath, options } = check;
       instance.activePort = options.port;
+      // T5 has no -lan argument. Refuse to start it until its local-subnet
+      // firewall rule has been verified; a warning alone cannot keep it LAN-only.
+      if (id === 'bo1') {
+        const firewall = await this.firewallStatus(id);
+        if (firewall.state !== 'lan' || firewall.managed !== true) throw new Error('BO1 needs a verified botLANd LAN-only firewall rule before starting. Create or replace it on the Overview tab, then try again.');
+      }
       for (const [otherId, other] of this.instances) if (otherId !== id && other.status !== 'stopped' && (other.activePort ?? this.options(otherId).port) === options.port) throw new Error(`UDP ${options.port} is already assigned to another running server.`);
       // If the port cannot be inspected, let the game itself report a bind failure
       // rather than blocking a launch on a diagnostic tool.
