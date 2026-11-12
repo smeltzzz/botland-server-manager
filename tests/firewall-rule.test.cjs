@@ -231,6 +231,19 @@ test('mock: create and update work without losing a rule', { skip: !windows }, (
   }
 });
 
+test('mock: BO1 replaces an existing LAN rule with public inbound UDP', { skip: !windows }, () => {
+  const publicLines = () => buildFirewallApplyLines({ ...input, scope: 'any' });
+  for (const old of [rule(), legacy()]) {
+    const { error, rules } = mockRun('normal', [{ ...old, LocalPort: String(input.port), RemoteAddress: 'LocalSubnet' }], publicLines);
+    assert.equal(error, '');
+    assert.equal(rules.length, 1);
+    assert.equal(rules[0].DisplayName, input.name);
+    assert.equal(rules[0].Group, 'botLANd.ServerManager');
+    assert.equal(rules[0].LocalPort, String(input.port));
+    assert.equal(rules[0].RemoteAddress, 'Any');
+  }
+});
+
 test('mock: ambiguous and unmarked rules fail without modification', { skip: !windows }, () => {
   for (const initial of [[rule('old', input.name, '')], [rule(), rule('other')], [rule('old', input.name, 'other-owner')], [{ ...rule(), Protocol: 'TCP' }], [{ ...rule(), RemoteAddress: '0.0.0.0/0' }], [{ ...rule('policy'), Store: 'GPO' }], [rule(), { ...rule('policy'), Store: 'GPO' }]]) {
     const { error, rules } = mockRun('normal', initial);

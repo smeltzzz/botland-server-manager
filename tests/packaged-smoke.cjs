@@ -370,8 +370,8 @@ app.whenReady().then(async () => {
     assert.equal(managedMod.disabled, false);
     assert.match(managedMod.detail, /managed mod is incomplete/);
 
-    // BO1 is bound publicly by its engine. A matching, owned LocalSubnet rule
-    // must be verified before either dashboard or Overview offers Start.
+    // BO1 is bound publicly by its engine. A matching, owned rule allowing
+    // inbound UDP from any address is required before Start is offered.
     win.webContents.send('manager:event', { type: 'state', snapshot: bo1Snapshot() });
     await win.webContents.executeJavaScript("document.querySelector('.sidebar > .nav-item').click()");
     await waitFor(win, '.server-card.accent-bo');
@@ -382,7 +382,7 @@ app.whenReady().then(async () => {
     })`);
     assert.equal(bo1Card.start, undefined);
     assert.match(bo1Card.setup, /Finish setup/);
-    assert.match(bo1Card.state, /Check LAN firewall/);
+    assert.match(bo1Card.state, /Check public firewall/);
     await win.webContents.executeJavaScript("document.querySelector('.server-card.accent-bo .card-open').click()");
     await waitFor(win, '.setup-wizard');
     const bo1Blocked = await win.webContents.executeJavaScript(`({
@@ -392,8 +392,14 @@ app.whenReady().then(async () => {
     })`);
     assert.equal(bo1Blocked.startDisabled, true);
     assert.equal(bo1Blocked.heading, 'GETTING STARTED');
-    assert.match(bo1Blocked.warning, /verified botLANd local-subnet firewall rule/i);
+    assert.match(bo1Blocked.warning, /verified botLANd public inbound UDP firewall rule/i);
     bo1Rule = { name: 'botLANd BO1 UDP', port: 28961, state: 'lan', managed: true };
+    await win.webContents.executeJavaScript("document.querySelector('.detail-back button').click()");
+    await waitFor(win, '.server-card.accent-bo .setup-button');
+    await win.webContents.executeJavaScript("document.querySelector('.server-card.accent-bo .card-open').click()");
+    await waitFor(win, '.firewall-apply');
+    assert.match(await win.webContents.executeJavaScript("document.querySelector('.firewall-hint')?.textContent"), /Public inbound UDP.*any address/);
+    bo1Rule = { name: 'botLANd BO1 UDP', port: 28961, state: 'any', managed: true };
     await win.webContents.executeJavaScript("document.querySelector('.detail-back button').click()");
     await waitFor(win, '.server-card.accent-bo .primary-button');
     await win.webContents.executeJavaScript("document.querySelector('.server-card.accent-bo .card-open').click()");
@@ -484,6 +490,6 @@ app.whenReady().then(async () => {
       setTimeout(() => { observer.disconnect(); reject(new Error('IW4x sidebar button did not switch to Update')); }, 10000);
     })`);
 
-    console.log('Synthetic packaged renderer: startup fallback, dashboard, BO1 LAN guard, draft retention, lifecycle, map recovery, narrow layout and modal keyboard smoke passed.');
+    console.log('Synthetic packaged renderer: startup fallback, dashboard, BO1 public firewall readiness, draft retention, lifecycle, map recovery, narrow layout and modal keyboard smoke passed.');
   } finally { win.destroy(); app.quit(); }
 }).catch(error => { console.error(error); app.exit(1); });

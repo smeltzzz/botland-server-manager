@@ -101,17 +101,37 @@ test('a running server keeps its rule on the launched port; scope follows saved 
   assert.deepEqual(await manager.firewallStatus('cod4'), { name: 'botLANd CoD4 UDP', port: 30000, state: 'drift', managed: true });
 });
 
-test('BO1 always gets a LAN-scoped rule because its launch stays public', async () => {
+test('BO1 always gets a public rule even if saved visibility says LAN', async () => {
   const manager = new ServerManager('unused', () => {});
-  manager.data.games.bo1 = { lan: false };
+  manager.data.games.bo1 = { lan: true };
   assert.equal(manager.options('bo1').lan, false);
-  assert.equal(manager.firewallScope('bo1'), 'lan');
+  assert.equal(manager.firewallScope('bo1'), 'any');
   const runs = [];
   manager.runElevated = async lines => { runs.push(lines); };
-  manager.firewallQuery = async () => [rule(28961, 'LocalSubnet')];
-  assert.equal((await manager.firewallApply('bo1')).state, 'lan');
+  manager.firewallQuery = async () => [rule(28961, 'Any')];
+  assert.equal((await manager.firewallApply('bo1')).state, 'any');
   assert.match(runs[0].join('\n'), /\$targetPort = '28961'/);
-  assert.match(runs[0].join('\n'), /\$targetScope = 'LocalSubnet'/);
+  assert.match(runs[0].join('\n'), /\$targetScope = 'Any'/);
+  manager.firewallQuery = async () => [rule(28961, 'LocalSubnet')];
+  assert.equal((await manager.firewallStatus('bo1')).state, 'lan');
+  // An existing local-subnet rule can be replaced with a public one.
+  await manager.firewallApply('bo1');
+  assert.match(runs[1].join('\n'), /\$targetScope = 'Any'/);
+});
+
+test('BO1 cannot remove its required public rule while starting or running', async () => {
+  const manager = new ServerManager('unused', () => {});
+  let elevated = false;
+  manager.runElevated = async () => { elevated = true; };
+  for (const status of ['starting', 'running', 'restarting', 'stopping']) {
+    manager.instances.set('bo1', { status });
+    await assert.rejects(manager.firewallRemove('bo1'), /Stop BO1 before removing/);
+    assert.equal(elevated, false);
+  }
+  manager.instances.delete('bo1');
+  manager.firewallQuery = async () => [];
+  assert.equal((await manager.firewallRemove('bo1')).state, 'missing');
+  assert.equal(elevated, true);
 });
 
 test('removes the rule elevated and reports a missing rule', async () => {

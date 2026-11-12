@@ -35,7 +35,7 @@ const snapshot: Snapshot = { plutonium: { available: true, installed: true, upda
   options: { ...base.options, port, mode: id === 'mw3' ? 'DOM_default' : 'dom', lan: id !== 'bo1' },
   connect: { ...base.connect, candidates: [] }, restart: { ...base.restart },
   orphan: id === 'mw3' ? { pid: 8124, port, reason: 'Sample preview: an unverified listener uses this port.' } : null,
-  warnings: id === 'bo1' ? ['The existing BO1 launch profile does not use -lan. Add the LAN firewall rule from the Overview tab to restrict network access.'] : [],
+  warnings: id === 'bo1' ? ['BO1 has no -lan launch flag. Keep its public inbound UDP firewall rule active from the Overview tab; players outside your network also need router port forwarding.'] : [],
 })) };
 const pool = ['mp_crash', 'mp_crossfire', 'mp_backlot', 'mp_bloc', 'mp_bog', 'mp_broadcast', 'mp_chinatown', 'mp_creek', 'mp_killhouse', 'mp_pipeline', 'mp_shipment', 'mp_showdown', 'mp_strike', 'mp_vacant', 'mp_cargoship', 'mp_citystreets', 'mp_convoy', 'mp_countdown', 'mp_farm', 'mp_overgrown'];
 // Mirror electron/maps.cjs modeOptions: IW3/IW4 call team deathmatch "war",
@@ -178,9 +178,9 @@ export function createDemoManager(): ManagerApi {
       return demoDocument(id, target, mode);
     },
     artwork: async () => null, openDocs: async () => {}, chooseArtwork: async () => false, resetArtwork: async () => null, openDocument: async () => false,
-    firewallStatus: async id => ({ name: `botLANd ${find(id).short} UDP`, port: find(id).activePort ?? find(id).options.port, state: firewallRules[id] ?? 'missing' }),
-    firewallApply: async id => { firewallRules[id] = id === 'bo1' || find(id).options.lan ? 'lan' : 'any'; return { name: `botLANd ${find(id).short} UDP`, port: find(id).activePort ?? find(id).options.port, state: firewallRules[id] }; },
-    firewallRemove: async id => { delete firewallRules[id]; return { name: `botLANd ${find(id).short} UDP`, port: find(id).activePort ?? find(id).options.port, state: 'missing' }; },
+    firewallStatus: async id => ({ name: `botLANd ${find(id).short} UDP`, port: find(id).activePort ?? find(id).options.port, state: firewallRules[id] ?? 'missing', ...(firewallRules[id] ? { managed: true } : {}) }),
+    firewallApply: async id => { firewallRules[id] = id === 'bo1' || !find(id).options.lan ? 'any' : 'lan'; return { name: `botLANd ${find(id).short} UDP`, port: find(id).activePort ?? find(id).options.port, state: firewallRules[id], managed: true }; },
+    firewallRemove: async id => { if (id === 'bo1' && find(id).status !== 'stopped') throw new Error('Stop BO1 before removing its required public firewall rule.'); delete firewallRules[id]; return { name: `botLANd ${find(id).short} UDP`, port: find(id).activePort ?? find(id).options.port, state: 'missing' }; },
     // Mirror the real manager's validation: a browser preview must not confirm
     // options that the desktop app would reject.
     saveOptions: async (id, values) => {

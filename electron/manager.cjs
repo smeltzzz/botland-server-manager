@@ -464,7 +464,7 @@ class ServerManager {
         else if (keyReason === 'encryption-unavailable') blockers.push('Encrypted server keys cannot be read for this Windows user because Windows encryption is unavailable. Sign in with a normal Windows account and check Windows encryption; plaintext storage is never used.');
         else blockers.push(`The saved ${profile.short} server key cannot be read by this Windows profile (it was probably saved under another account or profile). Paste your key again in the Server key panel to replace it.`);
       }
-      if (profile.id === 'bo1') warnings.push('BO1 has no -lan launch flag. Keep its LAN firewall rule active from the Overview tab to restrict network access.');
+      if (profile.id === 'bo1') warnings.push('BO1 has no -lan launch flag. Keep its public inbound UDP firewall rule active from the Overview tab; players outside your network also need router port forwarding.');
       const botsStart = count();
       if (id === 'mw3') {
         const storageArchive = path.join(process.env.LOCALAPPDATA || '', 'Plutonium', 'storage', 'iw5', ...profile.mod.split('/'), 'z_svr_bots.iwd');
@@ -897,11 +897,11 @@ class ServerManager {
       await fs.rm(workspace, { recursive: true, force: true }).catch(() => {});
     }
   }
-  // BO1 always launches public (no -lan), so its firewall rule is the only LAN
-  // guard and is always scoped to the local subnet. Scope follows the saved
-  // visibility even while a server runs, so a live server can be tightened.
+  // BO1 has no -lan mode and always needs a public inbound rule. Other games
+  // follow their saved visibility even while running, so a rule can be updated
+  // immediately without changing the live server's launch options.
   firewallScope(id) {
-    return profileFor(id).id === 'bo1' || this.options(id).lan !== false ? 'lan' : 'any';
+    return profileFor(id).id === 'bo1' || this.options(id).lan === false ? 'any' : 'lan';
   }
   async firewallApply(id) {
     const port = this.firewallPort(id);
@@ -912,6 +912,7 @@ class ServerManager {
   }
   async firewallRemove(id) {
     profileFor(id);
+    if (id === 'bo1' && this.instances.has(id)) throw new Error('Stop BO1 before removing its required public firewall rule.');
     const name = this.firewallName(id);
     await this.runElevated(buildFirewallRemoveLines({ name }));
     return this.firewallStatus(id);
@@ -1031,11 +1032,11 @@ class ServerManager {
       const { gamePath, options } = check;
       if (this.engineUpdater && (id === 'cod4' || id === 'mw2')) await this.engineUpdater.prepareLaunch(id, gamePath);
       instance.activePort = options.port;
-      // T5 has no -lan argument. Refuse to start it until its local-subnet
-      // firewall rule has been verified; a warning alone cannot keep it LAN-only.
+      // T5 has no -lan argument. Require its verified public inbound rule
+      // before starting so the Windows firewall does not limit it to the LAN.
       if (id === 'bo1') {
         const firewall = await this.firewallStatus(id);
-        if (firewall.state !== 'lan' || firewall.managed !== true) throw new Error('BO1 needs a verified botLANd LAN-only firewall rule before starting. Create or replace it on the Overview tab, then try again.');
+        if (firewall.state !== 'any' || firewall.managed !== true) throw new Error('BO1 needs a verified botLANd public inbound UDP firewall rule before starting. Create or replace it on the Overview tab, then try again.');
       }
       for (const [otherId, other] of this.instances) if (otherId !== id && other.status !== 'stopped' && (other.activePort ?? this.options(otherId).port) === options.port) throw new Error(`UDP ${options.port} is already assigned to another running server.`);
       // If the port cannot be inspected, let the game itself report a bind failure
@@ -1081,7 +1082,7 @@ class ServerManager {
       // Turning automatic restart off while a retry was preparing cancels it.
       if (retry && (restart.suppressed || this.data.games?.[id]?.autoRestart !== true)) instance.cancelled = true;
       if (instance.cancelled) throw new Error('Launch cancelled.');
-      const visibility = id === 'bo1' ? 'no -lan; firewall-scoped' : options.lan === false ? 'public' : 'LAN';
+      const visibility = id === 'bo1' ? 'public; firewall open to any address' : options.lan === false ? 'public' : 'LAN';
       this.addLog(id, `Starting ${profile.engine} on UDP ${options.port} (${visibility}) with ${chosen.length} maps.`, 'info');
       const child = spawn(command.file, command.args, { cwd: command.cwd, argv0: command.argv0, windowsHide: true, stdio: [id === 'cod4' ? 'pipe' : 'ignore', 'pipe', 'pipe'], shell: false });
       instance.child = child;

@@ -2,6 +2,10 @@
 
 Notable changes to botLANd Server Manager are recorded here. This project follows [Semantic Versioning](https://semver.org/).
 
+## 1.2.7
+
+- BO1/T5 now requires a verified public inbound UDP firewall rule instead of a LAN-only rule. Existing BO1 rules can be updated on the Overview tab; BO1's rule cannot be removed while its server is active. Public access still requires router port forwarding and does not guarantee a server-browser listing.
+
 ## 1.2.6
 
 - Moved Cod4R DedRun and IW4x Install/Update buttons from game Overviews into the bottom-left sidebar, alongside Plutonium. Setup checklists now point there and retain the official guide links.

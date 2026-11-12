@@ -205,13 +205,13 @@ test('six synthetic installs: starter, ZIP mod, readiness, rotation, owned start
     assert.equal(JSON.stringify(before).includes(placeholder), false);
     assert.equal(before.games.every(item => item.blockers.length === 0), true);
     // BO1 cannot rely on a -lan argument: even otherwise-ready fixtures need
-    // an owned local-subnet rule before its public-bound process may spawn.
-    for (const firewall of [{ state: 'missing' }, { state: 'unknown' }, { state: 'any', managed: true },
-      { state: 'lan', legacy: true }, { state: 'lan' }]) {
+    // an owned public rule before its process may spawn.
+    for (const firewall of [{ state: 'missing' }, { state: 'unknown' }, { state: 'lan', managed: true },
+      { state: 'any', legacy: true }, { state: 'any' }]) {
       manager.firewallStatus = async () => firewall;
-      await assert.rejects(manager.start('bo1'), /verified botLANd LAN-only firewall rule/);
+      await assert.rejects(manager.start('bo1'), /verified botLANd public inbound UDP firewall rule/);
     }
-    manager.firewallStatus = async () => ({ state: 'lan', managed: true });
+    manager.firewallStatus = async () => ({ state: 'any', managed: true });
 
     spawnMock = (file, args, options) => {
       const id = order.find(name => file === (profiles[name].executable === 'plutonium'
