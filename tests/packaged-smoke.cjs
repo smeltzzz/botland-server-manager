@@ -403,22 +403,38 @@ app.whenReady().then(async () => {
     const narrow = await win.webContents.executeJavaScript('({ width: innerWidth, scrollWidth: document.documentElement.scrollWidth })');
     assert.ok(narrow.scrollWidth <= narrow.width, 'BO1 Overview must not clip at a narrow window');
 
-    // A missing CoD4 engine offers an explicit installer and a separate guide.
-    // Declining the confirmation must not invoke the IPC write action.
+    // Both engine controls live beside Plutonium in the bottom-left sidebar,
+    // never on a game Overview. A missing folder explains the disabled button.
     const needsEngine = gameSnapshot({ engineBusy: false,
       setup: { ...snapshot.games[0].setup, engine: false }, blockers: ['Cod4R DedRun missing.'] });
     win.webContents.send('manager:event', { type: 'state', snapshot: needsEngine });
     await win.webContents.executeJavaScript("document.querySelector('.sidebar .game-nav-item').click()");
     await waitFor(win, 'main[aria-label^="Call of Duty 4"] .setup-wizard');
-    const engineStep = await win.webContents.executeJavaScript(`(() => {
+    const engineControls = await win.webContents.executeJavaScript(`(() => {
       const step = [...document.querySelectorAll('.setup-step')].find(item => item.textContent.includes('Install CoD4R / IW3x'));
-      return { install: step?.querySelector('button.button')?.textContent, guide: step?.querySelector('.inline-link')?.textContent };
+      return {
+        guide: step?.querySelector('button.button')?.textContent,
+        detail: step?.textContent,
+        overviewUpdateButtons: [...document.querySelectorAll('main button')].filter(button => /^(Install|Update) (Cod4R|IW4x)/.test(button.textContent.trim())).length,
+        engines: [...document.querySelectorAll('.engine-sidebar-item .root-button')].map(button => ({ text: button.textContent.trim(), disabled: button.disabled, name: button.getAttribute('aria-label') })),
+        plutonium: document.querySelector('.sidebar-footer > .root-button')?.textContent,
+        missingHint: document.querySelector('.engine-sidebar-item:nth-child(2) .engine-sidebar-hint')?.textContent,
+      };
     })()`);
-    assert.match(engineStep.install, /Install CoD4R \/ IW3x/);
-    assert.match(engineStep.guide, /Official setup guide/);
-    await win.webContents.executeJavaScript("window.confirm = () => false; [...document.querySelectorAll('.setup-step button.button')].find(button => button.textContent.includes('Install CoD4R')).click()");
-    assert.equal(engineAttempts, 0, 'Declining engine installation must not call IPC');
-    await win.webContents.executeJavaScript("window.confirm = () => true; [...document.querySelectorAll('.setup-step button.button')].find(button => button.textContent.includes('Install CoD4R')).click()");
+    assert.match(engineControls.guide, /Open setup guide/);
+    assert.match(engineControls.detail, /bottom left/);
+    assert.equal(engineControls.overviewUpdateButtons, 0);
+    assert.equal(engineControls.engines.length, 2);
+    assert.match(engineControls.engines[0].text, /Install Cod4R DedRun/);
+    assert.equal(engineControls.engines[0].disabled, false);
+    assert.match(engineControls.engines[0].name, /Call of Duty 4/);
+    assert.equal(engineControls.engines[1].disabled, true);
+    assert.match(engineControls.missingHint, /Choose MW2 folder first/);
+    assert.match(engineControls.plutonium, /Plutonium/);
+    // Declining an engine update confirmation must not call IPC.
+    await win.webContents.executeJavaScript("window.confirm = () => false; document.querySelector('.engine-sidebar-item:first-child .root-button').click()");
+    assert.equal(engineAttempts, 0);
+    await win.webContents.executeJavaScript("window.confirm = () => true; document.querySelector('.engine-sidebar-item:first-child .root-button').click()");
     await waitFor(win, '.notice-error');
     assert.equal(engineAttempts, 1);
     assert.match(await win.webContents.executeJavaScript("document.querySelector('.notice-error')?.textContent"), /Synthetic engine update refused/);
@@ -426,8 +442,47 @@ app.whenReady().then(async () => {
       setup: { ...snapshot.games[0].setup, engine: true }, blockers: [] }) });
     await waitFor(win, '.state-chip.attention');
     assert.equal(await win.webContents.executeJavaScript("document.querySelector('.detail-hero-action .primary-button')?.disabled"), true);
-    assert.ok((await win.webContents.executeJavaScript('document.documentElement.scrollWidth')) <=
-      (await win.webContents.executeJavaScript('innerWidth')), 'Engine updater controls must fit a narrow Overview');
+    assert.equal(await win.webContents.executeJavaScript("document.querySelector('.engine-sidebar-item:first-child .root-button')?.disabled"), true);
+    win.webContents.send('manager:event', { type: 'state', snapshot: gameSnapshot({ engineBusy: false,
+      setup: { ...snapshot.games[0].setup, engine: true }, blockers: [] }) });
+    await waitFor(win, '.engine-sidebar-item:first-child .root-button:not(:disabled)');
+    assert.match(await win.webContents.executeJavaScript("document.querySelector('.engine-sidebar-item:first-child .root-button')?.textContent"), /Update Cod4R DedRun/);
+    win.setSize(1000, 600);
+    await win.webContents.executeJavaScript(`new Promise((resolve, reject) => {
+      const check = () => innerWidth > 850 ? resolve() : requestAnimationFrame(check);
+      check(); setTimeout(() => reject(new Error('Desktop resize did not complete')), 10000);
+    })`);
+    const footerLayout = await win.webContents.executeJavaScript(`(() => {
+      const footer = document.querySelector('.sidebar-footer').getBoundingClientRect();
+      return { top: footer.top, bottom: footer.bottom, height: innerHeight, width: innerWidth, scrollWidth: document.documentElement.scrollWidth };
+    })()`);
+    assert.ok(footerLayout.top >= 0 && footerLayout.bottom <= footerLayout.height,
+      `Engine and Plutonium update buttons must remain accessible at the bottom left in a short desktop window: ${JSON.stringify(footerLayout)}`);
+    assert.ok(footerLayout.scrollWidth <= footerLayout.width, 'Sidebar update buttons must not cause horizontal overflow');
+    // IW4x also switches from disabled Install to Update once its game folder
+    // and engine are present, without adding a button to MW2 Overview.
+    const mw2Ready = gameSnapshot({ engineBusy: false });
+    Object.assign(mw2Ready.games.find(entry => entry.id === 'mw2'), {
+      installed: true, pathSource: 'manual', gamePath: 'C:\\Example\\MW2', configPath: 'C:\\Example\\MW2\\userraw\\serverlan.cfg',
+      setup: { folder: true, engine: false, plutonium: null, key: null, bots: false, config: false, maps: false },
+      blockers: ['IW4x executable missing.'],
+    });
+    win.webContents.send('manager:event', { type: 'state', snapshot: mw2Ready });
+    await waitFor(win, '.engine-sidebar-item:nth-child(2) .root-button:not(:disabled)');
+    assert.match(await win.webContents.executeJavaScript("document.querySelector('.engine-sidebar-item:nth-child(2) .root-button')?.textContent"), /Install IW4x/);
+    await win.webContents.executeJavaScript("[...document.querySelectorAll('.sidebar .game-nav-item')].find(button => button.textContent.includes('MW2')).click()");
+    await waitFor(win, 'main[aria-label^="Modern Warfare 2"] .setup-wizard');
+    assert.equal(await win.webContents.executeJavaScript("[...document.querySelectorAll('main button')].filter(button => /^(Install|Update) IW4x/.test(button.textContent.trim())).length"), 0);
+    mw2Ready.games.find(entry => entry.id === 'mw2').setup.engine = true;
+    mw2Ready.games.find(entry => entry.id === 'mw2').blockers = [];
+    win.webContents.send('manager:event', { type: 'state', snapshot: mw2Ready });
+    await win.webContents.executeJavaScript(`new Promise((resolve, reject) => {
+      const check = () => document.querySelector('.engine-sidebar-item:nth-child(2) .root-button')?.textContent.includes('Update IW4x');
+      if (check()) return resolve();
+      const observer = new MutationObserver(() => { if (check()) { observer.disconnect(); resolve(); } });
+      observer.observe(document.body, { subtree: true, childList: true });
+      setTimeout(() => { observer.disconnect(); reject(new Error('IW4x sidebar button did not switch to Update')); }, 10000);
+    })`);
 
     console.log('Synthetic packaged renderer: startup fallback, dashboard, BO1 LAN guard, draft retention, lifecycle, map recovery, narrow layout and modal keyboard smoke passed.');
   } finally { win.destroy(); app.quit(); }

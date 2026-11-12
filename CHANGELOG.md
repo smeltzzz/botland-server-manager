@@ -2,6 +2,10 @@
 
 Notable changes to botLANd Server Manager are recorded here. This project follows [Semantic Versioning](https://semver.org/).
 
+## 1.2.6
+
+- Moved Cod4R DedRun and IW4x Install/Update buttons from game Overviews into the bottom-left sidebar, alongside Plutonium. Setup checklists now point there and retain the official guide links.
+
 ## 1.2.5
 
 ### Explicit CoD4 and MW2 engine setup

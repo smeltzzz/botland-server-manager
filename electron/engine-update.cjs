@@ -291,7 +291,7 @@ class EngineUpdater {
     if (files.some(name => name.startsWith(`${STAGE}${id}-`))) {
       throw new Error(id === 'mw2'
         ? 'An IW4x update journal remains in the game folder. The external launcher may have changed other files; inspect and repair the installation manually before starting or updating again.'
-        : 'An interrupted Cod4R DedRun update needs recovery. Run Update Cod4R on Overview to restore the previous executable and retry.');
+        : 'An interrupted Cod4R DedRun update needs recovery. Use Update Cod4R in Server engines at the bottom left to restore the previous executable and retry.');
     }
   }
   update(id, gamePath) {

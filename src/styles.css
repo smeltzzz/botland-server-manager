@@ -118,7 +118,7 @@ summary:focus-visible,.form-field input:focus-visible,.form-field select:focus-v
 @media(max-width:850px){.detail-tabs{gap:18px}.card-actions{flex-wrap:wrap}}
 @media(max-width:600px){.server-grid{grid-template-columns:1fr}.rotation-controls{grid-template-columns:1fr}.form-footer{flex-wrap:wrap}}
 
-.path-panel .engine-update-note{color:#b8b5a9;font-size:11px;line-height:1.55;margin:12px 0;overflow-wrap:anywhere}
+.sidebar-footer{position:sticky;bottom:0;z-index:2;background:var(--sidebar);padding-bottom:4px}.engine-sidebar-actions{display:grid;gap:7px;margin-top:12px}.engine-sidebar-item{min-width:0}.engine-sidebar-item .root-button{min-height:37px;text-align:left}.engine-sidebar-item .root-button svg{flex:none}.engine-sidebar-hint{display:block;margin:5px 2px 2px;color:#b5b3a9;font-size:10px;line-height:1.4}.sidebar-footer .engine-footer-divider{margin:17px 0}@media(max-width:850px){.sidebar-footer{position:static}.engine-sidebar-actions{grid-template-columns:repeat(2,minmax(0,1fr))}}@media(max-width:600px){.engine-sidebar-actions{grid-template-columns:1fr}}
 /* Setup checklist: one row per step, each with the button that finishes it. */
 .setup-wizard .panel-heading{margin-bottom:16px}
 .setup-steps{list-style:none;margin:0;padding:0;display:grid;gap:8px}
