@@ -40,6 +40,7 @@ const documentFixture = {
 };
 let failSnapshotOnce = false;
 let failMapsOnce = false;
+let engineAttempts = 0;
 let mapsVersion = 1;
 let bo1Rule = { name: 'botLANd BO1 UDP', port: 28961, state: 'missing' };
 let botFixture = { state: 'not-installed', targetPath: 'C:\\Example\\Game\\mods', manifest: null,
@@ -92,6 +93,7 @@ app.whenReady().then(async () => {
         if (failSnapshotOnce) { failSnapshotOnce = false; throw new Error('Synthetic status refresh failure.'); }
         return structuredClone(snapshot);
       case 'start': return undefined;
+      case 'updateEngine': engineAttempts++; throw new Error('Synthetic engine update refused; no files were touched.');
       case 'setUnsavedChanges': return true;
       case 'artwork': return null;
       case 'maps':
@@ -400,6 +402,32 @@ app.whenReady().then(async () => {
     win.setSize(400, 850);
     const narrow = await win.webContents.executeJavaScript('({ width: innerWidth, scrollWidth: document.documentElement.scrollWidth })');
     assert.ok(narrow.scrollWidth <= narrow.width, 'BO1 Overview must not clip at a narrow window');
+
+    // A missing CoD4 engine offers an explicit installer and a separate guide.
+    // Declining the confirmation must not invoke the IPC write action.
+    const needsEngine = gameSnapshot({ engineBusy: false,
+      setup: { ...snapshot.games[0].setup, engine: false }, blockers: ['Cod4R DedRun missing.'] });
+    win.webContents.send('manager:event', { type: 'state', snapshot: needsEngine });
+    await win.webContents.executeJavaScript("document.querySelector('.sidebar .game-nav-item').click()");
+    await waitFor(win, 'main[aria-label^="Call of Duty 4"] .setup-wizard');
+    const engineStep = await win.webContents.executeJavaScript(`(() => {
+      const step = [...document.querySelectorAll('.setup-step')].find(item => item.textContent.includes('Install CoD4R / IW3x'));
+      return { install: step?.querySelector('button.button')?.textContent, guide: step?.querySelector('.inline-link')?.textContent };
+    })()`);
+    assert.match(engineStep.install, /Install CoD4R \/ IW3x/);
+    assert.match(engineStep.guide, /Official setup guide/);
+    await win.webContents.executeJavaScript("window.confirm = () => false; [...document.querySelectorAll('.setup-step button.button')].find(button => button.textContent.includes('Install CoD4R')).click()");
+    assert.equal(engineAttempts, 0, 'Declining engine installation must not call IPC');
+    await win.webContents.executeJavaScript("window.confirm = () => true; [...document.querySelectorAll('.setup-step button.button')].find(button => button.textContent.includes('Install CoD4R')).click()");
+    await waitFor(win, '.notice-error');
+    assert.equal(engineAttempts, 1);
+    assert.match(await win.webContents.executeJavaScript("document.querySelector('.notice-error')?.textContent"), /Synthetic engine update refused/);
+    win.webContents.send('manager:event', { type: 'state', snapshot: gameSnapshot({ engineBusy: true,
+      setup: { ...snapshot.games[0].setup, engine: true }, blockers: [] }) });
+    await waitFor(win, '.state-chip.attention');
+    assert.equal(await win.webContents.executeJavaScript("document.querySelector('.detail-hero-action .primary-button')?.disabled"), true);
+    assert.ok((await win.webContents.executeJavaScript('document.documentElement.scrollWidth')) <=
+      (await win.webContents.executeJavaScript('innerWidth')), 'Engine updater controls must fit a narrow Overview');
 
     console.log('Synthetic packaged renderer: startup fallback, dashboard, BO1 LAN guard, draft retention, lifecycle, map recovery, narrow layout and modal keyboard smoke passed.');
   } finally { win.destroy(); app.quit(); }

@@ -118,6 +118,7 @@ summary:focus-visible,.form-field input:focus-visible,.form-field select:focus-v
 @media(max-width:850px){.detail-tabs{gap:18px}.card-actions{flex-wrap:wrap}}
 @media(max-width:600px){.server-grid{grid-template-columns:1fr}.rotation-controls{grid-template-columns:1fr}.form-footer{flex-wrap:wrap}}
 
+.path-panel .engine-update-note{color:#b8b5a9;font-size:11px;line-height:1.55;margin:12px 0;overflow-wrap:anywhere}
 /* Setup checklist: one row per step, each with the button that finishes it. */
 .setup-wizard .panel-heading{margin-bottom:16px}
 .setup-steps{list-style:none;margin:0;padding:0;display:grid;gap:8px}

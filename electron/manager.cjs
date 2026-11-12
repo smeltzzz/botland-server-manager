@@ -50,12 +50,15 @@ class ServerManager {
    * restartTimers?: {now: () => number, setTimeout: typeof setTimeout, clearTimeout: typeof clearTimeout},
    * sessionLogs?: import('./session-logs.cjs').SessionLogs, findPossibleOrphans?: typeof findPossibleOrphans,
    * networkInterfaces?: typeof os.networkInterfaces, createLogTail?: (options: object) => ServerLogTail,
-   * plutonium?: import('./plutonium-update.cjs').PlutoniumUpdater}} [services] */
+   * plutonium?: import('./plutonium-update.cjs').PlutoniumUpdater,
+   * engineUpdater?: import('./engine-update.cjs').EngineUpdater}} [services] */
   constructor(settingsPath, notify, services = {}) {
     this.settingsPath = settingsPath;
     this.notify = notify;
     this.data = { games: {}, updatesEnabled: true };
     this.plutonium = services.plutonium;
+    this.engineUpdater = services.engineUpdater;
+    this.engineBusy = new Set();
     this.keyStore = services.keyStore;
     this.detectInstallations = services.detectInstallations || detectSteamGames;
     // Explicitly refreshed at app startup; standalone test managers stay isolated
@@ -270,6 +273,27 @@ class ServerManager {
     finally { await this.broadcastState().catch(() => {}); }
     return true;
   }
+  // IW3x DedRun and IW4x updates are explicit setup actions, never part of
+  // Start. Reserve the game before the first await so neither a launch nor a
+  // Bot Warfare change can overlap engine files being replaced.
+  async updateEngine(id) {
+    if (id !== 'cod4' && id !== 'mw2') throw new Error('Only CoD4 and MW2 have an engine update action.');
+    if (!this.engineUpdater) throw new Error('Engine updates are unavailable.');
+    if (this.shuttingDown) throw new Error('The manager is shutting down.');
+    if (this.instances.get(id)?.status === 'restarting') this.cancelRestart(id);
+    if (this.instances.has(id) || this.engineBusy.has(id) || this.modBusy.has(id)) throw new Error('Stop this server and finish other changes before updating its engine.');
+    this.engineBusy.add(id);
+    try {
+      await this.broadcastState().catch(() => {});
+      const gamePath = await this.gamePath(id);
+      if (!gamePath || !(await inspectGameFolder(id, gamePath)).installed) throw new Error('Select an installed game folder before updating its engine.');
+      await this.engineUpdater.update(id, gamePath);
+      return true;
+    } finally {
+      this.engineBusy.delete(id);
+      await this.broadcastState().catch(() => {});
+    }
+  }
   botChannel(id) {
     profileFor(id);
     return this.data.games?.[id]?.botChannel === 'development' ? 'development' : 'stable';
@@ -358,7 +382,7 @@ class ServerManager {
     if (!this.modInstaller) throw new Error('Bot Warfare installer is unavailable.');
     // A pending restart has no live process; changing mod files cancels that retry.
     if (this.instances.get(id)?.status === 'restarting') this.cancelRestart(id);
-    if (this.modBusy.has(id) || this.instances.has(id)) throw new Error('Stop this server before changing Bot Warfare.');
+    if (this.modBusy.has(id) || this.engineBusy.has(id) || this.instances.has(id)) throw new Error('Stop this server and finish engine changes before changing Bot Warfare.');
     // Reserve the game synchronously. start() checks this set before spawning,
     // closing the race between a download and a server starting mid-install.
     this.modBusy.add(id);
@@ -424,6 +448,10 @@ class ServerManager {
       if (profile.id === 'cod4' && !await exists(path.join(gamePath, 'mods', 'mp_bots', 'z_svr_bots.iwd'))) blockers.push(`CoD4 Bot Warfare missing at ${path.join(gamePath, 'mods', 'mp_bots', 'z_svr_bots.iwd')}. Click Install Bot Warfare in this game's setup checklist.`);
       if (profile.id === 'mw2' && !await exists(path.join(gamePath, 'userraw', 'z_svr_bots.iwd'))) blockers.push(`MW2 Bot Warfare missing at ${path.join(gamePath, 'userraw', 'z_svr_bots.iwd')}. Click Install Bot Warfare in this game's setup checklist.`);
       if (!plutonium) setup.bots = count() === botsStart;
+    }
+    if (installed && (id === 'cod4' || id === 'mw2') && this.engineUpdater?.prepareLaunch) {
+      try { await this.engineUpdater.prepareLaunch(id, gamePath); }
+      catch (error) { blockers.push(error.message || 'An engine update needs review before starting this server.'); }
     }
     if (profile.executable === 'plutonium' && !this.localAppData()) {
       blockers.push('The Windows LOCALAPPDATA folder is not set for this user, so Plutonium cannot be located. Sign in with a normal Windows account or restore the LOCALAPPDATA environment variable.');
@@ -518,7 +546,7 @@ class ServerManager {
         configPath: result.gamePath ? path.join(result.gamePath, profile.config) : '',
         gamePath: result.gamePath, installed: result.installed, pathSource: result.pathSource, keyStatus: result.keyStatus, keyReason: result.keyReason ?? null,
         configMissing: result.configMissing, setup: result.setup,
-        modBusy: this.modBusy.has(id), config, options: result.options, blockers: result.blockers, warnings: result.warnings,
+        modBusy: this.modBusy.has(id), engineBusy: this.engineBusy.has(id), config, options: result.options, blockers: result.blockers, warnings: result.warnings,
         status: instance?.status || 'stopped', pid: instance?.child?.pid ?? null, startedAt: instance?.startedAt ?? null,
         activePort: instance?.activePort ?? null,
         connect: instance?.status === 'running' && instance.activePort
@@ -640,7 +668,7 @@ class ServerManager {
     if (!inspected.installed) throw new Error(`No ${profileFor(id).short} multiplayer game executable was found in that folder. Choose the actual game installation.`);
     const busy = () => {
       if (this.instances.get(id)?.status === 'starting') throw new Error('Wait for this server to finish starting before changing its game folder.');
-      if (this.modBusy.has(id)) throw new Error('Wait for the Bot Warfare change to finish before changing this game folder.');
+      if (this.modBusy.has(id) || this.engineBusy.has(id)) throw new Error('Wait for the engine or Bot Warfare change to finish before changing this game folder.');
     };
     busy();
     await this.updateSettings(data => {
@@ -911,7 +939,7 @@ class ServerManager {
   }
   scheduleRestart(id, instance) {
     const state = this.restartState(id);
-    if (this.shuttingDown || instance.noRestart || state.suppressed || this.data.games?.[id]?.autoRestart !== true || this.modBusy.has(id)) return false;
+    if (this.shuttingDown || instance.noRestart || state.suppressed || this.data.games?.[id]?.autoRestart !== true || this.modBusy.has(id) || this.engineBusy.has(id)) return false;
     const now = this.restartTimers.now();
     // An uninterrupted healthy run starts a fresh crash budget.
     if (instance.startedAt && now - Date.parse(instance.startedAt) > this.restartWindow) state.crashes = [];
@@ -932,14 +960,14 @@ class ServerManager {
     state.timer = this.restartTimers.setTimeout(() => {
       state.timer = null;
       state.nextAttemptAt = null;
-      if (this.instances.get(id) !== instance || state.suppressed || this.shuttingDown || this.modBusy.has(id) || this.data.games?.[id]?.autoRestart !== true) {
+      if (this.instances.get(id) !== instance || state.suppressed || this.shuttingDown || (this.modBusy.has(id) || this.engineBusy.has(id)) || this.data.games?.[id]?.autoRestart !== true) {
         if (this.instances.get(id) === instance) this.instances.delete(id);
         this.broadcastState().catch(() => {});
         return;
       }
       // A slow file-tail drain must not close a newly opened retry session.
       this.releaseSession(id, instance).then(() => {
-        if (this.instances.get(id) !== instance || state.suppressed || this.shuttingDown || this.modBusy.has(id) || this.data.games?.[id]?.autoRestart !== true) {
+        if (this.instances.get(id) !== instance || state.suppressed || this.shuttingDown || (this.modBusy.has(id) || this.engineBusy.has(id)) || this.data.games?.[id]?.autoRestart !== true) {
           if (this.instances.get(id) === instance) this.instances.delete(id);
           this.broadcastState().catch(() => {});
           return;
@@ -964,6 +992,7 @@ class ServerManager {
     if (this.shuttingDown) throw new Error('The manager is shutting down.');
     if (this.instances.has(id)) throw new Error('This server is already starting or running.');
     if (this.modBusy.has(id)) throw new Error('Wait for the Bot Warfare change to finish before starting this server.');
+    if (this.engineBusy.has(id)) throw new Error('Wait for the engine update to finish before starting this server.');
     if (this.modInstaller && typeof this.modInstaller.prepareLaunch === 'function') {
       const gamePath = await this.gamePath(id);
       if (gamePath) {
@@ -979,6 +1008,7 @@ class ServerManager {
       if (this.shuttingDown) throw new Error('The manager is shutting down.');
       if (this.instances.has(id)) throw new Error('This server is already starting or running.');
       if (this.modBusy.has(id)) throw new Error('Wait for the Bot Warfare change to finish before starting this server.');
+    if (this.engineBusy.has(id)) throw new Error('Wait for the engine update to finish before starting this server.');
     }
     const restart = this.restartState(id);
     if (!retry) { restart.crashes = []; restart.attempts = 0; restart.cutOff = false; }
@@ -999,6 +1029,7 @@ class ServerManager {
       const check = await this.check(id);
       if (check.blockers.length) throw new Error(check.blockers.join(' '));
       const { gamePath, options } = check;
+      if (this.engineUpdater && (id === 'cod4' || id === 'mw2')) await this.engineUpdater.prepareLaunch(id, gamePath);
       instance.activePort = options.port;
       // T5 has no -lan argument. Refuse to start it until its local-subnet
       // firewall rule has been verified; a warning alone cannot keep it LAN-only.
@@ -1237,6 +1268,6 @@ class ServerManager {
   hasRunning() { return this.instances.size > 0; }
   // A Bot Warfare change rewrites game files; quitting in the middle of it
   // would leave recovery to the next launch.
-  hasModWork() { return this.modBusy.size > 0 || Boolean(this.plutonium?.updating); }
+  hasModWork() { return this.modBusy.size > 0 || this.engineBusy.size > 0 || Boolean(this.plutonium?.updating); }
 }
 module.exports = { ServerManager };

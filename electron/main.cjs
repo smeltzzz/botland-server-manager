@@ -8,6 +8,7 @@ const { BotWarfareSource } = require('./botwarfare-source.cjs');
 const { BotWarfareInstaller } = require('./botwarfare-install.cjs');
 const { SessionLogs } = require('./session-logs.cjs');
 const { PlutoniumUpdater } = require('./plutonium-update.cjs');
+const { EngineUpdater } = require('./engine-update.cjs');
 const { discoverConnectAddresses } = require('./connect-address.cjs');
 const { formatDiagnostics } = require('./diagnostics.cjs');
 const { profileFor } = require('./profiles.cjs');
@@ -15,7 +16,7 @@ const { sourceRepos } = require('./schema.cjs');
 
 const engineGuides = {
   cod4: 'https://iw3x.com/setup#hosting',
-  mw2: 'https://github.com/iw4x/iw4x-client',
+  mw2: 'https://github.com/iw4x/launcher#readme',
   waw: 'https://plutonium.pw/docs/server/t4/setting-up-a-server/',
   bo1: 'https://plutonium.pw/docs/server/t5/setting-up-a-server/',
   mw3: 'https://plutonium.pw/docs/server/iw5/setting-up-a-server/',
@@ -55,7 +56,17 @@ async function createWindow() {
     try { if (window && !window.isDestroyed()) window.webContents.send('manager:event', data); } catch { /* Renderer unavailable. */ }
   }, { keyStore: new KeyStore(path.join(app.getPath('userData'), 'keys.json'), safeStorage),
     modSource, modInstaller, sessionLogs: new SessionLogs({ userData: app.getPath('userData') }),
-    plutonium: new PlutoniumUpdater({ userData: app.getPath('userData') }) });
+    plutonium: new PlutoniumUpdater({ userData: app.getPath('userData') }),
+    engineUpdater: new EngineUpdater({ userData: app.getPath('userData'), confirmOverwrite: async (id, file) => {
+      if (!window || window.isDestroyed()) return false;
+      const { response } = await dialog.showMessageBox(window, {
+        type: 'warning', buttons: ['Keep existing file', 'Replace and continue'], defaultId: 0, cancelId: 0,
+        title: `Replace existing ${profileFor(id).short} engine file?`,
+        message: `Replace ${path.basename(file)} in your game folder?`,
+        detail: 'This file was not installed by botLANd. Its original bytes are kept only while this update runs. The IW4x launcher may also replace other files it manages; back up any custom engine files first.',
+      });
+      return response === 1;
+    } }) });
   const recoveredSettings = await manager.initialize();
   await manager.rescanInstallations();
   window = new BrowserWindow({
@@ -190,6 +201,10 @@ if (primaryInstance) app.whenReady().then(() => {
       case 'removeKey': return manager.removeKey(id);
       case 'resetKeyStore': return manager.resetKeyStore();
       case 'updatePlutonium': return manager.updatePlutonium();
+      case 'updateEngine': {
+        if (id !== 'cod4' && id !== 'mw2') throw new Error('Unsupported engine update.');
+        return manager.updateEngine(id);
+      }
       case 'openKeyPage': return shell.openExternal('https://platform.plutonium.pw/serverkeys/');
       case 'openEngineGuide': return shell.openExternal(engineGuides[profileFor(id).id]);
       case 'openConfig': {
@@ -215,11 +230,12 @@ function requestQuit() {
   if (manager?.hasModWork?.()) {
     // Quitting mid-install would leave files for the next launch to recover.
     const plutonium = Boolean(manager.plutonium?.updating);
+    const engine = Boolean(manager.engineBusy?.size);
     showBox({
       type: 'info', buttons: ['OK'], defaultId: 0, cancelId: 0,
-      title: plutonium ? 'Plutonium update in progress' : 'Bot Warfare change in progress',
-      message: plutonium ? 'Wait for the Plutonium update to finish before closing botLANd.' : 'Wait for the Bot Warfare change to finish before closing botLANd.',
-      detail: plutonium ? 'Closing now could leave Plutonium half-updated.' : 'Closing now could leave the mod files half-updated. The change usually takes less than a minute.',
+      title: plutonium ? 'Plutonium update in progress' : engine ? 'Engine update in progress' : 'Bot Warfare change in progress',
+      message: plutonium ? 'Wait for the Plutonium update to finish before closing botLANd.' : engine ? 'Wait for the engine update to finish before closing botLANd.' : 'Wait for the Bot Warfare change to finish before closing botLANd.',
+      detail: plutonium ? 'Closing now could leave Plutonium half-updated.' : engine ? 'Closing now could leave engine files or the IW4x launcher update incomplete.' : 'Closing now could leave the mod files half-updated. The change usually takes less than a minute.',
     });
     return;
   }

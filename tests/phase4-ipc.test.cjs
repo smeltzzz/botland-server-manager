@@ -62,7 +62,7 @@ async function ipcFixture(options = {}) {
     diagnosticSnapshot: { games: [] },
   };
   for (const method of ['start', 'stop', 'saveKey', 'removeKey', 'resetKeyStore', 'commitSettings',
-    'firewallApply', 'firewallRemove', 'botAction', 'chooseFolder', 'setUpdateChecks', 'updatePlutonium']) {
+    'firewallApply', 'firewallRemove', 'botAction', 'chooseFolder', 'setUpdateChecks', 'updatePlutonium', 'updateEngine']) {
     manager[method] = (...args) => { calls.push([method, ...args]); return Promise.resolve(true); };
   }
   for (const method of backupMethods) {
@@ -148,6 +148,7 @@ async function ipcFixture(options = {}) {
     './botwarfare-install.cjs': { BotWarfareInstaller: class {} },
     './session-logs.cjs': { SessionLogs: class {} },
     './plutonium-update.cjs': { PlutoniumUpdater: class {} },
+    './engine-update.cjs': { EngineUpdater: class {} },
     './connect-address.cjs': {
       discoverConnectAddresses(port) {
         discoveries.push(port);
@@ -182,6 +183,7 @@ test('Phase 4 bridge methods have matching ManagerApi declarations', async () =>
     'copyConnectAddress\\(id: GameId, address: string\\): Promise<boolean>',
     'setAutoRestart\\(id: GameId, enabled: boolean\\): Promise<void>',
     'rescanOrphans\\(\\): Promise<void>',
+    'updateEngine\\(id: \'cod4\' \\| \'mw2\'\\): Promise<boolean>',
     'listConfigBackups\\(id: GameId, target: ConfigTarget, mode: string\\): Promise<ConfigBackup\\[\\]>',
     'previewConfigRestore\\(id: GameId, target: ConfigTarget, mode: string, backupId: string\\): Promise<ConfigRestorePreview>',
     'restoreConfigBackup\\(id: GameId, target: ConfigTarget, mode: string, backupId: string, token: string\\): Promise<\\{ backupId: string \\}>',
@@ -359,6 +361,7 @@ test('sensitive IPC actions reject forged sender and subframe before calling man
     ['chooseFolder', { id: 'cod4' }],
     ['setUpdateChecks', { enabled: false }],
     ['updatePlutonium', {}],
+    ['updateEngine', { id: 'cod4' }],
     ['openDocs', { id: 'cod4' }],
     ['openKeyPage', {}],
     ['copyDiagnostics', {}],
@@ -391,6 +394,18 @@ test('malformed IPC envelopes and action names are rejected before any sensitive
   assert.deepEqual(calls, []);
   assert.deepEqual(writes, []);
   assert.deepEqual(discoveries, []);
+});
+
+test('engine updates route only CoD4 and MW2 through the guarded bridge', async () => {
+  const { api, handler, validEvent, calls } = await ipcFixture();
+  assert.equal(typeof api.updateEngine, 'function');
+  await api.updateEngine('cod4');
+  await api.updateEngine('mw2');
+  assert.deepEqual(calls, [['updateEngine', 'cod4'], ['updateEngine', 'mw2']]);
+  for (const id of ['waw', 'bo1', 'bo2', null, 'unknown']) {
+    await assert.rejects(handler(validEvent(), 'updateEngine', { id }), /Unsupported engine update/);
+  }
+  assert.equal(calls.length, 2);
 });
 
 test('startup migrates settings in memory, tolerating missing or already-migrated legacy files', async () => {

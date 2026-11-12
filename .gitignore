@@ -15,6 +15,7 @@ botwarfare-sources.json.*
 botland-install.json
 session-logs/
 .botland-stage-*/
+.botland-engine-stage-*/
 .botland-versions-*/
 *.bak-*
 .env

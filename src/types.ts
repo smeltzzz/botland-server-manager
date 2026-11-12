@@ -30,6 +30,8 @@ export interface Game {
   /** Setup checklist steps: done (true), to do (false) or not applicable (null). */
   setup: GameSetup;
   modBusy: boolean;
+  /** An explicit IW3x/IW4x engine operation is changing this game's files. */
+  engineBusy?: boolean;
   connect: ConnectAddresses;
   orphan: OrphanCandidate | null;
   restart: RestartState;
@@ -84,6 +86,7 @@ export interface ManagerApi {
   /** Sets a damaged keys.json aside (kept, not deleted). Resolves false when the file was readable. */
   resetKeyStore(): Promise<boolean>;
   updatePlutonium(): Promise<boolean>;
+  updateEngine(id: 'cod4' | 'mw2'): Promise<boolean>;
   openKeyPage(): Promise<void>;
   openEngineGuide(id: GameId): Promise<void>;
   document(id: GameId, target: ConfigTarget, mode?: string): Promise<ConfigDocument>;

@@ -24,8 +24,9 @@ const fakeKeyPresence = new Set<GameId>(['bo1']);
 // MW3 starts without a server config so the preview shows the checklist step.
 const configured = new Set<GameId>(['cod4', 'bo1']);
 const plutoniumGames = new Set<GameId>(['waw', 'bo1', 'mw3', 'bo2']);
+const installedEngines = new Set<GameId>(['cod4']);
 const snapshot: Snapshot = { plutonium: { available: true, installed: true, updating: false, lastUpdated: '2026-11-09T18:00:00.000Z', error: null }, updatesEnabled: true, updates: { cod4: { status: 'current', latest: { tag: 'v2.1.0' }, updateAvailable: true } }, games: definitions.map(([id, title, short, subtitle, family, engine, port]) => ({
-  ...base, id, title, short, subtitle, family, engine, modBusy: false, config: { ...base.config },
+  ...base, id, title, short, subtitle, family, engine, modBusy: false, engineBusy: false, config: { ...base.config },
   installed: detected.has(id), pathSource: detected.has(id) ? 'steam' : 'none',
   keyStatus: id === 'cod4' || id === 'mw2' ? 'not-required' : fakeKeyPresence.has(id) ? 'stored' : 'missing',
   gamePath: detected.has(id) ? `C:\\Example\\SteamLibrary\\steamapps\\common\\${title}` : '',
@@ -77,11 +78,12 @@ function readiness(game: Game) {
   const plutonium = plutoniumGames.has(id);
   game.keyStatus = plutonium ? fakeKeyPresence.has(id) ? 'stored' : 'missing' : 'not-required';
   game.configMissing = game.installed && !configured.has(id);
-  game.setup = { folder: game.installed, engine: plutonium ? null : game.installed, plutonium: plutonium ? snapshot.plutonium.installed : null,
+  game.setup = { folder: game.installed, engine: plutonium ? null : game.installed && installedEngines.has(id), plutonium: plutonium ? snapshot.plutonium.installed : null,
     key: plutonium ? game.keyStatus === 'stored' : null, bots: game.installed && botStatuses[id].state !== 'not-installed',
     config: game.installed && configured.has(id), maps: game.installed };
   const blockers: string[] = [];
   if (!game.installed) blockers.push(`${game.short} was not found in your Steam libraries. Choose its installed game folder to continue.`);
+  if (game.setup.engine === false && game.installed) blockers.push(`${game.engine} is missing. Install it in this game's setup checklist.`);
   if (game.setup.plutonium === false) blockers.push('Plutonium is not installed. Click Install Plutonium in this game\'s setup checklist.');
   if (game.setup.key === false) blockers.push(`Plutonium server key needed for ${game.short}. Paste your key in this game's setup checklist.`);
   if (game.installed && !game.setup.bots) blockers.push(`${game.short} Bot Warfare is not installed. Click Install Bot Warfare in this game's setup checklist.`);
@@ -165,6 +167,7 @@ export function createDemoManager(): ManagerApi {
     removeKey: async id => { fakeKeyPresence.delete(id); updateDemoReadiness(id); },
     resetKeyStore: async () => false,
     updatePlutonium: async () => { snapshot.plutonium = { ...snapshot.plutonium, installed: true, updating: false, lastUpdated: new Date().toISOString(), error: null }; snapshot.games.forEach(readiness); emit(); return true; },
+    updateEngine: async id => { const game = find(id); if ((id !== 'cod4' && id !== 'mw2') || !game.installed || game.status !== 'stopped') throw new Error('Choose an installed game folder and stop the server first.'); game.engineBusy = true; emit(); installedEngines.add(id); game.engineBusy = false; updateDemoReadiness(id); return true; },
     openKeyPage: async () => {}, openEngineGuide: async () => {}, openConfig: async () => false,
     document: async (id, target, mode) => demoDocument(id, target, mode),
     previewSettings: async (id, target, mode, values) => ({ token: '0'.repeat(64), changed: true, changes: Object.entries(values).map(([key, after]) => ({ key, label: key, before: demoDocument(id, target, mode).values[key] ?? '(not set)', after, duplicates: 1 })) }),

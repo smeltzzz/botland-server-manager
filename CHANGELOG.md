@@ -2,6 +2,19 @@
 
 Notable changes to botLANd Server Manager are recorded here. This project follows [Semantic Versioning](https://semver.org/).
 
+## 1.2.5
+
+### Explicit CoD4 and MW2 engine setup
+
+- Added Install/Update controls for the Cod4R DedRun server executable and the official IW4x launcher. Engine downloads are restricted to official sources, pinned to exact SHA-256 digests and sizes, and never happen automatically on Start.
+- The CoD4 action updates only DedRun; use the IW3x hosting guide for required client and fast-file updates. The MW2 action invokes the IW4x launcher with `--skip-launch` after an explicit confirmation; it may update additional IW4x-managed files.
+- Engine work blocks same-game Start, restart, folder changes and Bot Warfare changes. Existing unknown executables require confirmation; failed or interrupted external IW4x updates retain a journal and block Start rather than attempting an incomplete rollback.
+
+## 1.2.4
+
+- Fixed BO1 LAN firewall readiness and unsafe firewall-rule removal; hardened Plutonium updater integrity and concurrency and key redaction at log truncation boundaries.
+- Preserved unsaved configuration/rotation drafts after an installation disappears and improved map-scan recovery, setup action availability, accessibility and narrow layouts.
+
 ## 1.2.3
 
 ### Firewall
