@@ -728,9 +728,14 @@ app.whenReady().then(async () => {
     }).filter(element => element.right > innerWidth + 1).sort((a, b) => b.right - a.right).slice(0, 12))()`);
     const compactLayout = await win.webContents.executeJavaScript(`(() => {
       const rect = selector => { const box = document.querySelector(selector)?.getBoundingClientRect(); return box && { left: Math.round(box.left), right: Math.round(box.right), width: Math.round(box.width) }; };
-      return { media1200: matchMedia('(max-width:1200px)').matches, media1050: matchMedia('(max-width:1050px)').matches,
+      const sidebar = document.querySelector('.sidebar');
+      const main = document.querySelector('.main-pane');
+      return { innerWidth, clientWidth: document.documentElement.clientWidth, visualWidth: visualViewport?.width,
+        devicePixelRatio, media1200: matchMedia('(max-width:1200px)').matches, media1050: matchMedia('(max-width:1050px)').matches,
+        media850: matchMedia('(max-width:850px)').matches, shellDisplay: getComputedStyle(document.querySelector('.app-shell')).display,
+        sidebar: rect('.sidebar'), sidebarWidth: getComputedStyle(sidebar).width, main: rect('.main-pane'), mainFlex: getComputedStyle(main).flex,
         detailLayout: rect('.detail-layout'), detailGrid: getComputedStyle(document.querySelector('.detail-layout')).gridTemplateColumns,
-        primary: rect('.detail-primary'), secondary: rect('.detail-secondary'), tabs: rect('.detail-tabs'), main: rect('main') };
+        primary: rect('.detail-primary'), secondary: rect('.detail-secondary'), tabs: rect('.detail-tabs') };
     })()`);
     assert.ok(footerLayout.scrollWidth <= footerLayout.width, `Game Overview and sidebar must not clip at a 1000×600-DIP window: ${JSON.stringify({ ...footerLayout, compactLayout, horizontalOverflow })}`);
     // IW4x also switches from disabled Install to Update once its game folder
