@@ -726,7 +726,13 @@ app.whenReady().then(async () => {
       const rect = element.getBoundingClientRect();
       return { tag: element.tagName, className: typeof element.className === 'string' ? element.className : '', right: Math.round(rect.right), width: Math.round(rect.width), scrollWidth: element.scrollWidth, text: (element.textContent || '').trim().slice(0, 80) };
     }).filter(element => element.right > innerWidth + 1).sort((a, b) => b.right - a.right).slice(0, 12))()`);
-    assert.ok(footerLayout.scrollWidth <= footerLayout.width, `Game Overview and sidebar must not clip at a 1000×600-DIP window: ${JSON.stringify({ ...footerLayout, horizontalOverflow })}`);
+    const compactLayout = await win.webContents.executeJavaScript(`(() => {
+      const rect = selector => { const box = document.querySelector(selector)?.getBoundingClientRect(); return box && { left: Math.round(box.left), right: Math.round(box.right), width: Math.round(box.width) }; };
+      return { media1200: matchMedia('(max-width:1200px)').matches, media1050: matchMedia('(max-width:1050px)').matches,
+        detailLayout: rect('.detail-layout'), detailGrid: getComputedStyle(document.querySelector('.detail-layout')).gridTemplateColumns,
+        primary: rect('.detail-primary'), secondary: rect('.detail-secondary'), tabs: rect('.detail-tabs'), main: rect('main') };
+    })()`);
+    assert.ok(footerLayout.scrollWidth <= footerLayout.width, `Game Overview and sidebar must not clip at a 1000×600-DIP window: ${JSON.stringify({ ...footerLayout, compactLayout, horizontalOverflow })}`);
     // IW4x also switches from disabled Install to Update once its game folder
     // and engine are present, without adding a button to MW2 Overview.
     const mw2Ready = gameSnapshot({ engineBusy: false });
