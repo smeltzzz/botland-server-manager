@@ -722,7 +722,11 @@ app.whenReady().then(async () => {
     })()`);
     assert.ok(footerLayout.top >= 0 && footerLayout.bottom <= footerLayout.height,
       `Engine and Plutonium update buttons must remain accessible at the bottom left in a short desktop window: ${JSON.stringify(footerLayout)}`);
-    assert.ok(footerLayout.scrollWidth <= footerLayout.width, `Game Overview and sidebar must not clip at a 1000×600-DIP window: ${JSON.stringify(footerLayout)}`);
+    const horizontalOverflow = await win.webContents.executeJavaScript(`(() => [...document.querySelectorAll('body *')].map(element => {
+      const rect = element.getBoundingClientRect();
+      return { tag: element.tagName, className: typeof element.className === 'string' ? element.className : '', right: Math.round(rect.right), width: Math.round(rect.width), scrollWidth: element.scrollWidth, text: (element.textContent || '').trim().slice(0, 80) };
+    }).filter(element => element.right > innerWidth + 1).sort((a, b) => b.right - a.right).slice(0, 12))()`);
+    assert.ok(footerLayout.scrollWidth <= footerLayout.width, `Game Overview and sidebar must not clip at a 1000×600-DIP window: ${JSON.stringify({ ...footerLayout, horizontalOverflow })}`);
     // IW4x also switches from disabled Install to Update once its game folder
     // and engine are present, without adding a button to MW2 Overview.
     const mw2Ready = gameSnapshot({ engineBusy: false });
