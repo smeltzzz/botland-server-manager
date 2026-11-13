@@ -105,19 +105,26 @@ async function downloadUpdater({ fetch: fetcher = globalThis.fetch, url = UPDATE
 
 // The updater must run like a double-click: with redirected pipes or a hidden
 // window it never exits. Its own small progress window shows briefly instead.
-function runUpdater(file, args, { cwd, timeout, onSpawn = () => {} }) {
+function runUpdater(file, args, { cwd, timeout, onSpawn = () => {}, spawnProcess = spawn }) {
   return new Promise((resolve, reject) => {
     let child;
-    try { child = spawn(file, args, { cwd, windowsHide: false, stdio: 'ignore', shell: false }); }
+    try { child = spawnProcess(file, args, { cwd, windowsHide: false, stdio: 'ignore', shell: false }); }
     catch { return reject(new Error('The Plutonium updater could not be started. Antivirus software may have blocked it.')); }
-    child.once('spawn', () => onSpawn(child.pid));
+    let spawned = false;
+    let processError = false;
+    child.once('spawn', () => { spawned = true; onSpawn(child.pid); });
     let timedOut = false;
     const timer = setTimeout(() => { timedOut = true; child.kill(); }, timeout);
-    child.once('error', () => { clearTimeout(timer); reject(new Error('The Plutonium updater could not be started. Antivirus software may have blocked it.')); });
-    child.once('exit', code => {
+    child.once('error', () => {
+      if (spawned) { processError = true; return; }
+      clearTimeout(timer);
+      reject(new Error('The Plutonium updater could not be started. Antivirus software may have blocked it.'));
+    });
+    child.once('close', code => {
       clearTimeout(timer);
       if (timedOut) return reject(new Error('The Plutonium update took too long and was stopped.'));
       if (code === 0) return resolve();
+      if (processError && (code === null || code === undefined)) return reject(new Error('The Plutonium updater process reported an error.'));
       reject(new Error(`The Plutonium updater exited with code ${code ?? 'unknown'}.`));
     });
   });
@@ -257,4 +264,4 @@ class PlutoniumUpdater {
   }
 }
 
-module.exports = { PlutoniumUpdater, downloadUpdater, UPDATER_URL, UPDATER_SHA256 };
+module.exports = { PlutoniumUpdater, downloadUpdater, runUpdater, UPDATER_URL, UPDATER_SHA256 };

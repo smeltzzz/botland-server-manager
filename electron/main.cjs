@@ -264,7 +264,20 @@ function requestQuit() {
 app.on('before-quit', event => {
   if (quitAfterStop) return;
   if (stoppingForQuit) { event.preventDefault(); return; }
-  if (!needsQuitPrompt()) return;
+  if (!needsQuitPrompt()) {
+    if (!manager?.hasPendingSessionCleanup?.()) return;
+    event.preventDefault();
+    stoppingForQuit = true;
+    manager.waitForSessionCleanup().then(() => {
+      stoppingForQuit = false;
+      quitAfterStop = true;
+      app.quit();
+    }, error => {
+      stoppingForQuit = false;
+      dialog.showErrorBox('Could not close', error.message);
+    });
+    return;
+  }
   event.preventDefault();
   requestQuit();
 });

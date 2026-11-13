@@ -129,7 +129,15 @@ export function createDemoManager(): ManagerApi {
     copyDiagnostics: async () => false, // Browser preview never writes to the clipboard.
     setUnsavedChanges: async () => true,
     maps: async (id): Promise<MapData> => ({ maps: pool, modes: demoModes(id) }),
-    start: async id => { const game = find(id); if (!game.installed || game.blockers.length) throw new Error('Resolve the setup checks before starting.'); game.status = 'running'; game.pid = 4108; game.activePort = game.options.port; game.startedAt = new Date().toISOString(); game.restart = { ...game.restart, attempts: 0, nextAttemptAt: null, cutOff: false }; demoConnect(game); game.logs = [{ at: new Date().toISOString(), level: 'info', source: 'manager', message: `Started ${game.engine} with the selected map rotation.` }, { at: new Date().toISOString(), level: 'info', source: 'stdout', message: 'Demo server output (no game process launched).' }]; emit(); },
+    start: async id => {
+      const game = find(id);
+      if (!game.installed || game.blockers.length) throw new Error('Resolve the setup checks before starting.');
+      if (game.status !== 'stopped') throw new Error('This server is already starting or running.');
+      if (game.modBusy) throw new Error('Wait for the Bot Warfare change to finish before starting this server.');
+      if (game.engineBusy) throw new Error('Wait for the engine update to finish before starting this server.');
+      if (id === 'bo1' && firewallRules.bo1 !== 'any') throw new Error('A verified public inbound UDP firewall rule is required before starting BO1.');
+      game.status = 'running'; game.pid = 4108; game.activePort = game.options.port; game.startedAt = new Date().toISOString(); game.restart = { ...game.restart, attempts: 0, nextAttemptAt: null, cutOff: false }; demoConnect(game); game.logs = [{ at: new Date().toISOString(), level: 'info', source: 'manager', message: `Started ${game.engine} with the selected map rotation.` }, { at: new Date().toISOString(), level: 'info', source: 'stdout', message: 'Demo server output (no game process launched).' }]; emit();
+    },
     stop: async id => { const game = find(id); game.status = 'stopped'; game.pid = null; game.activePort = null; game.connect = { primaryAddress: null, ambiguous: false, candidates: [] }; game.restart.nextAttemptAt = null; emit(); },
     copyConnectAddress: async (id, address) => { const game = find(id); return game.status === 'running' && game.connect.candidates.some(candidate => candidate.connectAddress === address); },
     setAutoRestart: async (id, enabled) => { find(id).restart.enabled = enabled; emit(); },

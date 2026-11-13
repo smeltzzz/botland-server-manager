@@ -126,6 +126,8 @@ function runLauncher(file, args, { cwd, timeout }) {
   return new Promise((resolve, reject) => {
     const child = spawn(file, args, { cwd, windowsHide: false, stdio: 'ignore', shell: false });
     let timedOut = false;
+    let spawned = false;
+    let processError = false;
     const timer = setTimeout(() => {
       timedOut = true;
       try { child.kill(); } catch { /* The process may already have exited. */ }
@@ -133,12 +135,18 @@ function runLauncher(file, args, { cwd, timeout }) {
       // closes. Releasing it after an arbitrary grace period would let another
       // file change or app quit overlap a process still writing engine files.
     }, timeout);
-    child.once('error', error => { clearTimeout(timer); reject(error); });
+    child.once('spawn', () => { spawned = true; });
+    child.once('error', error => {
+      if (spawned) { processError = true; return; }
+      clearTimeout(timer);
+      reject(error);
+    });
     child.once('close', code => {
       clearTimeout(timer);
       if (timedOut) reject(new Error('IW4x launcher timed out.'));
-      else if (code !== 0) reject(new Error(`IW4x launcher exited with code ${code ?? 'unknown'}.`));
-      else resolve();
+      else if (code === 0) resolve();
+      else if (processError && (code === null || code === undefined)) reject(new Error('IW4x launcher process reported an error.'));
+      else reject(new Error(`IW4x launcher exited with code ${code ?? 'unknown'}.`));
     });
   });
 }

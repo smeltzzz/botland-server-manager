@@ -42,6 +42,39 @@ function fakeChild(pid) {
   return child;
 }
 
+test('quit can wait for asynchronous session cleanup after the process slot is released', async t => {
+  const manager = managerAt(await temporary(t));
+  let resolveClose;
+  manager.sessionLogs = { close: () => new Promise(resolve => { resolveClose = resolve; }) };
+  const instance = { logTail: { stop: async () => {} }, sessionOpen: true, sessionStarted: true, logKey: 'synthetic' };
+  const cleanup = manager.releaseSession('cod4', instance);
+  assert.equal(manager.hasPendingSessionCleanup(), true);
+  let finished = false;
+  const waiting = manager.waitForSessionCleanup().then(() => { finished = true; });
+  await new Promise(resolve => setImmediate(resolve));
+  assert.equal(finished, false);
+  resolveClose();
+  await Promise.all([cleanup, waiting]);
+  assert.equal(manager.hasPendingSessionCleanup(), false);
+  assert.equal(instance.logKey, '');
+});
+
+test('stopping during restart backoff waits for the closing session log', async t => {
+  const manager = managerAt(await temporary(t));
+  let resolveCleanup;
+  const cleanup = new Promise(resolve => { resolveCleanup = resolve; });
+  manager.instances.set('cod4', { status: 'restarting' });
+  manager.sessionCleanup.set('cod4', cleanup);
+  let stopped = false;
+  const stopping = manager.stop('cod4').then(() => { stopped = true; });
+  await new Promise(resolve => setImmediate(resolve));
+  assert.equal(stopped, false);
+  resolveCleanup();
+  await stopping;
+  assert.equal(stopped, true);
+  assert.equal(manager.instances.has('cod4'), false);
+});
+
 test('unreadable base config is a blocker and snapshot still resolves', async t => {
   const dir = await temporary(t);
   const manager = managerAt(dir);
@@ -437,6 +470,52 @@ test('window close and before-quit stay blocked while stopAll is pending', async
   assert.equal(quits, 0);
   resolveStop();
   await stopDone;
+  await new Promise(resolve => setImmediate(resolve));
+  assert.equal(quits, 1);
+});
+
+test('before-quit waits for session cleanup without asking the user to stop servers', async () => {
+  const source = await fs.readFile(path.join(__dirname, '..', 'electron', 'main.cjs'), 'utf8');
+  const handlers = {};
+  let quits = 0;
+  let window;
+  let resolveCleanup;
+  let startupError = '';
+  const cleanupDone = new Promise(resolve => { resolveCleanup = resolve; });
+  const fakeManager = {
+    initialize: async () => {}, rescanInstallations: async () => {}, hasRunning: () => false,
+    hasPendingSessionCleanup: () => true, waitForSessionCleanup: () => cleanupDone,
+  };
+  class FakeWindow {
+    constructor() { window = this; this.handlers = {}; this.webContents = { send() {}, setWindowOpenHandler() {}, on() {} }; }
+    once(name, handler) { this.handlers[name] = handler; }
+    on(name, handler) { this.handlers[name] = handler; }
+    isDestroyed() { return false; }
+    loadURL() { return Promise.resolve(); }
+  }
+  const app = {
+    whenReady: () => Promise.resolve(), on: (name, handler) => { handlers[name] = handler; },
+    getPath: name => name === 'appData' ? __dirname : path.join(__dirname, 'BotLANd Server Manager'),
+    isPackaged: false, quit: () => { quits++; }, requestSingleInstanceLock: () => true,
+  };
+  const dialog = { showMessageBoxSync: () => { throw new Error('Cleanup must not show a server-stop prompt.'); }, showErrorBox: (_title, message) => { startupError = message; } };
+  const sandbox = {
+    module: { exports: {} }, process, __dirname: path.join(__dirname, '..', 'electron'),
+    require: name => name === 'electron' ? { app, dialog, BrowserWindow: FakeWindow, ipcMain: { handle() {} }, shell: {}, session: fakeSession }
+      : name === './manager.cjs' ? { ServerManager: class { constructor() { return fakeManager; } } }
+        : name === './key-store.cjs' ? { KeyStore: class {} }
+          : name === './botwarfare-source.cjs' ? { BotWarfareSource: class {} }
+            : name === './botwarfare-install.cjs' ? { BotWarfareInstaller: class {} }
+              : name.startsWith('./') ? require(path.join(__dirname, '..', 'electron', name)) : require(name),
+  };
+  vm.runInNewContext(source, sandbox);
+  for (let attempt = 0; attempt < 100 && !window; attempt++) await new Promise(resolve => setTimeout(resolve, 10));
+  assert.ok(window, startupError);
+  const quit = { prevented: false, preventDefault() { this.prevented = true; } };
+  handlers['before-quit'](quit);
+  assert.equal(quit.prevented, true);
+  assert.equal(quits, 0);
+  resolveCleanup();
   await new Promise(resolve => setImmediate(resolve));
   assert.equal(quits, 1);
 });

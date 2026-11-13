@@ -4,7 +4,8 @@ const fs = require('node:fs/promises');
 const path = require('node:path');
 const os = require('node:os');
 const { createHash } = require('node:crypto');
-const { PlutoniumUpdater, downloadUpdater, UPDATER_URL } = require('../electron/plutonium-update.cjs');
+const { EventEmitter } = require('node:events');
+const { PlutoniumUpdater, downloadUpdater, runUpdater, UPDATER_URL } = require('../electron/plutonium-update.cjs');
 const { ServerManager } = require('../electron/manager.cjs');
 
 async function temporary(testContext) {
@@ -34,6 +35,29 @@ function fixture(dir, { run, fetch, now, launchers = async () => [] } = {}) {
   });
   return { updater, bootstrapper, calls };
 }
+test('a post-spawn updater error keeps the update active until the process closes', async () => {
+  const child = new EventEmitter();
+  child.pid = 4242;
+  child.kill = () => true;
+  let options;
+  const spawned = [];
+  let settled = false;
+  const work = runUpdater('C:\\Example\\plutonium.exe', ['-update-only'], {
+    cwd: 'C:\\Example', timeout: 2000, onSpawn: pid => spawned.push(pid),
+    spawnProcess: (_file, _args, received) => { options = received; return child; },
+  });
+  work.then(() => { settled = true; }, () => { settled = true; });
+  assert.deepEqual(options, { cwd: 'C:\\Example', windowsHide: false, stdio: 'ignore', shell: false });
+  child.emit('spawn');
+  child.emit('error', new Error('kill failed'));
+  await new Promise(resolve => setImmediate(resolve));
+  assert.equal(settled, false, 'an active updater must continue blocking launch and quit');
+  assert.deepEqual(spawned, [4242]);
+  child.emit('close', null);
+  await assert.rejects(work, /process reported an error/u);
+  assert.equal(settled, true);
+});
+
 test('the updater download is pinned, size-limited and only follows plutonium.pw redirects', async () => {
   assert.deepEqual(await downloadUpdater({ fetch: async () => respond(), sha256: digest }), payload);
   await assert.rejects(downloadUpdater({ fetch: async () => respond() }), /did not match the verified version/);

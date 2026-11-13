@@ -321,7 +321,7 @@ export default function App() {
       focusAfterNavigation.current = false;
       mainPane.current?.focus();
     }
-  }, [selectedId]);
+  }, [selectedId, tab]);
   // Preserve an unsaved editor when its installation temporarily disappears.
   // The user can explicitly discard it, or wait for the folder to return.
   useEffect(() => {

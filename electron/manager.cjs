@@ -617,6 +617,10 @@ class ServerManager {
   }
   // A failed tail or optional disk log never changes process ownership. Cleanup
   // is idempotent because a failed launch and its child's close may race.
+  hasPendingSessionCleanup() { return this.sessionCleanup.size > 0; }
+  async waitForSessionCleanup() {
+    while (this.sessionCleanup.size) await Promise.allSettled([...this.sessionCleanup.values()]);
+  }
   releaseSession(id, instance) {
     if (!instance.cleanupPromise) {
       instance.cleanupPromise = (async () => {
@@ -1288,6 +1292,7 @@ class ServerManager {
     if (!instance) throw new Error('No running server is managed for this game.');
     if (instance.status === 'restarting') {
       this.cancelRestart(id);
+      if (this.sessionCleanup.has(id)) await this.sessionCleanup.get(id);
       await this.broadcastState().catch(() => {});
       return;
     }

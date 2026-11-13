@@ -49,3 +49,17 @@ test('a timed-out launcher holds the file-change reservation until its process a
   await assert.rejects(work, /timed out/u);
   assert.equal(settled, true);
 });
+
+test('a post-spawn process error retains the file-change reservation until close', async () => {
+  const process = child();
+  let settled = false;
+  const work = runLauncher('C:\\Example\\iw4x-launcher.exe', [], { cwd: 'C:\\Example', timeout: 2000 });
+  work.then(() => { settled = true; }, () => { settled = true; });
+  process.emit('spawn');
+  process.emit('error', new Error('kill failed'));
+  await new Promise(resolve => setImmediate(resolve));
+  assert.equal(settled, false, 'a live launcher must keep other file changes and quit blocked');
+  process.emit('close', null);
+  await assert.rejects(work, /process reported an error/u);
+  assert.equal(settled, true);
+});

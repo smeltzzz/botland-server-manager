@@ -241,6 +241,13 @@ app.whenReady().then(async () => {
     const tabFocus = await win.webContents.executeJavaScript("({ active: document.activeElement?.textContent || '', label: document.querySelector('main')?.getAttribute('aria-label') })");
     assert.equal(tabFocus.active, 'Configuration');
     assert.equal(tabFocus.label, 'Call of Duty 4 — Configuration');
+    await win.webContents.executeJavaScript("(() => { const game = document.querySelector('.game-nav-item'); game.focus(); game.click(); })()");
+    await waitFor(win, '.setup-wizard');
+    const sameGameNavigationFocus = await win.webContents.executeJavaScript("({ active: document.activeElement?.tagName, label: document.querySelector('main')?.getAttribute('aria-label') })");
+    assert.equal(sameGameNavigationFocus.active, 'MAIN');
+    assert.equal(sameGameNavigationFocus.label, 'Call of Duty 4 — Overview');
+    await win.webContents.executeJavaScript("([...document.querySelectorAll('.detail-tabs button')].find(button => button.textContent.includes('Configuration'))).click()");
+    await waitFor(win, '.config-field-grid input');
     const width = await win.webContents.executeJavaScript('({ width: innerWidth, scrollWidth: document.documentElement.scrollWidth })');
     assert.ok(width.scrollWidth <= width.width, 'Configuration must not clip at a 640-DIP window');
     await win.webContents.executeJavaScript(`(() => {
