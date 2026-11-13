@@ -421,26 +421,26 @@ app.whenReady().then(async () => {
       return {
         guide: step?.querySelector('button.button')?.textContent,
         detail: step?.textContent,
-        overviewUpdateButtons: [...document.querySelectorAll('main button')].filter(button => /^(Install|Update) (Cod4R|IW4x)/.test(button.textContent.trim())).length,
+        overviewUpdateButtons: [...document.querySelectorAll('main button')].filter(button => /^(Install|Update) (IW3x|IW4x)/.test(button.textContent.trim())).length,
         engines: [...document.querySelectorAll('.engine-sidebar-item .root-button')].map(button => ({ text: button.textContent.trim(), disabled: button.disabled, name: button.getAttribute('aria-label') })),
         plutonium: document.querySelector('.sidebar-footer > .root-button')?.textContent,
-        missingHint: document.querySelector('.engine-sidebar-item:nth-child(2) .engine-sidebar-hint')?.textContent,
+        missingHint: document.querySelector('.engine-sidebar-item:has([data-engine=mw2]) .engine-sidebar-hint')?.textContent,
       };
     })()`);
     assert.match(engineControls.guide, /Open setup guide/);
     assert.match(engineControls.detail, /bottom left/);
     assert.equal(engineControls.overviewUpdateButtons, 0);
     assert.equal(engineControls.engines.length, 2);
-    assert.match(engineControls.engines[0].text, /Install Cod4R DedRun/);
+    assert.match(engineControls.engines[0].text, /Install IW3x/);
     assert.equal(engineControls.engines[0].disabled, false);
     assert.match(engineControls.engines[0].name, /Call of Duty 4/);
     assert.equal(engineControls.engines[1].disabled, true);
     assert.match(engineControls.missingHint, /Choose MW2 folder first/);
     assert.match(engineControls.plutonium, /Plutonium/);
     // Declining an engine update confirmation must not call IPC.
-    await win.webContents.executeJavaScript("window.confirm = () => false; document.querySelector('.engine-sidebar-item:first-child .root-button').click()");
+    await win.webContents.executeJavaScript("window.confirm = () => false; document.querySelector('.root-button[data-engine=cod4]').click()");
     assert.equal(engineAttempts, 0);
-    await win.webContents.executeJavaScript("window.confirm = () => true; document.querySelector('.engine-sidebar-item:first-child .root-button').click()");
+    await win.webContents.executeJavaScript("window.confirm = () => true; document.querySelector('.root-button[data-engine=cod4]').click()");
     await waitFor(win, '.notice-error');
     assert.equal(engineAttempts, 1);
     assert.match(await win.webContents.executeJavaScript("document.querySelector('.notice-error')?.textContent"), /Synthetic engine update refused/);
@@ -448,11 +448,11 @@ app.whenReady().then(async () => {
       setup: { ...snapshot.games[0].setup, engine: true }, blockers: [] }) });
     await waitFor(win, '.state-chip.attention');
     assert.equal(await win.webContents.executeJavaScript("document.querySelector('.detail-hero-action .primary-button')?.disabled"), true);
-    assert.equal(await win.webContents.executeJavaScript("document.querySelector('.engine-sidebar-item:first-child .root-button')?.disabled"), true);
+    assert.equal(await win.webContents.executeJavaScript("document.querySelector('.root-button[data-engine=cod4]')?.disabled"), true);
     win.webContents.send('manager:event', { type: 'state', snapshot: gameSnapshot({ engineBusy: false,
       setup: { ...snapshot.games[0].setup, engine: true }, blockers: [] }) });
-    await waitFor(win, '.engine-sidebar-item:first-child .root-button:not(:disabled)');
-    assert.match(await win.webContents.executeJavaScript("document.querySelector('.engine-sidebar-item:first-child .root-button')?.textContent"), /Update Cod4R DedRun/);
+    await waitFor(win, '.root-button[data-engine=cod4]:not(:disabled)');
+    assert.match(await win.webContents.executeJavaScript("document.querySelector('.root-button[data-engine=cod4]')?.textContent"), /Update IW3x/);
     win.setSize(1000, 600);
     await win.webContents.executeJavaScript(`new Promise((resolve, reject) => {
       const check = () => innerWidth > 850 ? resolve() : requestAnimationFrame(check);
@@ -474,8 +474,8 @@ app.whenReady().then(async () => {
       blockers: ['IW4x executable missing.'],
     });
     win.webContents.send('manager:event', { type: 'state', snapshot: mw2Ready });
-    await waitFor(win, '.engine-sidebar-item:nth-child(2) .root-button:not(:disabled)');
-    assert.match(await win.webContents.executeJavaScript("document.querySelector('.engine-sidebar-item:nth-child(2) .root-button')?.textContent"), /Install IW4x/);
+    await waitFor(win, '.root-button[data-engine=mw2]:not(:disabled)');
+    assert.match(await win.webContents.executeJavaScript("document.querySelector('.root-button[data-engine=mw2]')?.textContent"), /Install IW4x/);
     await win.webContents.executeJavaScript("[...document.querySelectorAll('.sidebar .game-nav-item')].find(button => button.textContent.includes('MW2')).click()");
     await waitFor(win, 'main[aria-label^="Modern Warfare 2"] .setup-wizard');
     assert.equal(await win.webContents.executeJavaScript("[...document.querySelectorAll('main button')].filter(button => /^(Install|Update) IW4x/.test(button.textContent.trim())).length"), 0);
@@ -483,7 +483,7 @@ app.whenReady().then(async () => {
     mw2Ready.games.find(entry => entry.id === 'mw2').blockers = [];
     win.webContents.send('manager:event', { type: 'state', snapshot: mw2Ready });
     await win.webContents.executeJavaScript(`new Promise((resolve, reject) => {
-      const check = () => document.querySelector('.engine-sidebar-item:nth-child(2) .root-button')?.textContent.includes('Update IW4x');
+      const check = () => document.querySelector('.root-button[data-engine=mw2]')?.textContent.includes('Update IW4x');
       if (check()) return resolve();
       const observer = new MutationObserver(() => { if (check()) { observer.disconnect(); resolve(); } });
       observer.observe(document.body, { subtree: true, childList: true });
