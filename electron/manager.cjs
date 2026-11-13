@@ -69,6 +69,9 @@ class ServerManager {
     this.modBusy = new Set();
     this.botUpdates = {};
     this.instances = new Map();
+    this.firewallOperations = new Map();
+    this.firewallBusy = new Set();
+    this.firewallStarting = new Set();
     this.logs = new Map();
     this.sessionCleanup = new Map();
     this.persistQueue = Promise.resolve();
@@ -506,21 +509,34 @@ class ServerManager {
       setup.maps = count() === mapsStart;
     }
     const configStart = count();
-    // Without a game folder configPath is relative to the working directory, which must never be read.
-    if ((id === 'mw3' || id === 'bo2') && gamePath && await exists(configPath)) {
+    // Read every installed title's base config here, not only in snapshot():
+    // Start calls check() directly and must fail closed on unreadable files.
+    // Without a game folder configPath is relative to the working directory.
+    if (installed && !configMissing) {
       try {
-        // Decode like the config editor does, so UTF-16 configs are checked correctly.
+        const stat = await fs.stat(configPath);
+        if (!stat.isFile()) throw new Error('Not a regular config file.');
+        // Decode like the editor does; malformed UTF-16 must not reach the game.
+        // Existing values are not revalidated against editor-only limits: this
+        // preflight checks readability, not whether users may edit those values.
         const body = withoutBlockComments(decode(await fs.readFile(configPath)).text);
-        const rotation = path.basename(profile.rotation).toLowerCase();
-        const included = body.split(/\r?\n/).some(line => {
-          const statement = line.split('//', 1)[0].trim();
-          const match = statement.match(/^exec\s+(?:"([^"]+)"|'([^']+)'|([^\s;]+))\s*;?\s*$/i);
-          return match && path.basename((match[1] || match[2] || match[3]).replaceAll('\\', '/')).toLowerCase() === rotation;
-        });
-        if (!included) blockers.push(`Base config must exec ${path.basename(profile.rotation)} for rotations to load.`);
-        if (id === 'mw3') {
-          const mod = parseEntries(body).get('fs_game');
-          if (mod && mod.value.toLowerCase().replaceAll('\\', '/') !== profile.mod) blockers.push('IW5 server.cfg overrides the Bot Warfare mod. Set fs_game to mods/bots.');
+        if (id === 'mw3' || id === 'bo2') {
+          const rotation = path.basename(profile.rotation).toLowerCase();
+          const relative = profile.rotation.toLowerCase();
+          const included = body.split(/\r?\n/).some(line => {
+            const statement = line.split('//', 1)[0].trim();
+            const match = statement.match(/^exec\s+(?:"([^"]+)"|'([^']+)'|([^\s;]+))\s*;?\s*$/i);
+            if (!match) return false;
+            const requested = path.posix.normalize((match[1] || match[2] || match[3]).replaceAll('\\', '/')).toLowerCase();
+            // A bare name uses the game's config search path; an explicit path
+            // must resolve to the generated rotation in its profile directory.
+            return requested === rotation || requested === relative;
+          });
+          if (!included) blockers.push(`Base config must exec ${path.basename(profile.rotation)} for rotations to load.`);
+          if (id === 'mw3') {
+            const mod = parseEntries(body).get('fs_game');
+            if (mod && mod.value.toLowerCase().replaceAll('\\', '/') !== profile.mod) blockers.push('IW5 server.cfg overrides the Bot Warfare mod. Set fs_game to mods/bots.');
+          }
         }
       } catch { blockers.push(`Could not read server config: ${profile.config.replaceAll('/', '\\')}`); }
     }
@@ -777,16 +793,19 @@ class ServerManager {
     await this.updateSettings(data => { if (data.games[id]?.artwork) delete data.games[id].artwork[kind]; });
     return this.artwork(id, kind);
   }
-  // `netstat -p udp` lists IPv4 sockets only, so a listener bound to [::] would be
-  // missed. Query both families; one failing (e.g. IPv6 disabled) is tolerated.
-  async portInUse(port) {
+  // A partial result can prove occupancy but cannot prove a port free. Manual
+  // Start tolerates a missing family; automatic restart requires both scans.
+  async portInUse(port, requireComplete = false) {
     const results = await Promise.allSettled(['udp', 'udpv6'].map(protocol =>
       exec('netstat.exe', ['-ano', '-p', protocol], { timeout: 7000, windowsHide: true, maxBuffer: 3_000_000 })));
-    if (results.every(result => result.status === 'rejected')) throw results[0].reason;
-    return results.some(result => result.status === 'fulfilled' && String(result.value.stdout).split(/\r?\n/).some(line => {
+    const busy = results.some(result => result.status === 'fulfilled' && String(result.value?.stdout ?? result.value).split(/\r?\n/).some(line => {
       const match = line.match(/^\s*UDP\s+(\S+)\s+(?:\S+\s+)?(\d+)\s*$/i);
       return !!match && +match[1].slice(match[1].lastIndexOf(':') + 1) === port;
     }));
+    if (busy) return true;
+    const failure = results.find(result => result.status === 'rejected');
+    if (failure && (requireComplete || results.every(result => result.status === 'rejected'))) throw failure.reason;
+    return false;
   }
 
   // botLANd manages exactly one named inbound rule per game and never touches
@@ -903,19 +922,45 @@ class ServerManager {
   firewallScope(id) {
     return profileFor(id).id === 'bo1' || this.options(id).lan === false ? 'any' : 'lan';
   }
-  async firewallApply(id) {
-    const port = this.firewallPort(id);
-    const name = this.firewallName(id);
-    const scope = this.firewallScope(id) === 'lan' ? 'localsubnet' : 'any';
-    await this.runElevated(buildFirewallApplyLines({ name, port, scope }));
-    return this.firewallStatus(id);
+  // Serialize changes to the same named rule, including the readback. Reserve
+  // BO1 synchronously so Start cannot pass preflight while a UAC prompt is open.
+  queueFirewall(id, action) {
+    profileFor(id);
+    if (id === 'bo1') this.firewallBusy.add(id);
+    const previous = this.firewallOperations.get(id) || Promise.resolve();
+    const current = previous.catch(() => {}).then(action);
+    this.firewallOperations.set(id, current);
+    current.finally(() => {
+      if (this.firewallOperations.get(id) === current) {
+        this.firewallOperations.delete(id);
+        this.firewallBusy.delete(id);
+      }
+    }).catch(() => {});
+    return current;
+  }
+  firewallApply(id) {
+    return this.queueFirewall(id, async () => {
+      const port = this.firewallPort(id);
+      const name = this.firewallName(id);
+      const scope = this.firewallScope(id) === 'lan' ? 'localsubnet' : 'any';
+      await this.runElevated(buildFirewallApplyLines({ name, port, scope }));
+      return this.firewallStatus(id);
+    });
   }
   async firewallRemove(id) {
     profileFor(id);
-    if (id === 'bo1' && this.instances.has(id)) throw new Error('Stop BO1 before removing its required public firewall rule.');
-    const name = this.firewallName(id);
-    await this.runElevated(buildFirewallRemoveLines({ name }));
-    return this.firewallStatus(id);
+    if (id === 'bo1' && (this.instances.has(id) || this.firewallStarting.has(id))) {
+      throw new Error('Stop BO1 before removing its required public firewall rule.');
+    }
+    return this.queueFirewall(id, async () => {
+      // A Start may have begun before this queued action reached the prompt.
+      if (id === 'bo1' && (this.instances.has(id) || this.firewallStarting.has(id))) {
+        throw new Error('Stop BO1 before removing its required public firewall rule.');
+      }
+      const name = this.firewallName(id);
+      await this.runElevated(buildFirewallRemoveLines({ name }));
+      return this.firewallStatus(id);
+    });
   }
 
   buildCommand(profile, gamePath, port, mode, key, lan = true) {
@@ -986,38 +1031,47 @@ class ServerManager {
   async launch(id, retry) {
     const profile = profileFor(id);
     if (this.shuttingDown) throw new Error('The manager is shutting down.');
-    if (!retry && this.instances.get(id)?.status === 'restarting') this.cancelRestart(id);
-    // Closing an earlier session may still be draining its tail. Never let that
-    // close race a new session opened for this game (manual or automatic retry).
-    if (this.sessionCleanup.has(id)) await this.sessionCleanup.get(id);
-    if (this.shuttingDown) throw new Error('The manager is shutting down.');
-    if (this.instances.has(id)) throw new Error('This server is already starting or running.');
-    if (this.modBusy.has(id)) throw new Error('Wait for the Bot Warfare change to finish before starting this server.');
-    if (this.engineBusy.has(id)) throw new Error('Wait for the engine update to finish before starting this server.');
-    if (this.modInstaller && typeof this.modInstaller.prepareLaunch === 'function') {
-      const gamePath = await this.gamePath(id);
-      if (gamePath) {
-        try { await this.modInstaller.prepareLaunch(id, gamePath); }
-        catch (error) {
-          const message = `Could not finish recovering an interrupted Bot Warfare change, so the server was not started: ${error.message}`;
-          if (retry) this.restartState(id).cutOff = true;
-          this.addLog(id, message, 'error');
-          throw new Error(message);
-        }
-      }
-      // Recovery is asynchronous; re-check what a concurrent action may have changed.
+    if (id === 'bo1') {
+      if (this.firewallBusy.has(id)) throw new Error('Wait for the BO1 firewall change to finish before starting.');
+      if (this.firewallStarting.has(id)) throw new Error('This server is already starting.');
+      this.firewallStarting.add(id);
+    }
+    let instance;
+    let restart;
+    try {
+      if (!retry && this.instances.get(id)?.status === 'restarting') this.cancelRestart(id);
+      // Closing an earlier session may still be draining its tail. Never let that
+      // close race a new session opened for this game (manual or automatic retry).
+      if (this.sessionCleanup.has(id)) await this.sessionCleanup.get(id);
       if (this.shuttingDown) throw new Error('The manager is shutting down.');
       if (this.instances.has(id)) throw new Error('This server is already starting or running.');
       if (this.modBusy.has(id)) throw new Error('Wait for the Bot Warfare change to finish before starting this server.');
-    if (this.engineBusy.has(id)) throw new Error('Wait for the engine update to finish before starting this server.');
-    }
-    const restart = this.restartState(id);
-    if (!retry) { restart.crashes = []; restart.attempts = 0; restart.cutOff = false; }
-    else if (restart.cutOff || restart.suppressed || this.data.games?.[id]?.autoRestart !== true) return;
-    const instance = { status: 'starting', child: null, startedAt: null, activePort: null, cancelled: false, stopPromise: null, closed: false,
-      logKey: '', logTail: null, sessionOpen: false, sessionStarted: false, cleanupPromise: null };
-    instance.launchDone = new Promise(resolve => { instance.resolveLaunch = resolve; });
-    this.instances.set(id, instance);
+      if (this.engineBusy.has(id)) throw new Error('Wait for the engine update to finish before starting this server.');
+      if (this.modInstaller && typeof this.modInstaller.prepareLaunch === 'function') {
+        const gamePath = await this.gamePath(id);
+        if (gamePath) {
+          try { await this.modInstaller.prepareLaunch(id, gamePath); }
+          catch (error) {
+            const message = `Could not finish recovering an interrupted Bot Warfare change, so the server was not started: ${error.message}`;
+            if (retry) this.restartState(id).cutOff = true;
+            this.addLog(id, message, 'error');
+            throw new Error(message);
+          }
+        }
+        // Recovery is asynchronous; re-check what a concurrent action may have changed.
+        if (this.shuttingDown) throw new Error('The manager is shutting down.');
+        if (this.instances.has(id)) throw new Error('This server is already starting or running.');
+        if (this.modBusy.has(id)) throw new Error('Wait for the Bot Warfare change to finish before starting this server.');
+        if (this.engineBusy.has(id)) throw new Error('Wait for the engine update to finish before starting this server.');
+      }
+      restart = this.restartState(id);
+      if (!retry) { restart.crashes = []; restart.attempts = 0; restart.cutOff = false; }
+      else if (restart.cutOff || restart.suppressed || this.data.games?.[id]?.autoRestart !== true) return;
+      instance = { status: 'starting', child: null, startedAt: null, activePort: null, cancelled: false, stopPromise: null, closed: false,
+        logKey: '', logTail: null, sessionOpen: false, sessionStarted: false, cleanupPromise: null };
+      instance.launchDone = new Promise(resolve => { instance.resolveLaunch = resolve; });
+      this.instances.set(id, instance);
+    } finally { this.firewallStarting.delete(id); }
     let launchKey = '';
     try {
       await this.broadcastState();
@@ -1042,7 +1096,7 @@ class ServerManager {
       // If the port cannot be inspected, let the game itself report a bind failure
       // rather than blocking a launch on a diagnostic tool.
       let portBusy = false;
-      try { portBusy = await this.portInUse(options.port); }
+      try { portBusy = await this.portInUse(options.port, retry); }
       catch {
         // A manual Start can leave port diagnosis to the engine. Automatic
         // replacement cannot risk overlapping an unknown leftover process.
@@ -1082,6 +1136,9 @@ class ServerManager {
       // Turning automatic restart off while a retry was preparing cancels it.
       if (retry && (restart.suppressed || this.data.games?.[id]?.autoRestart !== true)) instance.cancelled = true;
       if (instance.cancelled) throw new Error('Launch cancelled.');
+      // An Apply queued after the first firewall check may replace the rule;
+      // do not spawn while its outcome or port is still in flight.
+      if (id === 'bo1' && this.firewallBusy.has(id)) throw new Error('Wait for the BO1 firewall change to finish before starting.');
       const visibility = id === 'bo1' ? 'public; firewall open to any address' : options.lan === false ? 'public' : 'LAN';
       this.addLog(id, `Starting ${profile.engine} on UDP ${options.port} (${visibility}) with ${chosen.length} maps.`, 'info');
       const child = spawn(command.file, command.args, { cwd: command.cwd, argv0: command.argv0, windowsHide: true, stdio: [id === 'cod4' ? 'pipe' : 'ignore', 'pipe', 'pipe'], shell: false });

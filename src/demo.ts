@@ -5,7 +5,7 @@ import type { BotStatus, ConfigDocument, ConfigField, Game, GameId, ManagerApi, 
 const base: Pick<Game, 'options' | 'config' | 'blockers' | 'warnings' | 'logs' | 'status' | 'pid' | 'startedAt' | 'connect' | 'orphan' | 'restart' | 'setup'> = {
   setup: { folder: false, engine: null, plutonium: null, key: null, bots: false, config: false, maps: false },
   options: { port: 28961, mode: 'dom', shuffle: true, selectedMaps: [], gamePath: '', lan: true },
-  config: { sv_hostname: 'botLANd â€” Domination', sv_maxclients: '18', bots_main: '1', bots_manage_fill: '14', bots_skill: '4', bots_team: 'autoassign', bots_manage_fill_mode: '0', bots_play_obj: '1', scr_dom_timelimit: '15', scr_dom_scorelimit: '200' },
+  config: { sv_hostname: 'botLANd — Domination', sv_maxclients: '18', bots_main: '1', bots_manage_fill: '14', bots_skill: '4', bots_team: 'autoassign', bots_manage_fill_mode: '0', bots_play_obj: '1', scr_dom_timelimit: '15', scr_dom_scorelimit: '200' },
   blockers: [], warnings: [], logs: [], status: 'stopped', pid: null, startedAt: null,
   connect: { primaryAddress: null, ambiguous: false, candidates: [] }, orphan: null,
   restart: { enabled: false, attempts: 0, nextAttemptAt: null, cutOff: false },

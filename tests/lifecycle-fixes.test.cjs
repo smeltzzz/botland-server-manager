@@ -59,6 +59,27 @@ test('unreadable base config is a blocker and snapshot still resolves', async t 
   assert.ok(state.games.find(game => game.id === 'waw').blockers.some(message => message.includes('was not found in your Steam libraries')));
 });
 
+test('all six games block unreadable or malformed UTF-16 base configs before Start', async t => {
+  const dir = await temporary(t);
+  const manager = managerAt(dir);
+  for (const id of ['cod4', 'waw', 'mw2', 'bo1', 'mw3', 'bo2']) {
+    const config = path.join(dir, require('../electron/profiles.cjs').profileFor(id).config);
+    manager.data.games[id] = { gamePath: dir };
+    await fs.mkdir(path.dirname(config), { recursive: true });
+    await fs.mkdir(config);
+    assert.ok((await manager.check(id)).blockers.some(message => message.startsWith('Could not read server config')), id);
+    await fs.rmdir(config);
+    await fs.writeFile(config, Buffer.from([0xff, 0xfe, 0x00]));
+    assert.ok((await manager.check(id)).blockers.some(message => message.startsWith('Could not read server config')), id);
+    manager.broadcastState = async () => {};
+    await assert.rejects(manager.start(id), /Could not read server config/, id);
+    // Preflight is not an editor save: keep legacy values outside guided limits.
+    await fs.writeFile(config, 'set sv_maxclients "99"\n');
+    assert.ok(!(await manager.check(id)).blockers.some(message => message.startsWith('Could not read server config')), id);
+    await fs.unlink(config);
+  }
+});
+
 test('MW3 preflight accepts x86 and proven-working x64 executables, but blocks invalid PE and missing runtime DLL', async t => {
   const dir = await temporary(t);
   const manager = managerAt(dir);
@@ -135,8 +156,10 @@ test('MW3 and BO2 require an active exec directive, not a mention in a comment',
     assert.ok((await manager.check(id)).blockers.some(message => message.startsWith('Base config must exec')));
     await fs.appendFile(file, `ExEc "${rotation.toUpperCase()}" // rotation\n`);
     assert.ok(!(await manager.check(id)).blockers.some(message => message.startsWith('Base config must exec')));
-    await fs.writeFile(file, `exec "admin/${rotation}"\n`);
+    await fs.writeFile(file, `exec "./${id === 'mw3' ? 'admin' : 'main'}\\${rotation}"\n`);
     assert.ok(!(await manager.check(id)).blockers.some(message => message.startsWith('Base config must exec')));
+    await fs.writeFile(file, `exec "${id === 'mw3' ? 'main' : 'admin'}/${rotation}"\n`);
+    assert.ok((await manager.check(id)).blockers.some(message => message.startsWith('Base config must exec')));
     // A multi-line comment ending on the exec line must not merge it into the previous line.
     await fs.writeFile(file, `set sv_hostname "x" /* note\nmore */ exec ${rotation}\n`);
     assert.ok(!(await manager.check(id)).blockers.some(message => message.startsWith('Base config must exec')));
@@ -144,6 +167,89 @@ test('MW3 and BO2 require an active exec directive, not a mention in a comment',
     await fs.writeFile(file, `/* unfinished\nexec ${rotation}\n`);
     assert.ok((await manager.check(id)).blockers.some(message => message.startsWith('Base config must exec')));
   }
+});
+
+test('partial IPv4/IPv6 netstat is unknown unless a successful scan proves occupancy', async t => {
+  const dir = await temporary(t);
+  const manager = managerAt(dir);
+  readyToStart(manager, dir);
+  await fs.mkdir(path.join(dir, 'main'));
+  delete manager.portInUse;
+  const original = execImpl;
+  const output = '  UDP    [::]:28960        *:*       4567\r\n';
+  try {
+    for (const failed of ['udp', 'udpv6']) {
+      execImpl = (_file, args, _options, callback) => {
+        if (args[2] === failed) callback(new Error('netstat unavailable'));
+        else callback(null, '', '');
+      };
+      assert.equal(await manager.portInUse(28960), false);
+      await assert.rejects(manager.portInUse(28960, true), /netstat unavailable/);
+      manager.data.games.cod4 = { autoRestart: true };
+      await assert.rejects(manager.launch('cod4', true), /Automatic restart is blocked/);
+      assert.equal(manager.restartState('cod4').cutOff, true);
+      // Manual Start is allowed to leave the unknown bind result to the engine.
+      spawnImpl = () => { const child = fakeChild(12345); queueMicrotask(() => child.emit('spawn')); return child; };
+      await manager.start('cod4');
+      assert.equal(manager.instances.get('cod4').status, 'running');
+      manager.instances.delete('cod4');
+    }
+    execImpl = (_file, args, _options, callback) => args[2] === 'udp' ? callback(new Error('netstat unavailable')) : callback(null, output, '');
+    assert.equal(await manager.portInUse(28960), true);
+    await assert.rejects(manager.start('cod4'), /already in use/);
+  } finally { execImpl = original; spawnImpl = () => { throw new Error('Unexpected spawn'); }; }
+});
+
+test('Bot Warfare recovery errors stop both manual and automatic launches before spawn', async t => {
+  const dir = await temporary(t);
+  const manager = managerAt(dir);
+  readyToStart(manager, dir);
+  manager.data.games.cod4 = { gamePath: dir, autoRestart: true };
+  manager.modInstaller = { prepareLaunch: async () => { throw new Error('unsafe Bot Warfare journal'); } };
+  for (const retry of [false, true]) {
+    await assert.rejects(manager.launch('cod4', retry), /Could not finish recovering.*unsafe Bot Warfare journal/);
+    assert.equal(manager.instances.has('cod4'), false);
+  }
+  assert.equal(manager.restartState('cod4').cutOff, true);
+});
+
+test('BO1 Start and firewall removal reserve the rule before their first await; firewall actions serialize', async t => {
+  const dir = await temporary(t);
+  const manager = managerAt(dir);
+  readyToStart(manager, dir);
+  manager.data.games.bo1 = { gamePath: dir };
+  let resumePrepare;
+  let enteredPrepare;
+  const preparing = new Promise(resolve => { enteredPrepare = resolve; });
+  const prepareGate = new Promise(resolve => { resumePrepare = resolve; });
+  manager.modInstaller = { prepareLaunch: async () => { enteredPrepare(); await prepareGate; } };
+  const starting = assert.rejects(manager.start('bo1'), /verified botLANd public inbound UDP firewall rule/);
+  await preparing;
+  await assert.rejects(manager.firewallRemove('bo1'), /Stop BO1 before removing/);
+  resumePrepare();
+  await starting;
+  assert.equal(manager.firewallStarting.has('bo1'), false);
+
+  let releaseElevation;
+  let enteredElevation;
+  const entered = new Promise(resolve => { enteredElevation = resolve; });
+  const gate = new Promise(resolve => { releaseElevation = resolve; });
+  const runs = [];
+  manager.runElevated = async lines => {
+    runs.push(lines.join('\n'));
+    if (runs.length === 1) { enteredElevation(); await gate; }
+  };
+  manager.firewallStatus = async () => ({ state: 'missing' });
+  const applying = manager.firewallApply('bo1');
+  await entered;
+  const removing = manager.firewallRemove('bo1');
+  await assert.rejects(manager.start('bo1'), /firewall change to finish/);
+  assert.equal(runs.length, 1);
+  releaseElevation();
+  await Promise.all([applying, removing]);
+  assert.equal(runs.length, 2);
+  assert.match(runs[0], /New-NetFirewallRule/);
+  assert.match(runs[1], /Remove-NetFirewallRule/);
 });
 
 test('concurrent settings actions serialize writes without losing a newer change', async t => {

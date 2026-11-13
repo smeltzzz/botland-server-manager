@@ -1,5 +1,5 @@
-// Synthetic, read-only Electron smoke for the built renderer. Never loads a
-// real game install or ServerManager; the IPC mock refuses every write action.
+// Synthetic Electron smoke for the built renderer. Never loads a real game
+// install or ServerManager; opt-in write actions mutate only in-memory fixtures.
 // Run after build: node_modules/.bin/electron.cmd tests/packaged-smoke.cjs
 const assert = require('node:assert/strict');
 const path = require('node:path');
@@ -41,7 +41,16 @@ const documentFixture = {
 let failSnapshotOnce = false;
 let failMapsOnce = false;
 let engineAttempts = 0;
+let openDocumentAttempts = 0;
+let allowMemoryConfigWrites = false;
+let memoryConfig = structuredClone(documentFixture);
+let memoryBackups = [];
+let savedOptions = null;
+let saveOptionsCalls = 0;
+let deferredOptionsWrite = null;
 let mapsVersion = 1;
+let mapInventory = ['mp_crash', 'mp_second', 'mp_third', 'mp_fourth'];
+const stopCalls = [];
 let bo1Rule = { name: 'botLANd BO1 UDP', port: 28961, state: 'missing' };
 let botFixture = { state: 'not-installed', targetPath: 'C:\\Example\\Game\\mods', manifest: null,
   channel: 'stable', source: { supported: false, ref: null, notes: '', status: 'offline' } };
@@ -93,19 +102,59 @@ app.whenReady().then(async () => {
         if (failSnapshotOnce) { failSnapshotOnce = false; throw new Error('Synthetic status refresh failure.'); }
         return structuredClone(snapshot);
       case 'start': return undefined;
+      case 'stop': stopCalls.push(payload.id); return undefined;
       case 'updateEngine': engineAttempts++; throw new Error('Synthetic engine update refused; no files were touched.');
       case 'setUnsavedChanges': return true;
       case 'artwork': return null;
       case 'maps':
         if (failMapsOnce) { failMapsOnce = false; throw new Error('Synthetic map scan failure.'); }
-        return { maps: mapsVersion === 1 ? ['mp_crash'] : ['mp_crash', 'mp_second'], modes: [{ value: 'dom', label: 'Domination' }] };
+        return { maps: mapInventory.slice(0, mapsVersion), modes: [{ value: 'dom', label: 'Domination' }] };
       case 'firewallStatus': return payload?.id === 'bo1' ? structuredClone(bo1Rule) : { name: 'botLANd CoD4 UDP', port: 28962, state: 'missing' };
       case 'botStatus': return structuredClone(botFixture);
-      case 'document': return structuredClone(documentFixture);
-      case 'listConfigBackups': return [];
+      case 'document': return structuredClone(memoryConfig);
+      case 'openDocument': openDocumentAttempts++; return false;
+      case 'listConfigBackups': return memoryBackups.map(item => structuredClone(item.meta));
       case 'previewSettings': return { token: '0'.repeat(64), changed: true, changes: [
-        { key: 'sv_hostname', label: 'Server name', before: 'Synthetic server', after: 'Synthetic edited name', duplicates: 1 },
+        { key: 'sv_hostname', label: 'Server name', before: memoryConfig.values.sv_hostname, after: payload.values.sv_hostname, duplicates: 1 },
       ] };
+      // These optional write paths mutate only local JS fixtures. No filesystem,
+      // game install, or real manager is available to this smoke window.
+      case 'commitSettings': {
+        if (!allowMemoryConfigWrites) throw new Error('Synthetic smoke refuses write actions.');
+        assert.equal(payload.token, '0'.repeat(64));
+        assert.equal(payload.expectedPath, memoryConfig.path);
+        memoryBackups.unshift({ meta: { id: 'sample-backup', date: '2026-11-12T12:00:00.000Z', bytes: 32 }, values: structuredClone(memoryConfig.values) });
+        Object.assign(memoryConfig.values, payload.values);
+        memoryConfig.entries[0].value = memoryConfig.values.sv_hostname;
+        return structuredClone(memoryConfig);
+      }
+      case 'previewConfigRestore': {
+        assert.equal(payload.backupId, 'sample-backup');
+        return { token: '1'.repeat(64), summary: { changed: true, currentBytes: 48, backupBytes: 32 } };
+      }
+      case 'restoreConfigBackup': {
+        if (!allowMemoryConfigWrites) throw new Error('Synthetic smoke refuses write actions.');
+        assert.equal(payload.token, '1'.repeat(64));
+        memoryConfig.values = structuredClone(memoryBackups[0].values);
+        memoryConfig.entries[0].value = memoryConfig.values.sv_hostname;
+        return { backupId: payload.backupId };
+      }
+      case 'saveOptions': {
+        if (!allowMemoryConfigWrites) throw new Error('Synthetic smoke refuses write actions.');
+        saveOptionsCalls++;
+        const values = structuredClone(payload.values);
+        const finish = () => {
+          savedOptions = values;
+          Object.assign(snapshot.games[0].options, values);
+          win.webContents.send('manager:event', { type: 'state', snapshot: structuredClone(snapshot) });
+        };
+        if (deferredOptionsWrite) return new Promise(resolve => {
+          deferredOptionsWrite.release = () => { finish(); resolve(); };
+          deferredOptionsWrite.started();
+        });
+        finish();
+        return undefined;
+      }
       default: throw new Error('Synthetic smoke refuses write actions.');
     }
   });
@@ -133,6 +182,15 @@ app.whenReady().then(async () => {
     assert.equal(dashboard.cards, 1);
     assert.equal(dashboard.missing, 5);
     assert.ok(dashboard.scrollWidth <= dashboard.width, 'Dashboard must not clip at a 640-DIP window');
+    const pointerTargets = await win.webContents.executeJavaScript(`(() => {
+      const size = selector => {
+        const rect = document.querySelector(selector).getBoundingClientRect();
+        return { width: rect.width, height: rect.height };
+      };
+      return { refresh: size('.topbar .icon-button'), manage: size('.server-card .card-open') };
+    })()`);
+    assert.ok(pointerTargets.refresh.width >= 38 && pointerTargets.refresh.height >= 38);
+    assert.ok(pointerTargets.manage.height >= 36);
     // The card is a mouse shortcut, not an extra tab stop; MANAGE is its named control.
     const cardAccessibility = await win.webContents.executeJavaScript(`(() => {
       const card = document.querySelector('.server-card');
@@ -160,6 +218,23 @@ app.whenReady().then(async () => {
     assert.equal(manageFocus.label, 'Call of Duty 4 — Overview');
     const heading = await win.webContents.executeJavaScript("document.querySelector('.detail-hero h1').textContent");
     assert.equal(heading, 'Call of Duty 4');
+    // At the short minimum desktop size, every game section must fit without
+    // horizontal page scrolling (vertical scrolling and tab-strip scrolling are fine).
+    win.setSize(640, 600);
+    await win.webContents.executeJavaScript(`new Promise((resolve, reject) => {
+      const check = () => innerHeight < 650 ? requestAnimationFrame(resolve) : requestAnimationFrame(check);
+      check(); setTimeout(() => reject(new Error('Short-window resize did not complete')), 10000);
+    })`);
+    for (const [label, selector] of [
+      ['Overview', '.setup-wizard'], ['Configuration', '.config-field-grid input'],
+      ['Maps & modes', '.rotation-panel'], ['Console', '.console-panel'],
+    ]) {
+      if (label !== 'Overview') await win.webContents.executeJavaScript(`([...document.querySelectorAll('.detail-tabs button')].find(button => button.textContent.includes(${JSON.stringify(label)}))).click()`);
+      await waitFor(win, `main[aria-label="Call of Duty 4 — ${label}"] ${selector}`);
+      const bounds = await win.webContents.executeJavaScript('({ width: innerWidth, scrollWidth: document.documentElement.scrollWidth })');
+      assert.ok(bounds.scrollWidth <= bounds.width, `${label} must not clip at a 640×600-DIP window: ${JSON.stringify(bounds)}`);
+    }
+    win.setSize(640, 900);
     await win.webContents.executeJavaScript("(() => { const tab = [...document.querySelectorAll('.detail-tabs button')].find(button => button.textContent.includes('Configuration')); tab.focus(); tab.click(); })()");
     await waitFor(win, '.config-field-grid input');
     // Switching tabs keeps focus on the activated tab instead of jumping to <main>.
@@ -214,6 +289,54 @@ app.whenReady().then(async () => {
       return event.defaultPrevented;
     })()`);
     assert.equal(guardedClose, true, 'Unsaved configuration edits must guard window close');
+    win.webContents.send('manager:event', { type: 'state', snapshot: gameSnapshot({
+      gamePath: 'C:\\Example\\MovedGame', configPath: 'C:\\Example\\MovedGame\\main\\server.cfg',
+    }) });
+    await waitFor(win, '.config-path-warning');
+    const conflictedFile = await win.webContents.executeJavaScript(`({
+      label: document.querySelector('.config-file-label')?.textContent,
+      shown: document.querySelector('.config-file-path')?.textContent,
+      disabled: document.querySelector('.config-aside .full-width')?.disabled,
+      draft: document.querySelector('.config-field-grid input')?.value,
+    })`);
+    assert.equal(conflictedFile.label, 'DRAFT FROM PREVIOUS FOLDER');
+    assert.equal(conflictedFile.shown, documentFixture.path);
+    assert.equal(conflictedFile.disabled, true, 'Cannot open a new location while showing an old file');
+    assert.equal(conflictedFile.draft, 'Synthetic edited name');
+    await win.webContents.executeJavaScript("document.querySelector('.config-aside .full-width').click()");
+    assert.equal(openDocumentAttempts, 0);
+    win.webContents.send('manager:event', { type: 'state', snapshot: gameSnapshot({}) });
+    await waitForAbsent(win, '.config-path-warning');
+    assert.equal(await win.webContents.executeJavaScript("document.querySelector('.config-aside .full-width')?.disabled"), false);
+
+    // Complete a commit and restore against memory-only IPC fixtures; no disk
+    // writes are permitted by this test harness.
+    allowMemoryConfigWrites = true;
+    await win.webContents.executeJavaScript("document.querySelector('.config-savebar button').click()");
+    await waitFor(win, 'dialog[open]');
+    await win.webContents.executeJavaScript("document.querySelector('dialog .review-actions .primary-button').click()");
+    await waitForAbsent(win, 'dialog[open]');
+    await waitFor(win, '.config-backup');
+    assert.equal(await win.webContents.executeJavaScript("document.querySelector('.config-field-grid input')?.value"), 'Synthetic edited name');
+    await win.webContents.executeJavaScript("document.querySelector('.config-backup button').click()");
+    await waitFor(win, 'dialog[open]');
+    assert.match(await win.webContents.executeJavaScript("document.querySelector('#restore-description')?.textContent"), /replaced with the selected backup/);
+    await win.webContents.executeJavaScript("document.querySelector('dialog .review-actions .primary-button').click()");
+    await waitForAbsent(win, 'dialog[open]');
+    await win.webContents.executeJavaScript(`new Promise((resolve, reject) => {
+      const check = () => document.querySelector('.config-field-grid input')?.value === 'Synthetic server';
+      if (check()) return resolve();
+      const observer = new MutationObserver(() => { if (check()) { observer.disconnect(); resolve(); } });
+      observer.observe(document.body, { subtree: true, childList: true, attributes: true });
+      setTimeout(() => { observer.disconnect(); reject(new Error('Restored config did not reload: ' + JSON.stringify({ input: document.querySelector('.config-field-grid input')?.value, notice: document.querySelector('.config-main .config-notice')?.textContent, dialog: !!document.querySelector('dialog[open]') }))); }, 10000);
+    })`);
+    assert.equal(memoryConfig.values.sv_hostname, 'Synthetic server');
+    await win.webContents.executeJavaScript(`(() => {
+      const input = document.querySelector('.config-field-grid input');
+      const props = Object.keys(input).find(key => key.startsWith('__reactProps$'));
+      input[props].onChange({ target: { value: 'Synthetic edited name' } });
+    })()`);
+    await waitFor(win, '.config-savebar button:not(:disabled)');
 
     // A running server whose install disappears must keep a visible Stop control
     // and remain counted as live.
@@ -284,7 +407,117 @@ app.whenReady().then(async () => {
     assert.equal(await win.webContents.executeJavaScript("document.querySelectorAll('.map-option').length"), 0);
     await win.webContents.executeJavaScript("document.querySelector('.map-scan-error button').click()");
     await waitFor(win, '.map-grid .map-option:nth-child(2)');
+    await win.webContents.executeJavaScript("document.querySelector('.map-tools button').click()");
+    await waitFor(win, '.map-option.chosen:nth-child(2)');
+    // A port-only edit with all maps selected must still include new maps after
+    // a rescan; saving should keep the empty-list 'every installed map' intent.
+    await win.webContents.executeJavaScript(`(() => {
+      const input = document.querySelector('.rotation-controls input[type=number]');
+      const props = Object.keys(input).find(key => key.startsWith('__reactProps$'));
+      input[props].onChange({ target: { value: '28965' } });
+    })()`);
+    mapsVersion = 3;
+    win.webContents.send('manager:event', { type: 'state', snapshot: gameSnapshot({ installed: false, status: 'running', pid: 4321,
+      activePort: 28962, startedAt: new Date().toISOString(), blockers: ['Folder unavailable.'] }) });
+    await waitForAbsent(win, '.map-option');
+    win.webContents.send('manager:event', { type: 'state', snapshot: gameSnapshot({ installed: true, status: 'running', pid: 4321,
+      activePort: 28962, startedAt: new Date().toISOString(), blockers: [] }) });
+    await waitFor(win, '.map-grid .map-option:nth-child(3)');
+    assert.equal(await win.webContents.executeJavaScript("document.querySelectorAll('.map-option.chosen').length"), 3,
+      'All-map draft must adopt newly installed maps without losing the port edit');
+    await win.webContents.executeJavaScript("document.querySelector('.rotation-panel .primary-button').click()");
+    await win.webContents.executeJavaScript(`new Promise((resolve, reject) => {
+      const check = () => document.querySelector('.rotation-panel .primary-button')?.disabled;
+      if (check()) return resolve();
+      const observer = new MutationObserver(() => { if (check()) { observer.disconnect(); resolve(); } });
+      observer.observe(document.body, { subtree: true, childList: true, attributes: true });
+      setTimeout(() => { observer.disconnect(); reject(new Error('Map draft save did not finish')); }, 10000);
+    })`);
+    assert.deepEqual(savedOptions.selectedMaps, [], 'All maps must save as an open-ended selection');
+    // A deliberate subset, by contrast, must not gain maps discovered later.
+    await win.webContents.executeJavaScript("document.querySelector('.map-option:nth-child(2)').click()");
+    await waitFor(win, '.map-option:not(.chosen)');
+    mapsVersion = 4;
+    win.webContents.send('manager:event', { type: 'state', snapshot: gameSnapshot({ installed: false, status: 'running', pid: 4321,
+      activePort: 28962, startedAt: new Date().toISOString(), blockers: ['Folder unavailable.'] }) });
+    await waitForAbsent(win, '.map-option');
+    win.webContents.send('manager:event', { type: 'state', snapshot: gameSnapshot({ installed: true, status: 'running', pid: 4321,
+      activePort: 28962, startedAt: new Date().toISOString(), blockers: [] }) });
+    await waitFor(win, '.map-grid .map-option:nth-child(4)');
+    assert.equal(await win.webContents.executeJavaScript("document.querySelectorAll('.map-option.chosen').length"), 2,
+      'An explicit subset must remain unchanged on rescan');
+    await win.webContents.executeJavaScript("document.querySelector('.rotation-panel .primary-button').click()");
+    await win.webContents.executeJavaScript(`new Promise((resolve, reject) => {
+      const check = () => document.querySelector('.rotation-panel .primary-button')?.disabled;
+      if (check()) return resolve();
+      const observer = new MutationObserver(() => { if (check()) { observer.disconnect(); resolve(); } });
+      observer.observe(document.body, { subtree: true, childList: true, attributes: true });
+      setTimeout(() => { observer.disconnect(); reject(new Error('Subset save did not finish')); }, 10000);
+    })`);
+    assert.deepEqual(savedOptions.selectedMaps, ['mp_crash', 'mp_third']);
+    // A dirty explicit subset can lose a selected map during a rescan. Keep the
+    // missing choice visible as an error, and never send a truncated selection.
+    const optionsBeforeMissingMap = saveOptionsCalls;
+    await win.webContents.executeJavaScript("document.querySelector('.map-option:nth-child(4)').click()");
+    await waitFor(win, '.map-option.chosen:nth-child(4)');
+    mapInventory = ['mp_crash', 'mp_second', 'mp_third'];
+    mapsVersion = 3;
+    win.webContents.send('manager:event', { type: 'state', snapshot: gameSnapshot({ installed: false, status: 'running', pid: 4321,
+      activePort: 28962, startedAt: new Date().toISOString(), blockers: ['Folder unavailable.'] }) });
+    await waitForAbsent(win, '.map-option');
+    win.webContents.send('manager:event', { type: 'state', snapshot: gameSnapshot({ installed: true, status: 'running', pid: 4321,
+      activePort: 28962, startedAt: new Date().toISOString(), blockers: [] }) });
+    await waitFor(win, '.map-grid .map-option:nth-child(3)');
+    await waitFor(win, '.rotation-panel .config-notice.error');
+    const vanishedMap = await win.webContents.executeJavaScript(`({
+      warning: document.querySelector('.rotation-panel .config-notice.error')?.textContent,
+      selected: document.querySelector('.map-heading h3')?.textContent,
+      disabled: document.querySelector('.rotation-panel .primary-button')?.disabled,
+    })`);
+    assert.match(vanishedMap.warning, /1 selected map disappeared after the rescan.*Clear or reselect maps before saving/i);
+    assert.match(vanishedMap.selected, /3 \/ 3 maps selected/);
+    assert.equal(vanishedMap.disabled, true, 'A missing draft map must block Save');
+    await win.webContents.executeJavaScript("document.querySelector('.rotation-panel .primary-button').click()");
+    assert.equal(saveOptionsCalls, optionsBeforeMissingMap, 'Save must not call IPC with a vanished selected map');
+    await win.webContents.executeJavaScript("document.querySelectorAll('.map-tools button')[1].click()");
+    await waitForAbsent(win, '.rotation-panel .config-notice.error');
+    await win.webContents.executeJavaScript("document.querySelector('.map-option:nth-child(2)').click()");
+    await waitFor(win, '.map-option.chosen:nth-child(2)');
+    assert.equal(await win.webContents.executeJavaScript("document.querySelector('.rotation-panel .primary-button')?.disabled"), false);
+
+    // Hold the in-memory rotation write unresolved: a global write busy flag
+    // must not disable the independent Stop or Cancel start safety controls.
+    const optionsWriteStarted = new Promise(resolve => { deferredOptionsWrite = { started: resolve, release: null }; });
+    await win.webContents.executeJavaScript("document.querySelector('.rotation-panel .primary-button').click()");
+    await optionsWriteStarted;
+    await waitFor(win, '.busy-indicator');
+    assert.equal(saveOptionsCalls, optionsBeforeMissingMap + 1, 'Reselecting available maps must permit Save');
+    assert.equal(await win.webContents.executeJavaScript("document.querySelector('.detail-hero-action .stop-button')?.disabled"), false);
+    await win.webContents.executeJavaScript("window.confirm = () => true; document.querySelector('.detail-hero-action .stop-button').click()");
+    await waitFor(win, '.detail-hero-action .primary-button');
+    assert.deepEqual(stopCalls, ['cod4'], 'Stop must reach IPC while an unrelated write is pending');
+    win.webContents.send('manager:event', { type: 'state', snapshot: gameSnapshot({ installed: true, status: 'starting',
+      pid: null, activePort: 28962, startedAt: null, blockers: [] }) });
+    await waitFor(win, '.detail-hero-action .stop-button');
+    const cancelWhileBusy = await win.webContents.executeJavaScript(`({
+      text: document.querySelector('.detail-hero-action .stop-button')?.textContent?.trim(),
+      disabled: document.querySelector('.detail-hero-action .stop-button')?.disabled,
+      busy: !!document.querySelector('.busy-indicator'),
+    })`);
+    assert.equal(cancelWhileBusy.text, 'Cancel start');
+    assert.equal(cancelWhileBusy.disabled, false);
+    assert.equal(cancelWhileBusy.busy, true, 'The unrelated write must still be pending');
+    await win.webContents.executeJavaScript("document.querySelector('.detail-hero-action .stop-button').click()");
+    await waitFor(win, '.detail-hero-action .primary-button');
+    assert.deepEqual(stopCalls, ['cod4', 'cod4'], 'Cancel start must reach IPC while an unrelated write is pending');
+    const releaseOptionsWrite = deferredOptionsWrite.release;
+    deferredOptionsWrite = null;
+    releaseOptionsWrite();
+    await waitForAbsent(win, '.busy-indicator');
+    assert.deepEqual(savedOptions.selectedMaps, ['mp_second']);
     // Verify connect panel copy, stopping state, and starting state
+    win.webContents.send('manager:event', { type: 'state', snapshot: gameSnapshot({ installed: true, status: 'running', pid: 4321,
+      activePort: 28962, startedAt: new Date().toISOString(), blockers: [] }) });
     await win.webContents.executeJavaScript("[...document.querySelectorAll('.detail-tabs button')].find(button => button.textContent.includes('Overview')).click()");
     await waitFor(win, '.connect-panel');
     const connectSnap = gameSnapshot({
@@ -375,6 +608,8 @@ app.whenReady().then(async () => {
     win.webContents.send('manager:event', { type: 'state', snapshot: bo1Snapshot() });
     await win.webContents.executeJavaScript("document.querySelector('.sidebar > .nav-item').click()");
     await waitFor(win, '.server-card.accent-bo');
+    await waitFor(win, '.dashboard-bo1-guidance');
+    assert.match(await win.webContents.executeJavaScript("document.querySelector('.dashboard-bo1-guidance')?.textContent"), /BO1’s Overview.*any address/);
     const bo1Card = await win.webContents.executeJavaScript(`({
       start: document.querySelector('.server-card.accent-bo .primary-button')?.textContent,
       setup: document.querySelector('.server-card.accent-bo .setup-button')?.textContent,
@@ -400,7 +635,20 @@ app.whenReady().then(async () => {
     await waitFor(win, '.firewall-apply');
     assert.match(await win.webContents.executeJavaScript("document.querySelector('.firewall-hint')?.textContent"), /Public inbound UDP.*any address/);
     bo1Rule = { name: 'botLANd BO1 UDP', port: 28961, state: 'any', managed: true };
-    await win.webContents.executeJavaScript("document.querySelector('.detail-back button').click()");
+    // A different game's Overview still needs BO1's actual firewall status in
+    // the sidebar, rather than defaulting to 'Check public firewall'.
+    await win.webContents.executeJavaScript("[...document.querySelectorAll('.sidebar .game-nav-item')].find(button => button.textContent.includes('CoD4')).click()");
+    await waitFor(win, 'main[aria-label^="Call of Duty 4"]');
+    await win.webContents.executeJavaScript(`new Promise((resolve, reject) => {
+      const check = () => [...document.querySelectorAll('.sidebar .game-nav-item')].find(button => button.textContent.includes('BO1'))?.textContent.includes('Ready to launch');
+      if (check()) return resolve();
+      const observer = new MutationObserver(() => { if (check()) { observer.disconnect(); resolve(); } });
+      observer.observe(document.body, { subtree: true, childList: true, attributes: true });
+      setTimeout(() => { observer.disconnect(); reject(new Error('BO1 sidebar status not refreshed on another game')); }, 10000);
+    })`);
+    await win.webContents.executeJavaScript("document.querySelector('.sidebar > .nav-item').click()");
+    await waitFor(win, '.server-card.accent-bo');
+    assert.equal(await win.webContents.executeJavaScript("document.querySelector('.dashboard-bo1-guidance')"), null);
     await waitFor(win, '.server-card.accent-bo .primary-button');
     await win.webContents.executeJavaScript("document.querySelector('.server-card.accent-bo .card-open').click()");
     await waitFor(win, '.setup-wizard .readiness-pill.good');
@@ -449,6 +697,9 @@ app.whenReady().then(async () => {
     await waitFor(win, '.state-chip.attention');
     assert.equal(await win.webContents.executeJavaScript("document.querySelector('.detail-hero-action .primary-button')?.disabled"), true);
     assert.equal(await win.webContents.executeJavaScript("document.querySelector('.root-button[data-engine=cod4]')?.disabled"), true);
+    assert.match(await win.webContents.executeJavaScript("document.querySelector('.launch-blocked-reason')?.textContent"), /engine update to finish/i);
+    assert.match(await win.webContents.executeJavaScript("[...document.querySelectorAll('.panel')].find(panel => panel.querySelector('h2')?.textContent === 'Server readiness')?.querySelector('.readiness-pill')?.textContent"), /ENGINE UPDATING/);
+    assert.equal(await win.webContents.executeJavaScript("document.querySelector('.all-clear')"), null);
     win.webContents.send('manager:event', { type: 'state', snapshot: gameSnapshot({ engineBusy: false,
       setup: { ...snapshot.games[0].setup, engine: true }, blockers: [] }) });
     await waitFor(win, '.root-button[data-engine=cod4]:not(:disabled)');
@@ -490,6 +741,6 @@ app.whenReady().then(async () => {
       setTimeout(() => { observer.disconnect(); reject(new Error('IW4x sidebar button did not switch to Update')); }, 10000);
     })`);
 
-    console.log('Synthetic packaged renderer: startup fallback, dashboard, BO1 public firewall readiness, draft retention, lifecycle, map recovery, narrow layout and modal keyboard smoke passed.');
+    console.log('Synthetic packaged renderer: startup fallback, BO1 firewall status, memory-only config and rotation writes, missing-map rescan guard, independent Stop/Cancel, lifecycle, engine readiness, four-tab short-window layout and modal keyboard smoke passed.');
   } finally { win.destroy(); app.quit(); }
 }).catch(error => { console.error(error); app.exit(1); });

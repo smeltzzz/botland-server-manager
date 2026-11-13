@@ -9,3 +9,5 @@
 .config-path-warning{display:flex;align-items:flex-start;gap:11px;padding:13px;margin-bottom:17px;border:1px solid #8b6943;border-radius:3px;background:#41352b;color:#f3d7b0;font-size:11px}.config-path-warning svg{flex:none}.config-path-warning strong{display:block}.config-path-warning p{margin:5px 0 11px;line-height:1.5}.config-path-warning .outline-button{font-size:10px;padding:7px 10px}
 /* A long file path must shorten with an ellipsis, not widen the aside column. */
 .config-aside,.config-aside>*{min-width:0}
+.config-notice-dismiss,.review-title button{min-width:32px;min-height:32px;display:grid;place-items:center}
+.config-backup button{min-height:32px}

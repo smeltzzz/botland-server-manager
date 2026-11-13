@@ -104,6 +104,7 @@ test('a failed append closes the session and does not expose an input error cont
   assert.equal(failure?.message === 'Could not append session log.', true);
   assert.equal(failure.message.includes(key), false);
   assert.equal(logs.sessions.has('bo2'), false);
+  assert.equal(logs.pendingAppends.has('bo2'), false);
   assert.equal((await fs.readFile(file, 'utf8')).includes(key), false);
 });
 
@@ -142,6 +143,65 @@ test('queues appends, rotates at the size limit, and retains only recent session
   }
   assert.equal(records.some(record => record.message === 'entry-23'), true);
   assert.equal(new Set(records.map(record => record.message)).size, records.length);
+});
+
+test('slow writes bound the pending append backlog synchronously without blocking other games or rotation', async t => {
+  const userData = await tempUserData(t);
+  assert.throws(() => new SessionLogs({ userData, maxPendingAppends: 0 }), { message: 'Invalid session log backlog limit.' });
+  const logs = new SessionLogs({ userData, maxPendingAppends: 3 });
+  const key = ['backlog', 'key', 'fixture'].join('-');
+  const firstFile = await logs.start('bo2', { key });
+  const handle = logs.sessions.get('bo2').handle;
+  const originalWriteFile = handle.writeFile.bind(handle);
+  let releaseWrite;
+  const blocked = new Promise(resolve => { releaseWrite = resolve; });
+  let signalWrite;
+  const writing = new Promise(resolve => { signalWrite = resolve; });
+  handle.writeFile = async data => {
+    signalWrite();
+    await blocked;
+    return originalWriteFile(data);
+  };
+
+  const first = logs.append('bo2', entry(`first ${key}`));
+  await writing;
+  const second = logs.append('bo2', entry(`second ${key}`));
+  const third = logs.append('bo2', entry(`third ${key}`));
+  const rotated = logs.rotate('bo2');
+  let rejected = 0;
+  const excess = Array.from({ length: 40 }, (_, index) => logs.append('bo2', entry(`excess-${index} ${key}`))
+    .then(() => null, error => { rejected++; return error; }));
+  try {
+    // All 40 failures must settle while the first disk write is still blocked.
+    await new Promise(resolve => setImmediate(resolve));
+    assert.equal(rejected, 40);
+    for (const error of await Promise.all(excess)) {
+      assert.equal(error?.message, 'Session log backlog is full; check disk performance and restart logging.');
+      assert.equal(error.message.includes(key), false);
+    }
+    assert.equal(logs.pendingAppends.get('bo2'), 3);
+
+    const otherFile = await logs.start('waw');
+    await logs.append('waw', entry('independent'));
+    await logs.close('waw');
+    assert.equal(JSON.parse((await fs.readFile(otherFile, 'utf8')).trim()).message, 'independent');
+
+    releaseWrite();
+    await Promise.all([first, second, third]);
+    const nextFile = await rotated;
+    assert.notEqual(nextFile, firstFile);
+    assert.equal(logs.pendingAppends.has('bo2'), false);
+    await logs.append('bo2', entry(`after rotation ${key}`));
+    const records = (await fs.readFile(firstFile, 'utf8')).trim().split('\n').map(JSON.parse);
+    assert.deepEqual(records.map(record => record.message), ['first [REDACTED]', 'second [REDACTED]', 'third [REDACTED]']);
+    const next = await fs.readFile(nextFile, 'utf8');
+    assert.equal(next.includes(key), false);
+    assert.equal(JSON.parse(next.trim()).message, 'after rotation [REDACTED]');
+  } finally {
+    releaseWrite();
+    await Promise.allSettled([first, second, third, rotated, ...excess]);
+    await logs.close('bo2');
+  }
 });
 
 test('start, append, rotate and close serialize in call order and rotation keeps the in-memory key', async t => {

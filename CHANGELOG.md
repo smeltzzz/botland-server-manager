@@ -2,6 +2,13 @@
 
 Notable changes to botLANd Server Manager are recorded here. This project follows [Semantic Versioning](https://semver.org/).
 
+## 1.2.9
+
+- Fail closed on unsafe Bot Warfare recovery, uncertain automatic-restart ports, unreadable base configs, and BO1 firewall changes racing a Start. Check that MW3/BO2 base configs execute the generated rotation at the correct path.
+- Bound pending session-log writes when disk I/O stalls; keep other servers and the live console responsive.
+- Preserve intended map selection across rescans without silently saving vanished selections as all maps. Improve BO1 status guidance, configuration path-change safety, disabled-Start explanations, engine-update readiness, and browser-demo key messaging.
+- Extend synthetic regression coverage for config save/restore, map rescans, independent Stop/Cancel, and narrow-window layouts.
+
 ## 1.2.7
 
 - BO1/T5 now requires a verified public inbound UDP firewall rule instead of a LAN-only rule. Existing BO1 rules can be updated on the Overview tab; BO1's rule cannot be removed while its server is active. Public access still requires router port forwarding and does not guarantee a server-browser listing.

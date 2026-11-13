@@ -142,3 +142,13 @@ summary:focus-visible,.form-field input:focus-visible,.form-field select:focus-v
 .setup-button{min-height:38px;padding:0 14px}
 @media (max-width:760px){.setup-step{grid-template-columns:28px minmax(0,1fr)}.setup-step-actions{grid-column:2;justify-content:flex-start}}
 .setup-toggle{margin:-4px 0 12px}
+/* Give compact secondary actions a usable pointer target without enlarging their text. */
+.icon-button{width:38px;height:38px}
+.card-open,.detail-back button,.map-tools button{min-height:36px;padding:6px 9px}
+.map-tools{display:flex;gap:4px}
+.notice button,.config-notice-dismiss{min-width:32px;min-height:32px;place-items:center}
+.launch-start{display:flex;flex-direction:column;align-items:flex-end;gap:7px;max-width:260px}
+.launch-blocked-reason{color:#f2c6a3;font-size:10px;line-height:1.45;text-align:right}
+.dashboard-bo1-guidance{display:flex;align-items:center;gap:12px;flex-wrap:wrap;padding:13px 16px;margin:10px 0 18px;background:#382d25;border:1px solid #73543a;border-radius:4px;color:#f7cfaa;font-size:11px;line-height:1.5}
+.dashboard-bo1-guidance>span{flex:1;min-width:200px}
+.dashboard-bo1-guidance .inline-link{min-height:32px}

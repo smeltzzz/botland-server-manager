@@ -5,6 +5,7 @@ const { profileFor } = require('./profiles.cjs');
 
 const DEFAULT_MAX_BYTES = 1024 * 1024;
 const DEFAULT_MAX_SESSIONS = 10;
+const DEFAULT_MAX_PENDING_APPENDS = 256;
 const MARKER = '[truncated]';
 // A malformed opening quote consumes the rest of the line rather than exposing
 // the second half of a secret with spaces.
@@ -54,15 +55,18 @@ function encodeEntry(entry, key, maxBytes) {
 
 class SessionLogs {
   // Pass app.getPath('userData'), not a game folder. Files live in userData/session-logs/<game>/.
-  constructor({ userData, maxBytes = DEFAULT_MAX_BYTES, maxSessions = DEFAULT_MAX_SESSIONS } = {}) {
+  constructor({ userData, maxBytes = DEFAULT_MAX_BYTES, maxSessions = DEFAULT_MAX_SESSIONS, maxPendingAppends = DEFAULT_MAX_PENDING_APPENDS } = {}) {
     if (typeof userData !== 'string' || !path.isAbsolute(userData)) throw new Error('An absolute app userData path is required.');
     if (!Number.isSafeInteger(maxBytes) || maxBytes < 128 || maxBytes > 16 * 1024 * 1024) throw new Error('Invalid session log size limit.');
     if (!Number.isSafeInteger(maxSessions) || maxSessions < 1 || maxSessions > 100) throw new Error('Invalid session log retention limit.');
+    if (!Number.isSafeInteger(maxPendingAppends) || maxPendingAppends < 1 || maxPendingAppends > 4096) throw new Error('Invalid session log backlog limit.');
     this.directory = path.join(userData, 'session-logs');
     this.maxBytes = maxBytes;
     this.maxSessions = maxSessions;
+    this.maxPendingAppends = maxPendingAppends;
     this.sessions = new Map();
     this.queues = new Map();
+    this.pendingAppends = new Map();
   }
 
   enqueue(id, action) {
@@ -136,25 +140,39 @@ class SessionLogs {
 
   // Append the same { at, level, message } shape manager.addLog creates.
   append(id, entry) {
+    profileFor(id);
+    // Reserve a slot before scheduling any work: a burst in one event-loop turn
+    // must not retain unbounded entries and promises while disk I/O is stalled.
+    const pending = this.pendingAppends.get(id) || 0;
+    if (pending >= this.maxPendingAppends) {
+      return Promise.reject(new Error('Session log backlog is full; check disk performance and restart logging.'));
+    }
+    this.pendingAppends.set(id, pending + 1);
     return this.enqueue(id, async () => {
-      let session = this.sessions.get(id);
-      if (!session) throw new Error('No active session log.');
       try {
-        const line = encodeEntry(entry, session.key, this.maxBytes);
-        if (session.size && session.size + line.length > this.maxBytes) {
-          const key = session.key;
-          await this.end(id);
-          await this.open(id, key);
-          session = this.sessions.get(id);
+        let session = this.sessions.get(id);
+        if (!session) throw new Error('No active session log.');
+        try {
+          const line = encodeEntry(entry, session.key, this.maxBytes);
+          if (session.size && session.size + line.length > this.maxBytes) {
+            const key = session.key;
+            await this.end(id);
+            await this.open(id, key);
+            session = this.sessions.get(id);
+          }
+          // FileHandle.writeFile writes from the handle's current position, never a path
+          // that another process might replace between validation and append.
+          await session.handle.writeFile(line);
+          session.size += line.length;
+          return session.file;
+        } catch {
+          await this.end(id).catch(() => {}); // Do not continue after a partial write.
+          throw new Error('Could not append session log.');
         }
-        // FileHandle.writeFile writes from the handle's current position, never a path
-        // that another process might replace between validation and append.
-        await session.handle.writeFile(line);
-        session.size += line.length;
-        return session.file;
-      } catch {
-        await this.end(id).catch(() => {}); // Do not continue after a partial write.
-        throw new Error('Could not append session log.');
+      } finally {
+        const remaining = this.pendingAppends.get(id) - 1;
+        if (remaining) this.pendingAppends.set(id, remaining);
+        else this.pendingAppends.delete(id);
       }
     });
   }

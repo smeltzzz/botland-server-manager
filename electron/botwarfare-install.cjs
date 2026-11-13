@@ -167,7 +167,15 @@ class BotWarfareInstaller {
       }
       root = await fs.realpath(this.localAppData).catch(() => this.localAppData);
       await noLinks(root);
-      if (!(await fs.stat(root).catch(() => null))?.isDirectory()) throw new Error('Existing localAppData folder required.');
+      let stat;
+      try { stat = await fs.stat(root); }
+      catch (error) {
+        if (error.code !== 'ENOENT') throw error;
+        const absent = new Error('Plutonium storage root is absent.');
+        absent.code = 'PLUTONIUM_STORAGE_ABSENT';
+        throw absent;
+      }
+      if (!stat.isDirectory()) throw new Error('Existing localAppData folder required.');
     }
     const folder = target === 'game' ? path.resolve(root, ...base.split('/')) :
       path.resolve(root, 'Plutonium', 'storage', code, ...base.split('/'));
@@ -218,7 +226,11 @@ class BotWarfareInstaller {
   async prepareLaunch(id, gamePath) {
     return this.queued(id, async () => {
       let paths;
-      try { paths = await this.paths(id, gamePath); } catch { return; }
+      try { paths = await this.paths(id, gamePath); }
+      catch (error) {
+        if (TARGETS[id][0] === 'plutonium' && error.code === 'PLUTONIUM_STORAGE_ABSENT') return;
+        throw error;
+      }
       await this.recover(id, paths);
     });
   }

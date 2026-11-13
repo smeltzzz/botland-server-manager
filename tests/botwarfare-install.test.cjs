@@ -493,6 +493,25 @@ test('version history left by earlier releases is deleted, whatever it contains,
   assert.equal(await read(path.join(base, 'z_svr_bots.iwd')), 'release-one');
 });
 
+test('pre-launch recovery fails closed on unsafe paths and invalid journals, but ignores absent unmanaged storage', async t => {
+  const f = await fixture(t, 'mw3');
+  const parent = path.join(f.localAppData, 'Plutonium', 'storage', 'iw5', 'mods');
+  const stage = path.join(parent, '.botland-stage-mw3-abc123');
+  await fs.mkdir(stage, { recursive: true });
+  await fs.writeFile(path.join(stage, 'transaction.json'), '{invalid');
+  await assert.rejects(f.installer.prepareLaunch('mw3', f.game), /transaction journal/);
+  assert.equal(await exists(stage), true);
+  await fs.rm(stage, { recursive: true });
+  const target = path.join(parent, 'bots');
+  await fs.symlink(f.game, target, process.platform === 'win32' ? 'junction' : 'dir');
+  await assert.rejects(f.installer.prepareLaunch('mw3', f.game), /symlink or junction/);
+  await fs.rm(target);
+  const absent = path.join(f.localAppData, 'absent');
+  const unmanaged = new BotWarfareInstaller({ source: f.installer.source, localAppData: absent });
+  await unmanaged.prepareLaunch('mw3', f.game);
+  await assert.rejects(f.installer.prepareLaunch('mw3', path.join(f.game, 'missing')), /Existing game folder required/);
+});
+
 test('legacy history is also removed by install and by the pre-launch recovery', async t => {
   const f = await fixture(t, 'mw3');
   const parent = path.join(f.localAppData, 'Plutonium', 'storage', 'iw5', 'mods');
