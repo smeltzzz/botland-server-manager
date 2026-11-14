@@ -2,6 +2,10 @@
 
 Notable changes to botLANd Server Manager are recorded here. This project follows [Semantic Versioning](https://semver.org/).
 
+## 1.2.21
+
+- Give the PowerShell-backed firewall script tests a generous process timeout; a loaded CI runner exceeded the old 20 s cap and reported slow startup as a behaviour failure.
+
 ## 1.2.20
 
 - Wait for a settled reflow in the accessibility layout audit instead of sampling two frames after a resize/zoom; loaded CI runners could read a torn layout and report a false horizontal overflow.

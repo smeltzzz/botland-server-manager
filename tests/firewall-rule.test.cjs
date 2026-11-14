@@ -94,8 +94,11 @@ function Get-NetFirewallServiceFilter {
 }
 `;
   const script = `${prelude}\n$problem = ''\ntry {\n${generator().join('\n')}\n} catch { $problem = [string]$_ }\n@{ error=$problem; rules=@($script:rules.ToArray()) } | ConvertTo-Json -Depth 5 -Compress`;
-  const result = spawnSync('powershell.exe', ['-NoProfile', '-NonInteractive', '-EncodedCommand', Buffer.from(script, 'utf16le').toString('base64')], { encoding: 'utf8', timeout: 20000 });
-  assert.equal(result.status, 0, result.stderr || result.error?.message);
+  // PowerShell startup is normally under a second, but a loaded CI runner once
+  // needed more than 20 s. Keep the timeout generous: a slow start must not be
+  // reported as a behavioural failure.
+  const result = spawnSync('powershell.exe', ['-NoProfile', '-NonInteractive', '-EncodedCommand', Buffer.from(script, 'utf16le').toString('base64')], { encoding: 'utf8', timeout: 120000 });
+  assert.equal(result.status, 0, result.stderr || result.error?.message || `PowerShell exited with ${result.status}`);
   return JSON.parse(result.stdout.trim());
 }
 
