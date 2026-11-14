@@ -36,13 +36,17 @@ let discardConfirmed = false;
 
 async function migrateSettings() {
   // The product name controls Electron's userData folder. Preserve existing
-  // preferences when upgrading from the previous capitalization of the app.
-  const oldSettings = path.join(app.getPath('appData'), 'BotLANd Server Manager', 'settings.json');
-  const newSettings = path.join(app.getPath('userData'), 'settings.json');
-  if (oldSettings.toLowerCase() === newSettings.toLowerCase()) return;
-  await fs.mkdir(path.dirname(newSettings), { recursive: true });
-  try { await fs.copyFile(oldSettings, newSettings, constants.COPYFILE_EXCL); }
-  catch (error) { if (!['ENOENT', 'EEXIST'].includes(error.code)) throw error; }
+  // preferences, saved keys and update metadata when upgrading from the
+  // previous capitalization of the app. Losing keys.json would force every
+  // Plutonium title to be set up again even though DPAPI can still read it.
+  const oldRoot = path.join(app.getPath('appData'), 'BotLANd Server Manager');
+  const newRoot = app.getPath('userData');
+  if (oldRoot.toLowerCase() === newRoot.toLowerCase()) return;
+  await fs.mkdir(newRoot, { recursive: true });
+  for (const name of ['settings.json', 'keys.json', 'botwarfare-sources.json']) {
+    try { await fs.copyFile(path.join(oldRoot, name), path.join(newRoot, name), constants.COPYFILE_EXCL); }
+    catch (error) { if (!['ENOENT', 'EEXIST'].includes(error.code)) throw error; }
+  }
 }
 
 async function createWindow() {
@@ -92,6 +96,20 @@ async function createWindow() {
   });
   window.webContents.setWindowOpenHandler(() => ({ action: 'deny' }));
   window.webContents.on('will-navigate', event => event.preventDefault());
+  // Ctrl+Plus/Minus/0 used to depend on the application menu, which is removed
+  // from releases. Keep keyboard text zoom without restoring Reload/DevTools.
+  const setZoom = delta => {
+    if (!window || window.isDestroyed()) return;
+    const current = window.webContents.getZoomFactor();
+    const next = delta === 0 ? 1 : Math.min(3, Math.max(0.5, Math.round((current + delta) * 100) / 100));
+    window.webContents.setZoomFactor(next);
+  };
+  window.webContents.on('before-input-event', (event, input) => {
+    if (input.type !== 'keyDown' || input.alt || !(input.control || input.meta)) return;
+    if (input.key === '+' || input.key === '=' || input.key === 'Add') { event.preventDefault(); setZoom(0.1); }
+    else if (input.key === '-' || input.key === 'Subtract') { event.preventDefault(); setZoom(-0.1); }
+    else if (input.key === '0') { event.preventDefault(); setZoom(0); }
+  });
   window.webContents.on('will-prevent-unload', event => {
     // The quit prompt already covered the unsaved drafts.
     if (discardConfirmed) { event.preventDefault(); return; }

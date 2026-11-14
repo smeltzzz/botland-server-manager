@@ -327,7 +327,7 @@ app.whenReady().then(async () => {
     })`);
     assert.equal(unsavedStart.disabled, true, 'Start must not silently ignore an unsaved config draft');
     assert.match(unsavedStart.reason, /Save or discard changes/);
-    assert.equal(unsavedStart.name, 'Start Call of Duty 4 server');
+    assert.equal(unsavedStart.name, 'Start server for Call of Duty 4');
     await win.webContents.executeJavaScript("(() => { const button = document.querySelector('.config-savebar button'); button.focus(); button.click(); })()");
     await waitFor(win, 'dialog[open]');
     const focused = await win.webContents.executeJavaScript("document.querySelector('dialog')?.contains(document.activeElement)");

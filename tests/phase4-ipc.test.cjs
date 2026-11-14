@@ -412,10 +412,12 @@ test('startup migrates settings in memory, tolerating missing or already-migrate
   for (const code of ['ENOENT', 'EEXIST']) {
     const fixture = await ipcFixture({ migrationCopyError: Object.assign(new Error('synthetic migration conflict'), { code }) });
     assert.deepEqual(fixture.startupCalls, ['initialize', 'rescanInstallations']);
-    assert.equal(fixture.migrationCalls.length, 2);
+    assert.equal(fixture.migrationCalls.length, 4);
     assert.equal(fixture.migrationCalls[0][0], 'mkdir');
-    assert.equal(fixture.migrationCalls[1][0], 'copyFile');
-    assert.equal(fixture.migrationCalls[1][3], 1); // COPYFILE_EXCL must not overwrite current settings.
+    for (const call of fixture.migrationCalls.slice(1)) {
+      assert.equal(call[0], 'copyFile');
+      assert.equal(call[3], 1); // COPYFILE_EXCL must not overwrite existing files.
+    }
     assert.deepEqual(fixture.startupErrors, []);
     assert.equal(fixture.quits, 0);
   }
@@ -436,8 +438,8 @@ test('migration and bootstrap failures report the error and quit without opening
   for (const [options, expectedCalls, expectedMigration] of [
     [{ migrationMkdirError: new Error('synthetic mkdir failure') }, [], ['mkdir']],
     [{ migrationCopyError: Object.assign(new Error('synthetic copy failure'), { code: 'EACCES' }) }, [], ['mkdir', 'copyFile']],
-    [{ initializeError: new Error('synthetic initialize failure') }, ['initialize'], ['mkdir', 'copyFile']],
-    [{ rescanError: new Error('synthetic scan failure') }, ['initialize', 'rescanInstallations'], ['mkdir', 'copyFile']],
+    [{ initializeError: new Error('synthetic initialize failure') }, ['initialize'], ['mkdir', 'copyFile', 'copyFile', 'copyFile']],
+    [{ rescanError: new Error('synthetic scan failure') }, ['initialize', 'rescanInstallations'], ['mkdir', 'copyFile', 'copyFile', 'copyFile']],
   ]) {
     const fixture = await ipcFixture({ ...options, expectStartupError: true });
     assert.equal(fixture.window, undefined);

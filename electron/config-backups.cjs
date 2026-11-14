@@ -77,11 +77,17 @@ async function readRegular(file) {
     return { bytes, identity: identity(before) };
   } finally { await handle.close(); }
 }
+// A deleted config is exactly when its backups matter most. Treat a missing
+// file as "nothing to compare" instead of failing the whole recovery panel.
+async function readOptional(file) {
+  try { return await readRegular(file); }
+  catch (error) { if (error.code === 'ENOENT') return { bytes: null, identity: 'missing' }; throw error; }
+}
 function backupId(file, name) { return hash(Buffer.from(JSON.stringify(['config-backup-v1', file, name]))); }
 
 async function candidates(file) {
   await safeDirectory(file);
-  await readRegular(file);
+  await readOptional(file);
   const prefix = `${path.basename(file)}.bak-`;
   const entries = await fs.readdir(path.dirname(file), { withFileTypes: true });
   const found = [];
@@ -105,11 +111,11 @@ async function selected(file, id) {
   return item;
 }
 function tokenFor(file, id, current, backup) {
-  return hash(Buffer.from(JSON.stringify(['config-restore-v1', file, id, hash(current.bytes), current.identity, hash(backup.bytes), backup.identity])));
+  return hash(Buffer.from(JSON.stringify(['config-restore-v2', file, id, current.bytes ? hash(current.bytes) : 'missing', current.identity, hash(backup.bytes), backup.identity])));
 }
 async function review(file, id) {
   const item = await selected(file, id);
-  const current = await readRegular(file);
+  const current = await readOptional(file);
   const backup = await readRegular(item.backup);
   return { item, current, backup, token: tokenFor(file, id, current, backup) };
 }
@@ -138,7 +144,8 @@ async function listBackups(file) {
 async function previewRestore(file, id) {
   return locked(file, async file => {
     const { current, backup, token } = await review(file, id);
-    return { token, summary: { changed: !current.bytes.equals(backup.bytes), currentBytes: current.bytes.length, backupBytes: backup.bytes.length, contents: '••••••' } };
+    const missing = !current.bytes;
+    return { token, summary: { changed: missing || !current.bytes.equals(backup.bytes), missing, currentBytes: current.bytes?.length ?? 0, backupBytes: backup.bytes.length, contents: '••••••' } };
   });
 }
 async function restoreBackup(file, id, token) {
@@ -147,27 +154,26 @@ async function restoreBackup(file, id, token) {
     const { item, current, backup, token: expected } = await review(file, id);
     if (token !== expected) throw new Error('Config or backup changed since preview. Review the restore again.');
     await safeDirectory(file);
-    const saved = newBackup(file);
+    const saved = current.bytes ? newBackup(file) : null;
     const temp = path.join(path.dirname(file), `.${path.basename(file)}.${crypto.randomUUID()}.tmp`);
     let replaced = false;
     let created = false;
     try {
-      await writeExclusive(saved, current.bytes);
-      created = true;
+      if (saved) { await writeExclusive(saved, current.bytes); created = true; }
       await writeExclusive(temp, backup.bytes);
       // Check both paths again after the writes, not just the preview token.
-      const now = await readRegular(file);
+      const now = await readOptional(file);
       const source = await readRegular(item.backup);
       await safeDirectory(file);
       if (tokenFor(file, id, now, source) !== expected) throw new Error('Config or backup changed during restore. Review the restore again.');
       await fs.rename(temp, file);
       replaced = true;
-      return { backupId: backupId(file, path.basename(saved)) };
+      return { backupId: saved ? backupId(file, path.basename(saved)) : null };
     } catch (error) {
       throw writeError(file, error);
     } finally {
       await fs.rm(temp, { force: true }).catch(() => {});
-      if (created && !replaced) await fs.rm(saved, { force: true }).catch(() => {});
+      if (created && !replaced && saved) await fs.rm(saved, { force: true }).catch(() => {});
     }
   });
 }

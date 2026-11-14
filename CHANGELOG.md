@@ -2,6 +2,29 @@
 
 Notable changes to botLANd Server Manager are recorded here. This project follows [Semantic Versioning](https://semver.org/).
 
+## 1.2.18
+
+### Safety and correctness
+
+- Keep a pending automatic restart when a game-folder change, firewall elevation or Bot Warfare/engine change is in flight: the retry now waits and resumes instead of disappearing without a log or cutoff.
+- Refuse to re-point the game folder while its server is running or restarting, so the UI can no longer describe one installation while a different one runs and restarts.
+- Bound an interactive Cancel start so a long Plutonium update or slow folder reports that the launch will abort on its own; quitting still waits for the full cleanup.
+- Restore configuration backups when the live config is missing or was replaced by a directory, and preview the restore as "missing" with the correct byte counts.
+- Flush settings and rotations before their rename, retry transient sharing errors on rotation writes, and replace raw `EACCES`/`EBUSY` Start errors with actionable text.
+
+### Security and hardening
+
+- Bot Warfare Stable installs are pin-or-refuse: a tag newer than the digest pinned in this build is still announced but refused before download. The explicit development channel remains documented as unverified.
+- Add Electron fuses for packaged builds (`runAsNode`, `NODE_OPTIONS` and `--inspect` off; ASAR integrity and `onlyLoadAppFromAsar` on) and remove the dev WebSocket origin plus add `form-action 'none'` to the shipped CSP (Vite widens the dev policy only). `grantFileProtocolExtraPrivileges` stays enabled until the renderer is served over a custom protocol; disabling it today makes the packaged window fail to load.
+- Migrate `keys.json` and `botwarfare-sources.json` alongside `settings.json`, and honour `safeStorage` `shouldReEncrypt` so keys survive OS key rotation.
+
+### UI and accessibility
+
+- Restore keyboard text zoom (Ctrl+Plus/Minus/0) in releases, declare `color-scheme: dark`, and raise placeholder/meta contrast plus the pointer target size of text actions.
+- Make "Start server"/"Stop server"/"Cancel start" accessible names contain their visible labels, give the game tabs real tab semantics and a panel announcement, and add a textual ERROR token to console lines.
+- Report "CHECK REQUIRED" with the blocking reason when every checklist step is green but a preflight blocker still refuses Start, and warn on the Overview when no matching inbound firewall rule exists instead of claiming everything looks good.
+- Document the new invariants, the accessibility smoke in CI and the pin-or-refuse rule.
+
 ## 1.2.17
 
 ### Safety and correctness

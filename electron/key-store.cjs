@@ -35,9 +35,17 @@ function decodeCipher(value) {
 async function decryptKey(safeStorage, stored, asyncProvider) {
   const bytes = decodeCipher(stored);
   try {
-    const key = asyncProvider ? (await safeStorage.decryptStringAsync(bytes)).result : safeStorage.decryptString(bytes);
+    let key;
+    let shouldReEncrypt = false;
+    if (asyncProvider) {
+      const result = await safeStorage.decryptStringAsync(bytes);
+      key = result?.result;
+      shouldReEncrypt = result?.shouldReEncrypt === true;
+    } else {
+      key = safeStorage.decryptString(bytes);
+    }
     if (typeof key !== 'string' || !key) throw new Error(invalidStore);
-    return key;
+    return { value: key, shouldReEncrypt };
   } catch {
     // Well-formed ciphertext that this Windows profile cannot decrypt.
     throw storeError(invalidStore, 'unreadable');
@@ -183,7 +191,21 @@ class KeyStore {
     return this.run(async () => {
       await this.requireEncryption();
       const stored = (await this.read())[id];
-      return stored === undefined ? null : await decryptKey(this.safeStorage, stored, this.asyncProvider);
+      if (stored === undefined) return null;
+      const { value, shouldReEncrypt } = await decryptKey(this.safeStorage, stored, this.asyncProvider);
+      if (shouldReEncrypt) {
+        // The OS asked for fresh wrapping (key rotation). Re-wrap this key so it
+        // stays readable later; a failure here must not lose the usable value.
+        try {
+          const keys = await this.read();
+          const cipher = this.asyncProvider ? await this.safeStorage.encryptStringAsync(value) : this.safeStorage.encryptString(value);
+          if (Buffer.isBuffer(cipher) && cipher.length && cipher.length <= maxCipherBytes) {
+            keys[id] = cipher.toString('base64');
+            await this.write(keys);
+          }
+        } catch { /* Keep serving the decrypted key. */ }
+      }
+      return value;
     });
   }
 

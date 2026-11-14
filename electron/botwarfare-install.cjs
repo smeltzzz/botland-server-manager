@@ -450,6 +450,12 @@ class BotWarfareInstaller {
       if (!source?.supported || !source.assetUrl || !['tag', 'commit'].includes(source.refType) || !source.ref) {
         throw new Error('Bot Warfare source is not supported for installation.');
       }
+      // Only install Stable releases whose bytes this build can verify. A newer
+      // upstream tag is announced in the UI but must wait for a botLANd release
+      // that pins it; z_svr_bots/mod content runs inside the game engine.
+      if (channel === 'stable' && source.verified === false) {
+        throw new Error(`Bot Warfare ${source.ref} is newer than the release verified by this version of botLANd. Update botLANd before installing it.`);
+      }
       const { bytes, sha256 } = await this.download(source.assetUrl, source.expectedHash ? { expectedHash: source.expectedHash } : {});
       if (!(bytes instanceof Uint8Array) || !HASH.test(sha256) || digest(bytes) !== sha256) {
         throw new Error('Bot Warfare download SHA-256 mismatch: the archive did not match its verified checksum, so nothing was installed. Retry; if it keeps failing, the upstream file may have changed.');

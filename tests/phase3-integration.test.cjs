@@ -40,7 +40,7 @@ async function fixture(t, id, { pausedDownload = false } = {}) {
   await fs.mkdir(gamePath);
   await fs.mkdir(localAppData);
   await fs.writeFile(path.join(gamePath, multiplayer[id]), 'fixture multiplayer marker');
-  const metadata = { tag: 'v2.4.0', commit: 'a'.repeat(40) };
+  const metadata = { tag: SOURCES.mw2.tag, commit: 'a'.repeat(40) };
   const fetches = [];
   const fetch = async (url, options) => {
     fetches.push(url);
@@ -130,7 +130,7 @@ test('unknown mod, pending install/start guard, manifest provenance, update badg
   assert.equal(status.state, 'installed');
   assert.equal(status.channel, 'stable');
   assert.equal(status.manifest.refType, 'tag');
-  assert.equal(status.manifest.ref, 'v2.4.0');
+  assert.equal(status.manifest.ref, SOURCES.mw2.tag);
   assert.equal(Object.hasOwn(status.manifest, 'tag'), false);
   assert.equal(status.manifest.channel, 'stable');
   assert.equal(status.manifest.sha256, sha256(f.fixtureArchive));
@@ -140,8 +140,8 @@ test('unknown mod, pending install/start guard, manifest provenance, update badg
   assert.equal(Object.hasOwn(status, 'versions'), false);
   assert.deepEqual((await fs.readdir(f.gamePath)).filter(name => name.startsWith('.botland-versions-')), []);
   assert.equal(f.downloads.length, 1);
-  assert.match(f.downloads[0].url, /\/v2\.4\.0\/iw4bw240\.zip$/);
-  assert.equal(f.downloads[0].options.expectedHash, undefined);
+  assert.match(f.downloads[0].url, new RegExp(`/${SOURCES.mw2.tag}/iw4bw${SOURCES.mw2.tag.slice(1).replaceAll('.', '')}.zip$`));
+  assert.equal(f.downloads[0].options.expectedHash, SOURCES.mw2.sha256);
 
   await f.manager.checkBotUpdates(true);
   assert.equal((await f.manager.snapshot()).updates.mw2.updateAvailable, false);
@@ -193,4 +193,12 @@ test('development commit manifest drives badge; running and starting fake instan
     } finally { f.manager.instances.delete('bo2'); }
   }
   assert.equal(f.downloads.length, 1);
+});
+
+test('a Stable tag newer than the pinned build is refused before download', async t => {
+  const f = await fixture(t, 'mw2');
+  f.metadata.tag = 'v9.9.9';
+  await assert.rejects(f.manager.botAction('mw2', 'install'), /newer than the release verified/);
+  assert.equal(f.downloads.length, 0);
+  assert.equal((await f.manager.botStatus('mw2')).state, 'not-installed');
 });

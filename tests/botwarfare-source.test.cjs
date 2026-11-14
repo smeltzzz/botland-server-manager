@@ -45,6 +45,7 @@ test('six exact upstream sources, verified stable release assets and pinned T6 s
     assert.equal(resolved.repo, `https://github.com/ineedbots/${SOURCES[id].repo}`);
     assert.equal(resolved.refType, id === 'bo2' ? 'commit' : 'tag');
     assert.equal(resolved.expectedHash, SOURCES[id].sha256);
+    assert.equal(resolved.verified, true);
     if (id === 'bo2') {
       assert.equal(resolved.ref, 'cafee7d585160b046dc928f90798a611683e6cd1');
       assert.equal(resolved.assetUrl, `https://codeload.github.com/ineedbots/t6_bot_warfare/zip/${resolved.ref}`);
@@ -165,6 +166,7 @@ test('update availability follows installed manifest channel and tag/commit, not
   assert.equal((await source.resolveSource('mw2')).assetUrl,
     'https://github.com/ineedbots/iw4_bot_warfare/releases/download/v2.4.0/iw4bw240.zip');
   assert.equal((await source.resolveSource('mw2')).expectedHash, null);
+  assert.equal((await source.resolveSource('mw2')).verified, false);
   assert.equal((await source.checkUpdates({ installed: { mw2: { channel: 'stable', refType: 'tag', ref: 'v2.3.0' } } })).mw2.updateAvailable, true);
   assert.equal((await source.checkUpdates({ installed: { bo2: { channel: 'development', commit: 'a'.repeat(40) } } })).bo2.updateAvailable, true);
 }));

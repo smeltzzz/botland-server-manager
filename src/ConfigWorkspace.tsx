@@ -284,7 +284,7 @@ export default function ConfigWorkspace({ game, maps, refreshRevision, onDirtyCh
     const slotCap = ['mw2', 'mw3', 'bo2'].includes(game.id) && (field.key === 'sv_maxclients' || field.key === 'bots_manage_fill') ? 18 : field.max;
     return <input type={field.type === 'text' ? 'text' : 'number'} step={field.type === 'decimal' ? '0.1' : '1'} min={field.min} max={slotCap} maxLength={field.maxLength} value={value} disabled={busy || !!restoreReview} onChange={event => setValue(event.target.value)} />;
   }
-  return <div className="config-layout">
+  return <div className="config-layout" role="tabpanel" id="panel-configuration" aria-labelledby="tab-configuration">
     <section className="panel config-main">
       <div className="config-title"><div className="panel-icon"><SlidersHorizontal size={19} /></div><div><span className="section-kicker">MAKE IT YOURS</span><h2>{titleForTarget(game, target)}</h2></div></div>
       <p className="panel-description">Game-specific controls built around this title’s settings. Changes are previewed and backed up before they touch your files.</p>

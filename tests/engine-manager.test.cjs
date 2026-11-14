@@ -123,7 +123,17 @@ test('updateEngine reserves synchronously, exposes engineBusy, and blocks concur
     }), /engine or Bot Warfare change/);
     const timers = clock();
     manager.restartTimers = timers;
-    assert.equal(manager.scheduleRestart('cod4', { startedAt: null }), false);
+    // An engine change owns the game folder: the retry must wait for it rather
+    // than being dropped, or a crash during an update silently ends restarts.
+    const pending = { status: 'running', startedAt: null, noRestart: false };
+    manager.instances.set('cod4', pending);
+    assert.equal(manager.scheduleRestart('cod4', pending), true);
+    assert.equal(timers.pending, 1);
+    timers.fire();
+    assert.equal(timers.pending, 1);
+    assert.equal(manager.instances.get('cod4'), pending);
+    assert.equal(pending.status, 'restarting');
+    manager.cancelRestart('cod4');
     assert.equal(timers.pending, 0);
     await entered.promise;
     assert.deepEqual(calls, [['cod4', folders.cod4]]);

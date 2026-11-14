@@ -102,7 +102,24 @@ function rotationText(profile, maps, mode, randomize) {
 }
 async function writeRotation(file, contents) {
   const temp = path.join(path.dirname(file), `.${path.basename(file)}.${crypto.randomUUID()}.tmp`);
-  try { await fs.writeFile(temp, contents, 'ascii'); await fs.rename(temp, file); }
-  finally { await fs.rm(temp, { force: true }).catch(() => {}); }
+  try {
+    // Flush before the rename so a crash cannot publish an empty rotation.
+    const handle = await fs.open(temp, 'w');
+    try { await handle.writeFile(contents, 'ascii'); await handle.sync(); }
+    finally { await handle.close(); }
+    // Antivirus and the search indexer briefly lock game files on Windows.
+    for (let attempt = 0; ; attempt++) {
+      try { await fs.rename(temp, file); return; }
+      catch (error) {
+        if (attempt >= 4 || !['EPERM', 'EBUSY', 'EACCES'].includes(error.code)) throw error;
+        await new Promise(resolve => setTimeout(resolve, 50 * (attempt + 1)));
+      }
+    }
+  } catch (error) {
+    if (['EPERM', 'EACCES', 'EBUSY'].includes(error?.code)) {
+      throw new Error(`Could not write ${path.basename(file)}. The game folder is read-only or the file is in use. Close the game or another tool, then start again.`);
+    }
+    throw error;
+  } finally { await fs.rm(temp, { force: true }).catch(() => {}); }
 }
 module.exports = { scanMaps, modeOptions, rotationText, writeRotation, shuffle };

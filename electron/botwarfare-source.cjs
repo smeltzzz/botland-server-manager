@@ -232,15 +232,18 @@ class BotWarfareSource {
     const { status, record } = await this.refresh(id, force, channel);
     const repo = `https://github.com/ineedbots/${source.repo}`;
     if (channel === 'development' && !source.commit && id !== 'cod4') return {
-      id, channel, repo, supported: false, status, refType: null, ref: null, assetUrl: null,
+      id, channel, repo, supported: false, status, refType: null, ref: null, assetUrl: null, verified: false,
       notes: 'Development source snapshots are not verified installable release packages for this game.',
     };
     if (source.commit || channel === 'development') {
       const commit = source.commit && channel === 'stable' ? source.commit : record && record.commit;
+      const expectedHash = source.commit && channel === 'stable' ? source.sha256 : null;
       return {
         id, channel, repo, supported: Boolean(commit), status, refType: 'commit', ref: commit || null,
         commit: commit || null, assetUrl: commit ? archiveUrl(source, commit) : null,
-        expectedHash: source.commit && channel === 'stable' ? source.sha256 : null,
+        expectedHash,
+        // Only a digest pinned in this build proves what will be installed.
+        verified: Boolean(expectedHash),
         notes: source.commit && channel === 'stable' ? 'Pinned upstream source snapshot; T6 has no tagged releases.' :
           (commit ? record.notes : 'Latest master commit is unavailable offline; development install is disabled.'),
       };
@@ -248,8 +251,11 @@ class BotWarfareSource {
     const usable = record && compareTags(record.tag, source.tag) >= 0 ? record : null;
     const tag = usable ? usable.tag : source.tag;
     const asset = usable ? usable.asset : source.asset;
+    const expectedHash = tag === source.tag ? source.sha256 : null;
     return { id, channel, repo, supported: true, status, refType: 'tag', ref: tag, tag,
-      assetUrl: releaseUrl(source, tag, asset), expectedHash: tag === source.tag ? source.sha256 : null,
+      assetUrl: releaseUrl(source, tag, asset), expectedHash,
+      // A tag newer than the pinned release has no digest in this build.
+      verified: Boolean(expectedHash),
       notes: usable ? usable.notes : '' };
   }
 
@@ -284,6 +290,9 @@ class BotWarfareSource {
         latest: source.commit ? { commit: latest, developmentCommit: record && record.commit || null } :
           cod4Development ? { tag: latest, developmentCommit: cod4Development.record && cod4Development.record.commit || null } :
             { tag: latest },
+        // Stable releases newer than the pinned build have no digest here, so
+        // they can be announced but not installed until botLANd is updated.
+        verified: source.commit ? true : latest === source.tag,
         updateAvailable }];
     }));
     return Object.fromEntries(results);

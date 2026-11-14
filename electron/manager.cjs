@@ -82,7 +82,12 @@ class ServerManager {
     this.lastBroadcast = 0;
     this.stopTimeout = 5000;
     this.gracefulStopTimeout = 3000;
+    // How long "Cancel start" waits for preparation before reporting that the
+    // launch will abort on its own. Quitting still waits for the full cleanup.
+    this.cancelWaitTimeout = 8000;
     this.restartDelays = [2000, 4000, 8000, 16000, 30000];
+    // How long a pending retry waits for folder/firewall/installer work to finish.
+    this.restartDeferDelay = 2000;
     this.restartWindow = 10 * 60 * 1000;
     this.restartTimers = services.restartTimers || { now: Date.now, setTimeout, clearTimeout };
     this.restarts = new Map();
@@ -146,7 +151,13 @@ class ServerManager {
       await fs.mkdir(path.dirname(this.settingsPath), { recursive: true });
       const temp = `${this.settingsPath}.${crypto.randomUUID()}.tmp`;
       try {
-        await fs.writeFile(temp, contents, 'utf8');
+        // Flush the bytes before the rename: a power loss must not leave a
+        // truncated preferences file behind a name that looks valid.
+        const handle = await fs.open(temp, 'w');
+        try {
+          await handle.writeFile(contents, 'utf8');
+          await handle.sync();
+        } finally { await handle.close(); }
         // Antivirus scanners and the search indexer briefly lock files on
         // Windows; retry a replace that fails with a transient sharing error.
         for (let attempt = 0; ; attempt++) {
@@ -712,6 +723,10 @@ class ServerManager {
     if (!inspected.installed) throw new Error(`No ${profileFor(id).short} multiplayer game executable was found in that folder. Choose the actual game installation.`);
     const busy = () => {
       if (['starting', 'stopping'].includes(this.instances.get(id)?.status)) throw new Error('Wait for this server to finish starting or stopping before changing its game folder.');
+      // The running child keeps using the folder it was launched from. Letting
+      // the preference move now would describe a different installation in the
+      // UI and make the next automatic restart launch another copy.
+      if (['running', 'restarting'].includes(this.instances.get(id)?.status)) throw new Error('Stop this server before changing its game folder. It is still running from the current folder.');
       if (this.modBusy.has(id) || this.engineBusy.has(id)) throw new Error('Wait for the engine or Bot Warfare change to finish before changing this game folder.');
     };
     busy();
@@ -1061,9 +1076,49 @@ class ServerManager {
     if (profile.id !== 'mw3') args.push('+map_rotate');
     return { file: bootstrapPath(), cwd: path.join(process.env.LOCALAPPDATA || '', 'Plutonium'), args };
   }
+  // Folder changes, firewall elevation and installer work own the game folder.
+  // A pending automatic retry must wait for them instead of being dropped.
+  restartDeferred(id) { return this.folderUpdates.has(id) || this.firewallBusy.has(id) || this.modBusy.has(id) || this.engineBusy.has(id); }
+  restartStillWanted(id, instance, state) {
+    return this.instances.get(id) === instance && !state.suppressed && !this.shuttingDown && this.data.games?.[id]?.autoRestart === true;
+  }
+  deferRestart(id, instance, state, broadcast = true) {
+    const wait = this.restartDeferDelay;
+    state.nextAttemptAt = new Date(this.restartTimers.now() + wait).toISOString();
+    state.timer = this.restartTimers.setTimeout(() => this.runScheduledRestart(id, instance, state), wait);
+    if (broadcast) this.broadcastState().catch(() => {});
+  }
+  runScheduledRestart(id, instance, state) {
+    state.timer = null;
+    if (!this.restartStillWanted(id, instance, state)) {
+      if (this.instances.get(id) === instance) this.instances.delete(id);
+      state.nextAttemptAt = null;
+      this.broadcastState().catch(() => {});
+      return;
+    }
+    if (this.restartDeferred(id)) { this.deferRestart(id, instance, state); return; }
+    state.nextAttemptAt = null;
+    // A slow file-tail drain must not close a newly opened retry session.
+    this.releaseSession(id, instance).then(() => {
+      if (!this.restartStillWanted(id, instance, state)) {
+        if (this.instances.get(id) === instance) this.instances.delete(id);
+        this.broadcastState().catch(() => {});
+        return;
+      }
+      // The folder can become busy while the previous session drains.
+      if (this.restartDeferred(id)) { this.deferRestart(id, instance, state); return; }
+      this.instances.delete(id);
+      // Any outcome must refresh the UI; otherwise a refused retry leaves a
+      // stale "restarting" card that no longer matches a managed instance.
+      this.launch(id, true).catch(() => {}).finally(() => { this.broadcastState().catch(() => {}); });
+    }).catch(() => {
+      // A failed session drain must not silently end the retry budget.
+      if (this.instances.get(id) === instance) this.deferRestart(id, instance, state);
+    });
+  }
   scheduleRestart(id, instance) {
     const state = this.restartState(id);
-    if (this.shuttingDown || instance.noRestart || state.suppressed || this.data.games?.[id]?.autoRestart !== true || this.modBusy.has(id) || this.engineBusy.has(id)) return false;
+    if (this.shuttingDown || instance.noRestart || state.suppressed || this.data.games?.[id]?.autoRestart !== true) return false;
     const now = this.restartTimers.now();
     // An uninterrupted healthy run starts a fresh crash budget.
     if (instance.startedAt && now - Date.parse(instance.startedAt) > this.restartWindow) state.crashes = [];
@@ -1081,27 +1136,7 @@ class ServerManager {
     instance.startedAt = null;
     instance.activePort = null;
     state.nextAttemptAt = new Date(now + delay).toISOString();
-    state.timer = this.restartTimers.setTimeout(() => {
-      state.timer = null;
-      state.nextAttemptAt = null;
-      if (this.instances.get(id) !== instance || state.suppressed || this.shuttingDown || (this.modBusy.has(id) || this.engineBusy.has(id)) || this.data.games?.[id]?.autoRestart !== true) {
-        if (this.instances.get(id) === instance) this.instances.delete(id);
-        this.broadcastState().catch(() => {});
-        return;
-      }
-      // A slow file-tail drain must not close a newly opened retry session.
-      this.releaseSession(id, instance).then(() => {
-        if (this.instances.get(id) !== instance || state.suppressed || this.shuttingDown || (this.modBusy.has(id) || this.engineBusy.has(id)) || this.data.games?.[id]?.autoRestart !== true) {
-          if (this.instances.get(id) === instance) this.instances.delete(id);
-          this.broadcastState().catch(() => {});
-          return;
-        }
-        this.instances.delete(id);
-        // Any outcome must refresh the UI; otherwise a refused retry leaves a
-        // stale "restarting" card that no longer matches a managed instance.
-        this.launch(id, true).catch(() => {}).finally(() => { this.broadcastState().catch(() => {}); });
-      }).catch(() => {});
-    }, delay);
+    state.timer = this.restartTimers.setTimeout(() => this.runScheduledRestart(id, instance, state), delay);
     this.addLog(id, `Server exited unexpectedly. Restart attempt ${state.attempts} in ${delay / 1000}s.`, 'error');
     return true;
   }
@@ -1376,7 +1411,21 @@ class ServerManager {
     instance.status = 'stopping';
     instance.stopPromise = (async () => {
       try { await this.broadcastState(); } catch { /* Shutdown must continue if the UI cannot refresh. */ }
-      if (!instance.child?.pid) await instance.launchDone;
+      if (!instance.child?.pid && instance.launchDone) {
+        // A launch can only notice cancellation between preparation steps, and
+        // Plutonium preparation has its own long timeout. Never abandon a quit
+        // mid-preparation, but do not leave an interactive Cancel looking hung.
+        if (this.shuttingDown) await instance.launchDone;
+        else {
+          let timer;
+          const finished = await Promise.race([
+            instance.launchDone.then(() => true),
+            new Promise(resolve => { timer = setTimeout(() => resolve(false), this.cancelWaitTimeout); }),
+          ]);
+          clearTimeout(timer);
+          if (!finished) this.addLog(id, 'Cancellation is waiting for the current preparation step (Plutonium update or a slow folder) to finish. The server will not start.', 'info');
+        }
+      }
       if (this.instances.get(id) === instance && instance.child?.pid) await this.stopChild(id, instance);
     })();
     return instance.stopPromise;

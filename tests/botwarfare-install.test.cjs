@@ -524,3 +524,11 @@ test('legacy history is also removed by install and by the pre-launch recovery',
   assert.equal(await exists(history), false);
   assert.equal((await f.installer.status('mw3', f.game)).state, 'installed');
 });
+
+test('an unpinned stable release is refused before anything is downloaded', async t => {
+  const f = await fixture(t, 'mw3');
+  f.installer.source.resolveSource = async () => ({ supported: true, refType: 'tag', ref: 'v9.9.9', verified: false, expectedHash: null,
+    assetUrl: 'https://github.com/ineedbots/iw5_bot_warfare/releases/download/v9.9.9/mod.zip' });
+  await assert.rejects(f.installer.install('mw3', f.game), /newer than the release verified/u);
+  assert.deepEqual(f.downloaded, []);
+});
