@@ -3,7 +3,12 @@
 // Run after build: node_modules/.bin/electron.cmd tests/packaged-smoke.cjs
 const assert = require('node:assert/strict');
 const path = require('node:path');
-const { app, BrowserWindow, ipcMain } = require('electron');
+const { app, BrowserWindow, ipcMain, protocol } = require('electron');
+
+// The renderer loads artwork over its own scheme; serve a tiny PNG so the
+// smoke can prove the path works without reading a real Steam cache.
+const artworkPng = Buffer.from('iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mP8z8BQDwAEhQGAhKmMIQAAAABJRU5ErkJggg==', 'base64');
+protocol.registerSchemesAsPrivileged([{ scheme: 'botland-art', privileges: { standard: true, secure: true } }]);
 
 const definitions = [
   ['cod4', 'Call of Duty 4', 'CoD4', 'CoD4R / IW3x', 'mw'],
@@ -116,6 +121,9 @@ async function waitForCondition(win, expression) {
 }
 
 app.whenReady().then(async () => {
+  protocol.handle('botland-art', request => request.url.includes('/cod4/')
+    ? new Response(artworkPng, { headers: { 'content-type': 'image/png' } })
+    : new Response('Not found', { status: 404 }));
   ipcMain.handle('manager:action', (_event, action, payload) => {
     switch (action) {
       case 'snapshot':
@@ -125,7 +133,6 @@ app.whenReady().then(async () => {
       case 'stop': stopCalls.push(payload.id); return undefined;
       case 'updateEngine': engineAttempts++; throw new Error('Synthetic engine update refused; no files were touched.');
       case 'setUnsavedChanges': return true;
-      case 'artwork': return null;
       case 'maps':
         if (failMapsOnce) { failMapsOnce = false; throw new Error('Synthetic map scan failure.'); }
         return { maps: mapInventory.slice(0, mapsVersion), modes: [{ value: 'dom', label: 'Domination' }] };
@@ -228,6 +235,17 @@ app.whenReady().then(async () => {
     })`);
     assert.equal(dashboard.cards, 1);
     assert.equal(dashboard.missing, 5);
+    await waitForCondition(win, `document.querySelector('.server-card .card-art')?.classList.contains('has-image')`);
+    const artwork = await win.webContents.executeJavaScript(`({
+      cover: document.querySelector('.server-card .card-art-image')?.getAttribute('src'),
+      logo: document.querySelector('.server-card .card-logo')?.getAttribute('src'),
+      dataImages: document.querySelectorAll('img[src^="data:image"]').length,
+      inlineData: [...document.querySelectorAll('[style]')].filter(el => (el.getAttribute('style') || '').includes('data:image')).length,
+    })`);
+    assert.match(artwork.cover, /^botland-art:\/\/artwork\/cod4\/cover\?v=/, 'covers load over the artwork scheme');
+    assert.match(artwork.logo, /^botland-art:\/\/artwork\/cod4\/logo\?v=/, 'logos load over the artwork scheme');
+    assert.equal(artwork.dataImages, 0, 'no image bytes are embedded as data URLs');
+    assert.equal(artwork.inlineData, 0, 'no artwork bytes are embedded in inline styles');
     assert.equal(await win.webContents.executeJavaScript("document.querySelector('.card-visibility')?.textContent"), 'NEXT: LAN', 'Saved visibility must not be presented as the running server state');
     assert.ok(dashboard.scrollWidth <= dashboard.width, 'Dashboard must not clip at a 640-DIP window');
     const pointerTargets = await win.webContents.executeJavaScript(`(() => {
@@ -261,6 +279,8 @@ app.whenReady().then(async () => {
     await waitForAbsent(win, '.notice');
     await win.webContents.executeJavaScript("document.querySelector('.server-card .card-open').click()");
     await waitFor(win, '.detail-tabs');
+    await waitForCondition(win, `document.querySelector('.detail-hero-image')?.complete`);
+    assert.match(await win.webContents.executeJavaScript("document.querySelector('.detail-hero-image')?.getAttribute('src')"), /^botland-art:\/\/artwork\/cod4\/hero\?v=/, 'the game header loads over the artwork scheme');
     const manageFocus = await win.webContents.executeJavaScript("({ active: document.activeElement?.tagName, label: document.querySelector('main')?.getAttribute('aria-label') })");
     assert.equal(manageFocus.active, 'MAIN');
     assert.equal(manageFocus.label, 'Call of Duty 4 — Overview');

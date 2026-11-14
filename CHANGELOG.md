@@ -2,11 +2,29 @@
 
 Notable changes to botLANd Server Manager are recorded here. This project follows [Semantic Versioning](https://semver.org/).
 
+## 1.2.27
+
+### Reliability
+
+- Fix a 1.2.26 regression where the Dashboard rendered a literal `` `r`n `` text node left by an editor script; a source-hygiene test now rejects shell escape artifacts in the renderer.
+
+### Performance and packaging
+
+- Artwork is served over a dedicated `botland-art://` scheme instead of base64 data URLs over IPC: covers and headers are downscaled once, cached with ETags, and loaded as `<img>` layers. Cards fall back to the decorative treatment when a cache image is missing instead of showing a blank box.
+- The two Barlow Condensed fonts are WOFF2 subsets (about 23 KB each instead of 85 KB), with a committed regeneration script (`npm run fonts:subset`) and Latin unicode ranges.
+
+### Internationalization
+
+- Every renderer string is extracted to a typed English catalog (`src/i18n/en.json`) with `t()`/`tp()` helpers, placeholder checks and an extraction script (`npm run i18n:extract`). Main-process error and log text stays English technical detail by design.
+- Locale persists in settings, updates `<html lang/dir>`, and formats times and dates with `Intl`. A language picker appears once a user-facing translation exists.
+- RTL layout uses logical CSS properties plus mirrored directional icons. The accessibility smoke adds pseudo and pseudo-rtl passes that assert expansion, sidebar mirroring and no horizontal overflow.
+- Schema field labels, hints, choices and section headings can be translated without touching the main-process schema, falling back to the English labels.
+
 ## 1.2.26
 
 ### Security and packaging
 
-- Serve the renderer from a custom pp://botland protocol that only returns files inside dist/, and enable grantFileProtocolExtraPrivileges: false; packaged builds now flip every recommended Electron fuse (runAsNode, NODE_OPTIONS, --inspect off; ASAR integrity, onlyLoadAppFromAsar on).
+- Serve the renderer from a custom `app://botland` protocol that only returns files inside dist/, and enable grantFileProtocolExtraPrivileges: false; packaged builds now flip every recommended Electron fuse (runAsNode, NODE_OPTIONS, --inspect off; ASAR integrity, onlyLoadAppFromAsar on).
 
 ### Reliability
 

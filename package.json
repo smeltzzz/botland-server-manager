@@ -1,6 +1,6 @@
 {
   "name": "botland-server-manager",
-  "version": "1.2.26",
+  "version": "1.2.27",
   "private": true,
   "description": "A local desktop manager for Call of Duty bot servers",
   "main": "electron/main.cjs",
@@ -13,6 +13,8 @@
     "test": "node --test tests/*.test.cjs",
     "test:accessibility": "electron tests/accessibility-smoke.cjs",
     "capture:demo": "electron tests/accessibility-smoke.cjs --screenshots",
+    "fonts:subset": "node scripts/subset-fonts.cjs",
+    "i18n:extract": "node scripts/i18n-extract.cjs",
     "prune:release": "node scripts/prune-release.cjs",
     "dist:win": "npm run build && electron-builder --win nsis portable --publish never && npm run prune:release"
   },
@@ -36,6 +38,7 @@
     "eslint-config-prettier": "^10.1.8",
     "globals": "^16.5.0",
     "prettier": "^3.9.10",
+    "subset-font": "^2.9.0",
     "typescript": "^5.8.3",
     "typescript-eslint": "^8.72.1",
     "vite": "^6.3.0",

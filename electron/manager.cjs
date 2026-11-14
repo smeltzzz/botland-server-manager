@@ -8,7 +8,7 @@ const { StringDecoder } = require('node:string_decoder');
 const { profiles, order, profileFor, bootstrapPath } = require('./profiles.cjs');
 const { readConfig, readDocument, previewConfig, saveConfig, parseEntries, withoutBlockComments, decode } = require('./config.cjs');
 const { schemaFor, sourceRepos } = require('./schema.cjs');
-const { artworkFor, loadImage } = require('./artwork.cjs');
+const { findArtwork, imageMeta } = require('./artwork.cjs');
 const { scanMaps, modeOptions, rotationText, writeRotation } = require('./maps.cjs');
 const { detectSteamGames, inspectGameFolder } = require('./detection.cjs');
 const { createStarterConfig: writeStarterConfig } = require('./starter-config.cjs');
@@ -23,6 +23,9 @@ const exec = promisify(execFile);
 const safeName = /^[a-z0-9_]+$/i;
 async function exists(file) { try { await fs.access(file); return true; } catch { return false; } }
 async function isFile(file) { try { return (await fs.stat(file)).isFile(); } catch { return false; } }
+// Renderer locale tags, including the hidden pseudo locales used by the audit.
+const LOCALE = /^(?:[a-z]{2,3}(?:-[A-Za-z0-9]{2,8})?|pseudo|pseudo-rtl)$/;
+function validLocale(value) { return LOCALE.test(value); }
 function isPlainObject(value) { return !!value && typeof value === 'object' && !Array.isArray(value); }
 // Resolves true once isClosed() holds (checked on 'close'), or false after ms.
 function waitForClose(child, isClosed, ms) {
@@ -56,7 +59,7 @@ class ServerManager {
   constructor(settingsPath, notify, services = {}) {
     this.settingsPath = settingsPath;
     this.notify = notify;
-    this.data = { games: {}, updatesEnabled: true };
+    this.data = { games: {}, updatesEnabled: true, locale: 'en' };
     this.plutonium = services.plutonium;
     this.engineUpdater = services.engineUpdater;
     this.engineBusy = new Set();
@@ -132,6 +135,7 @@ class ServerManager {
       return backup;
     }
     if (typeof stored.updatesEnabled === 'boolean') this.data.updatesEnabled = stored.updatesEnabled;
+    if (typeof stored.locale === 'string' && validLocale(stored.locale)) this.data.locale = stored.locale;
     if (isPlainObject(stored.games)) {
       for (const id of order) {
         const entry = stored.games[id];
@@ -388,6 +392,12 @@ class ServerManager {
     else state.suppressed = false;
     await this.broadcastState().catch(() => {});
   }
+  async setLocale(locale) {
+    if (typeof locale !== 'string' || !validLocale(locale)) throw new Error('Unknown interface language.');
+    await this.updateSettings(data => { data.locale = locale; });
+    await this.broadcastState();
+    return true;
+  }
   async setUpdateChecks(enabled) {
     if (typeof enabled !== 'boolean') throw new Error('Update checks must be on or off.');
     await this.updateSettings(data => { data.updatesEnabled = enabled; });
@@ -631,7 +641,7 @@ class ServerManager {
           nextAttemptAt: restart?.nextAttemptAt || null, cutOff: restart?.cutOff || false },
         logs: (this.logs.get(id) || []).slice(-120) };
     }));
-    return { games, updatesEnabled: this.data.updatesEnabled, updates: this.botUpdates, detectError: this.detectError || null, plutonium: await this.plutoniumStatus() };
+    return { games, updatesEnabled: this.data.updatesEnabled, updates: this.botUpdates, detectError: this.detectError || null, locale: this.data.locale || 'en', plutonium: await this.plutoniumStatus() };
   }
   // Snapshots are built asynchronously and can finish out of order. A snapshot
   // that finishes after a newer one has been sent is stale and is dropped.
@@ -866,7 +876,9 @@ class ServerManager {
     const { file } = await this.configTarget(id, target, mode);
     return pruneBackups(file, ids);
   }
-  async artwork(id, kind) {
+  // Returns the resolved file and metadata; the bytes are served by the
+  // botland-art protocol, never encoded into IPC payloads.
+  async artworkMeta(id, kind) {
     profileFor(id);
     // Steam artwork lives under the Steam client install, which detection may
     // find outside Program Files (custom library or non-default install).
@@ -875,7 +887,7 @@ class ServerManager {
       : '';
     // Only the header and cover can be replaced with a custom image.
     const override = kind === 'hero' || kind === 'cover' ? this.data.games[id]?.artwork?.[kind] : undefined;
-    return artworkFor(id, kind, override, steamCache ? [steamCache] : []);
+    return findArtwork(id, kind, override, steamCache ? [steamCache] : []);
   }
   async chooseArtwork(id, kind, dialogWindow, dialog) {
     profileFor(id);
@@ -883,7 +895,7 @@ class ServerManager {
     const result = await dialog.showOpenDialog(dialogWindow, { title: `Choose ${kind} artwork`, properties: ['openFile'], filters: [{ name: 'Images', extensions: ['jpg', 'jpeg', 'png', 'webp'] }] });
     if (result.canceled || !result.filePaths[0]) return false;
     const selected = result.filePaths[0];
-    if (!await loadImage(selected)) throw new Error('Image must be a valid JPG, PNG or WebP under 6 MB.');
+    if (!await imageMeta(selected)) throw new Error('Image must be a valid JPG, PNG or WebP under 6 MB.');
     await this.updateSettings(data => { data.games[id] = { ...data.games[id], artwork: { ...data.games[id]?.artwork, [kind]: selected } }; });
     return true;
   }
@@ -891,7 +903,7 @@ class ServerManager {
     profileFor(id);
     if (!['hero', 'cover'].includes(kind)) throw new Error('Unknown artwork type.');
     await this.updateSettings(data => { if (data.games[id]?.artwork) delete data.games[id].artwork[kind]; });
-    return this.artwork(id, kind);
+    return true;
   }
   // A partial result can prove occupancy but cannot prove a port free. Manual
   // Start tolerates a missing family; automatic restart requires both scans.

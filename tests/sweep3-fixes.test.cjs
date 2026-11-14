@@ -21,7 +21,7 @@ Module._load = function (request, parent, isMain) {
 const { ServerManager } = require('../electron/manager.cjs');
 Module._load = originalLoad;
 const { saveConfig, previewConfig, parseEntries, inspectText, updateConfigText } = require('../electron/config.cjs');
-const { artworkFor } = require('../electron/artwork.cjs');
+const { findArtwork } = require('../electron/artwork.cjs');
 
 // main.cjs denies all web permissions on the default session at startup.
 const fakeSession = { defaultSession: { setPermissionRequestHandler() {}, setPermissionCheckHandler() {} } };
@@ -179,8 +179,9 @@ test('artwork is found in the hashed subfolders newer Steam clients use', async 
   const folder = path.join(dir, 'Steam', 'appcache', 'librarycache', '7940', 'a1b2c3d4e5f60718293a4b5c6d7e8f9012345678');
   await fs.mkdir(folder, { recursive: true });
   await fs.writeFile(path.join(folder, 'library_hero.jpg'), Buffer.from([0xff, 0xd8, 0xff, 0xe0, ...Buffer.alloc(32, 7)]));
-  const image = await artworkFor('cod4', 'hero');
-  assert.ok(image?.startsWith('data:image/jpeg;base64,'));
+  const image = await findArtwork('cod4', 'hero');
+  assert.equal(image?.mime, 'image/jpeg');
+  assert.equal(path.basename(image.file), 'library_hero.jpg');
 });
 
 test('placeholder dvars with a leading underscore are listed and editable', () => {

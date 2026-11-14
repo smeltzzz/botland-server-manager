@@ -1,7 +1,7 @@
 const path = require('node:path');
 const fs = require('node:fs/promises');
 const { constants } = require('node:fs');
-const { app, BrowserWindow, Menu, clipboard, dialog, ipcMain, protocol, safeStorage, session, shell } = require('electron');
+const { app, BrowserWindow, Menu, clipboard, dialog, ipcMain, nativeImage, protocol, safeStorage, session, shell } = require('electron');
 const { ServerManager } = require('./manager.cjs');
 const { KeyStore } = require('./key-store.cjs');
 const { BotWarfareSource } = require('./botwarfare-source.cjs');
@@ -13,6 +13,8 @@ const { discoverConnectAddresses } = require('./connect-address.cjs');
 const { formatDiagnostics } = require('./diagnostics.cjs');
 const { profileFor } = require('./profiles.cjs');
 const { sourceRepos } = require('./schema.cjs');
+const { ArtworkCache } = require('./artwork-cache.cjs');
+const { artScheme, createArtworkHandler } = require('./artwork-protocol.cjs');
 
 const engineGuides = {
   cod4: 'https://iw3x.com/setup#hosting',
@@ -29,6 +31,9 @@ const engineGuides = {
 if (typeof protocol?.registerSchemesAsPrivileged === 'function') {
   protocol.registerSchemesAsPrivileged([
     { scheme: 'app', privileges: { standard: true, secure: true, supportFetchAPI: true, codeCache: true } },
+    // Artwork is user-owned content, so it gets its own origin. The handler
+    // resolves only known game/kind pairs; no URL text becomes a file path.
+    { scheme: artScheme, privileges: { standard: true, secure: true } },
   ]);
 }
 
@@ -64,6 +69,26 @@ async function serveRenderer(request) {
   }
 }
 
+
+// Downscale JPEG/WebP banners for the renderer. PNG keeps its alpha channel and
+// is only re-encoded when the source is much wider than the display size.
+function encodeArtwork(buffer, { mime, width }) {
+  try {
+    const image = nativeImage.createFromBuffer(buffer);
+    if (image.isEmpty()) return null;
+    const size = image.getSize();
+    if (!size.width || size.width <= width) return null;
+    const resized = image.resize({ width, quality: 'good' });
+    if (mime === 'image/png') {
+      const png = resized.toPNG();
+      return png.length ? { body: png, mime: 'image/png' } : null;
+    }
+    const jpeg = resized.toJPEG(82);
+    return jpeg.length ? { body: jpeg, mime: 'image/jpeg' } : null;
+  } catch { return null; }
+}
+const artworkCache = new ArtworkCache({ encode: encodeArtwork });
+const serveArtwork = createArtworkHandler({ getManager: () => manager, cache: artworkCache });
 /** @type {import('electron').BrowserWindow | undefined} */
 let window;
 /** @type {ServerManager | undefined} */
@@ -168,6 +193,7 @@ async function createWindow() {
   });
   if (app.isPackaged) Menu.setApplicationMenu(null); // No Reload or DevTools shortcuts in releases.
   if (typeof protocol?.handle === 'function') protocol.handle('app', serveRenderer);
+  if (typeof protocol?.handle === 'function') protocol.handle(artScheme, serveArtwork);
   if (app.isPackaged) await window.loadURL('app://botland/index.html');
   else await window.loadURL('http://127.0.0.1:5173');
   // Metadata checks run in the background and never delay the first window.
@@ -248,7 +274,6 @@ if (primaryInstance) app.whenReady().then(() => {
       case 'previewConfigRestore': return manager.previewConfigRestore(id, payload.target, payload.mode, payload.backupId);
       case 'restoreConfigBackup': return manager.restoreConfigBackup(id, payload.target, payload.mode, payload.backupId, payload.token);
       case 'pruneConfigBackups': return manager.pruneConfigBackups(id, payload.target, payload.mode, payload.ids);
-      case 'artwork': return manager.artwork(id, payload.kind);
       case 'firewallStatus': return manager.firewallStatus(id);
       case 'firewallApply': return manager.firewallApply(id);
       case 'firewallRemove': return manager.firewallRemove(id);
@@ -269,6 +294,10 @@ if (primaryInstance) app.whenReady().then(() => {
       case 'botAction': return manager.botAction(id, payload.operation);
       case 'setBotChannel': return manager.setBotChannel(id, payload.channel);
       case 'checkBotUpdates': return manager.checkBotUpdates(true);
+      case 'setLocale': {
+        if (typeof payload.locale !== 'string' || payload.locale.length > 20) throw new Error('Invalid interface language.');
+        return manager.setLocale(payload.locale);
+      }
       case 'setUpdateChecks': return manager.setUpdateChecks(payload.enabled);
       case 'saveKey': return manager.saveKey(id, payload.key);
       case 'removeKey': return manager.removeKey(id);

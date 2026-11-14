@@ -25,7 +25,7 @@ const fakeKeyPresence = new Set<GameId>(['bo1']);
 const configured = new Set<GameId>(['cod4', 'bo1']);
 const plutoniumGames = new Set<GameId>(['waw', 'bo1', 'mw3', 'bo2']);
 const installedEngines = new Set<GameId>(['cod4']);
-const snapshot: Snapshot = { plutonium: { available: true, installed: true, updating: false, lastUpdated: '2026-11-09T18:00:00.000Z', error: null }, updatesEnabled: true, updates: { cod4: { status: 'current', latest: { tag: 'v2.1.0' }, updateAvailable: true } }, games: definitions.map(([id, title, short, subtitle, family, engine, port]) => ({
+const snapshot: Snapshot = { locale: 'en', plutonium: { available: true, installed: true, updating: false, lastUpdated: '2026-11-09T18:00:00.000Z', error: null }, updatesEnabled: true, updates: { cod4: { status: 'current', latest: { tag: 'v2.1.0' }, updateAvailable: true } }, games: definitions.map(([id, title, short, subtitle, family, engine, port]) => ({
   ...base, id, title, short, subtitle, family, engine, modBusy: false, engineBusy: false, config: { ...base.config },
   installed: detected.has(id), pathSource: detected.has(id) ? 'steam' : 'none',
   keyStatus: id === 'cod4' || id === 'mw2' ? 'not-required' : fakeKeyPresence.has(id) ? 'stored' : 'missing',
@@ -126,6 +126,7 @@ export function createDemoManager(): ManagerApi {
   const firewallRules: Partial<Record<GameId, { scope: 'lan' | 'any'; port: number }>> = {};
   return {
     snapshot: async () => structuredClone(snapshot),
+    setLocale: async locale => { snapshot.locale = locale; emit(); },
     copyDiagnostics: async () => false, // Browser preview never writes to the clipboard.
     copyText: async () => false,
     openLogs: async () => false,
@@ -188,7 +189,7 @@ export function createDemoManager(): ManagerApi {
       emit();
       return demoDocument(id, target, mode);
     },
-    artwork: async () => null, openDocs: async () => {}, chooseArtwork: async () => false, resetArtwork: async () => null, openDocument: async () => false,
+    openDocs: async () => {}, chooseArtwork: async () => false, resetArtwork: async () => true, openDocument: async () => false,
     firewallStatus: async id => {
       const port = find(id).activePort ?? find(id).options.port;
       const rule = firewallRules[id];

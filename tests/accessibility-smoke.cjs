@@ -7,10 +7,14 @@ const fs = require('node:fs/promises');
 const path = require('node:path');
 const vm = require('node:vm');
 const ts = require('typescript');
-const { app, BrowserWindow, ipcMain, session } = require('electron');
+const { app, BrowserWindow, ipcMain, protocol, session } = require('electron');
+
+// Artwork uses a dedicated scheme in production. This audit serves no art so
+// the decorative fallback is what gets measured, exactly as before.
+protocol.registerSchemesAsPrivileged([{ scheme: 'botland-art', privileges: { standard: true, secure: true } }]);
 
 const root = path.join(__dirname, '..');
-const readActions = new Set(['snapshot', 'maps', 'document', 'artwork', 'botStatus', 'firewallStatus', 'listConfigBackups']);
+const readActions = new Set(['snapshot', 'maps', 'document', 'botStatus', 'firewallStatus', 'listConfigBackups']);
 const captures = process.argv.includes('--screenshots');
 const accessibilityFailures = [];
 const temporaryRoot = path.join(process.env.LOCALAPPDATA || require('node:os').tmpdir(), ...(process.env.LOCALAPPDATA ? ['Temp', 'opencode'] : ['opencode']));
@@ -163,8 +167,9 @@ async function capture(win, filename) {
 
 // Isolate even Chromium's cache from the normal Electron or botLANd profile.
 app.whenReady().then(async () => {
+  protocol.handle('botland-art', () => new Response('Not found', { status: 404 }));
   const syntheticSession = session.defaultSession;
-  syntheticSession.webRequest.onBeforeRequest((details, callback) => callback({ cancel: !/^(?:file|data):/.test(details.url) }));
+  syntheticSession.webRequest.onBeforeRequest((details, callback) => callback({ cancel: !/^(?:file|data|botland-art):/.test(details.url) }));
   syntheticSession.setPermissionRequestHandler((_contents, _permission, callback) => callback(false));
   const source = await fs.readFile(path.join(root, 'src', 'demo.ts'), 'utf8');
   const javascript = ts.transpileModule(source, { compilerOptions: { module: ts.ModuleKind.CommonJS, target: ts.ScriptTarget.ES2022 } }).outputText;
@@ -183,7 +188,6 @@ app.whenReady().then(async () => {
     if (!readActions.has(action)) throw new Error('Accessibility smoke refuses mutations.');
     if (action === 'snapshot') return manager.snapshot();
     if (action === 'document') return manager.document(payload.id, payload.target, payload.mode);
-    if (action === 'artwork') return null;
     return manager[action](payload.id);
   });
   const axeSource = await fs.readFile(require.resolve('axe-core/axe.min.js'), 'utf8');
@@ -196,13 +200,13 @@ app.whenReady().then(async () => {
     await responsive(win, 'Dashboard');
     await capture(win, 'dashboard-demo.png');
     for (const game of snapshot.games) {
-      await win.webContents.executeJavaScript(`[...document.querySelectorAll('.game-nav-item')].find(button => button.querySelector('.nav-game-label')?.firstChild.textContent === ${JSON.stringify(game.short)}).click()`);
+      await win.webContents.executeJavaScript(`document.querySelector('[data-game=${JSON.stringify(game.id)}]').click()`);
       await waitFor(win, '.detail-hero');
       await audit(win, `${game.short} Overview`, axeSource);
       await responsive(win, `${game.short} Overview`);
       if (!game.installed) continue;
-      for (const [label, selector] of [['Configuration', '.config-main'], ['Maps & modes', '.rotation-panel'], ['Console', '.console-panel']]) {
-        await win.webContents.executeJavaScript(`[...document.querySelectorAll('.detail-tabs button')].find(button => button.textContent === ${JSON.stringify(label)}).click()`);
+      for (const [tabId, label, selector] of [['configuration', 'Configuration', '.config-main'], ['rotation', 'Maps & modes', '.rotation-panel'], ['console', 'Console', '.console-panel']]) {
+        await win.webContents.executeJavaScript(`document.querySelector('[data-tab=${JSON.stringify(tabId)}]').click()`);
         await waitFor(win, selector);
         if (label === 'Configuration') await waitFor(win, '.config-field-grid input, .config-field-grid select');
         await audit(win, `${game.short} ${label}`, axeSource);
@@ -210,6 +214,28 @@ app.whenReady().then(async () => {
         if (game.id === 'cod4' && label === 'Configuration') await capture(win, 'configuration-demo.png');
       }
     }
+    // RTL + pseudo-localisation pass: expanded strings and mirrored layout.
+    await manager.setLocale('pseudo-rtl');
+    win.webContents.send('manager:event', { type: 'state', snapshot: await manager.snapshot() });
+    await win.webContents.executeJavaScript(`new Promise(resolve => {
+      const check = () => document.documentElement.dir === 'rtl' && document.querySelector('.app-shell')?.dataset.locale === 'pseudo-rtl' ? resolve() : requestAnimationFrame(check);
+      check();
+    })`);
+    await audit(win, 'Dashboard (pseudo RTL)', axeSource);
+    await responsive(win, 'Dashboard (pseudo RTL)');
+    const mirrored = await win.webContents.executeJavaScript(`(() => {
+      const sidebar = document.querySelector('.sidebar').getBoundingClientRect();
+      return { dir: document.documentElement.dir, mirrored: sidebar.left > innerWidth / 2, overflow: document.documentElement.scrollWidth - document.documentElement.clientWidth };
+    })()`);
+    assert.equal(mirrored.dir, 'rtl');
+    assert.ok(mirrored.mirrored, 'the sidebar mirrors to the right in RTL');
+    assert.ok(mirrored.overflow <= 1, 'no horizontal overflow with expanded RTL strings');
+    await win.webContents.executeJavaScript("document.querySelector('[data-game=\"cod4\"]').click()");
+    await waitFor(win, '.detail-tabs');
+    await win.webContents.executeJavaScript("document.querySelector('[data-tab=\"configuration\"]').click()");
+    await waitFor(win, '.config-main');
+    await audit(win, 'CoD4 Configuration (pseudo RTL)', axeSource);
+    await responsive(win, 'CoD4 Configuration (pseudo RTL)');
     assert.equal(accessibilityFailures.length, 0, JSON.stringify(accessibilityFailures, null, 2));
     assert.deepEqual(rendererErrors, [], 'Renderer console errors');
     console.log('Synthetic accessibility and layout smoke passed. No real setup data or write actions were used.');

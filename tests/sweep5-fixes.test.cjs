@@ -3,7 +3,7 @@ const assert = require('node:assert/strict');
 const fs = require('node:fs/promises');
 const path = require('node:path');
 const os = require('node:os');
-const { artworkFor } = require('../electron/artwork.cjs');
+const { findArtwork } = require('../electron/artwork.cjs');
 const { ServerManager } = require('../electron/manager.cjs');
 const { modeOptions } = require('../electron/maps.cjs');
 const { profiles } = require('../electron/profiles.cjs');
@@ -24,8 +24,9 @@ test('artwork searches a detected Steam install before hard-coded Program Files 
   const cache = path.join(dir, 'Steam', 'appcache', 'librarycache', '7940');
   await fs.mkdir(cache, { recursive: true });
   await fs.writeFile(path.join(cache, 'library_hero.jpg'), jpeg(0x5a));
-  const image = await artworkFor('cod4', 'hero', undefined, [path.join(dir, 'Steam', 'appcache', 'librarycache')]);
-  assert.equal(image, `data:image/jpeg;base64,${jpeg(0x5a).toString('base64')}`);
+  const image = await findArtwork('cod4', 'hero', undefined, [path.join(dir, 'Steam', 'appcache', 'librarycache')]);
+  assert.equal(image.file, path.join(cache, 'library_hero.jpg'));
+  assert.equal(image.size, jpeg(0x5a).length);
 });
 
 test('manager artwork uses the Steam path found by detection', async t => {
@@ -36,8 +37,9 @@ test('manager artwork uses the Steam path found by detection', async t => {
   await fs.writeFile(path.join(cache, 'library_600x900.jpg'), jpeg(0x6b));
   const manager = new ServerManager(path.join(dir, 'settings.json'), () => {});
   manager.detected = { steamPath: steam, games: {} };
-  const image = await manager.artwork('cod4', 'cover');
-  assert.equal(image, `data:image/jpeg;base64,${jpeg(0x6b).toString('base64')}`);
+  const image = await manager.artworkMeta('cod4', 'cover');
+  assert.equal(image.file, path.join(cache, 'library_600x900.jpg'));
+  assert.equal(image.mime, 'image/jpeg');
 });
 
 test('an ambiguous orphan keeps its warning with an explicitly unknown PID', async t => {

@@ -156,6 +156,8 @@ async function ipcFixture(options = {}) {
       },
     },
     './diagnostics.cjs': require('../electron/diagnostics.cjs'),
+    './artwork-cache.cjs': { ArtworkCache: class { async read() { throw new Error('Artwork cache is not used by the IPC fixture.'); } } },
+    './artwork-protocol.cjs': { artScheme: 'botland-art', createArtworkHandler: () => () => new Response('', { status: 404 }) },
     './profiles.cjs': { profileFor },
     './schema.cjs': { sourceRepos: {} },
   };

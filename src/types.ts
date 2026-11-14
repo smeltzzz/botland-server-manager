@@ -51,7 +51,7 @@ export interface BotManifest { channel: string; ref: string; refType: 'tag' | 'c
 export interface BotStatus { state: 'installed' | 'unknown' | 'not-installed'; targetPath: string; manifest: BotManifest | null; channel: 'stable' | 'development'; source: { supported: boolean; ref: string | null; notes: string; status: string } }
 export interface BotUpdate { status: string; latest: { tag?: string; commit?: string; developmentCommit?: string | null }; updateAvailable: boolean | null }
 export interface PlutoniumStatus { available: boolean; installed: boolean; updating: boolean; lastUpdated: string | null; error: string | null }
-export interface Snapshot { games: Game[]; updatesEnabled: boolean; updates: Partial<Record<GameId, BotUpdate>>; detectError?: string | null; plutonium: PlutoniumStatus }
+export interface Snapshot { games: Game[]; updatesEnabled: boolean; updates: Partial<Record<GameId, BotUpdate>>; detectError?: string | null; locale?: string; plutonium: PlutoniumStatus }
 export interface MapData { maps: string[]; modes: { value: string; label: string }[] }
 export type ConfigTarget = 'base' | 'mode';
 export interface ConfigField { key: string; sourceKey: string; section: string; label: string; hint?: string; type: 'text' | 'integer' | 'decimal' | 'select'; choices?: { value: string; label: string }[]; min?: number; max?: number; maxLength?: number; default?: string; presentOnly?: boolean; allowEmpty?: boolean; dependsOn?: { key: string; value: string } }
@@ -87,6 +87,7 @@ export interface ManagerApi {
   setBotChannel(id: GameId, channel: 'stable' | 'development'): Promise<void>;
   checkBotUpdates(): Promise<void>;
   setUpdateChecks(enabled: boolean): Promise<void>;
+  setLocale(locale: string): Promise<void>;
   saveKey(id: GameId, key: string): Promise<void>;
   removeKey(id: GameId): Promise<void>;
   /** Sets a damaged keys.json aside (kept, not deleted). Resolves false when the file was readable. */
@@ -98,13 +99,12 @@ export interface ManagerApi {
   document(id: GameId, target: ConfigTarget, mode?: string): Promise<ConfigDocument>;
   previewSettings(id: GameId, target: ConfigTarget, mode: string, values: Record<string, string>, expectedPath?: string): Promise<ConfigPreview>;
   commitSettings(id: GameId, target: ConfigTarget, mode: string, values: Record<string, string>, token: string, expectedPath?: string): Promise<ConfigDocument>;
-  artwork(id: GameId, kind: ArtworkKind): Promise<string | null>;
   firewallStatus(id: GameId): Promise<FirewallStatus>;
   firewallApply(id: GameId): Promise<FirewallStatus>;
   firewallRemove(id: GameId): Promise<FirewallStatus>;
   openDocs(id: GameId): Promise<void>;
   chooseArtwork(id: GameId, kind: 'hero' | 'cover'): Promise<boolean>;
-  resetArtwork(id: GameId, kind: 'hero' | 'cover'): Promise<string | null>;
+  resetArtwork(id: GameId, kind: 'hero' | 'cover'): Promise<boolean>;
   openDocument(id: GameId, target: ConfigTarget, mode: string): Promise<boolean>;
   saveOptions(id: GameId, values: { port?: number; mode?: string; shuffle?: boolean; selectedMaps?: string[]; lan?: boolean }): Promise<void>;
   openConfig(id: GameId): Promise<boolean>;

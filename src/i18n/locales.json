@@ -1,0 +1,5 @@
+[
+  { "id": "en", "label": "English", "dir": "ltr", "userFacing": true },
+  { "id": "pseudo", "label": "Pseudo", "dir": "ltr", "userFacing": false },
+  { "id": "pseudo-rtl", "label": "Pseudo (RTL)", "dir": "rtl", "userFacing": false }
+]

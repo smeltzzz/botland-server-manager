@@ -28,20 +28,26 @@ function mimeFor(buffer) {
   if (buffer.toString('ascii', 0, 4) === 'RIFF' && buffer.toString('ascii', 8, 12) === 'WEBP') return 'image/webp';
   return null;
 }
-async function loadImage(file) {
+// Validate an image without encoding it. The renderer is served the bytes over
+// the artwork protocol, so nothing here needs a base64 copy in memory.
+async function imageMeta(file) {
   try {
     const stat = await fs.stat(file);
     if (!stat.isFile() || stat.size > 6_000_000 || stat.size < 12) return null;
-    const bytes = await fs.readFile(file);
-    const mime = mimeFor(bytes);
-    return mime ? `data:${mime};base64,${bytes.toString('base64')}` : null;
+    const handle = await fs.open(file, 'r');
+    try {
+      const head = Buffer.alloc(12);
+      const { bytesRead } = await handle.read(head, 0, head.length, 0);
+      const mime = mimeFor(head.subarray(0, bytesRead));
+      return mime ? { file, mime, size: stat.size, mtimeMs: stat.mtimeMs } : null;
+    } finally { await handle.close(); }
   } catch { return null; }
 }
-async function artworkFor(id, kind, override, extraRoots = []) {
+async function findArtwork(id, kind, override, extraRoots = []) {
   profileFor(id);
   if (!Object.hasOwn(fileNames, kind)) throw new Error('Unknown artwork type.');
   if (typeof override === 'string') {
-    const image = await loadImage(override);
+    const image = await imageMeta(override);
     if (image) return image;
   }
   // The Steam install found by detection comes first; within one cache, the
@@ -49,18 +55,18 @@ async function artworkFor(id, kind, override, extraRoots = []) {
   for (const root of cacheRoots(extraRoots)) {
     const folder = path.join(root, appIds[id]);
     for (const name of fileNames[kind]) {
-      const image = await loadImage(path.join(folder, name));
+      const image = await imageMeta(path.join(folder, name));
       if (image) return image;
       // Newer Steam clients keep each image in a hashed subfolder of the app folder.
       let entries = [];
       try { entries = await fs.readdir(folder, { withFileTypes: true }); } catch { /* No cache for this app. */ }
       for (const entry of entries) {
         if (!entry.isDirectory()) continue;
-        const nested = await loadImage(path.join(folder, entry.name, name));
+        const nested = await imageMeta(path.join(folder, entry.name, name));
         if (nested) return nested;
       }
     }
   }
   return null;
 }
-module.exports = { artworkFor, loadImage, mimeFor, cacheRoots, appIds };
+module.exports = { findArtwork, imageMeta, mimeFor, cacheRoots, appIds, fileNames };

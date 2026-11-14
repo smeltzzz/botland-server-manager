@@ -3,7 +3,7 @@ const assert = require('node:assert/strict');
 const fs = require('node:fs/promises');
 const path = require('node:path');
 const os = require('node:os');
-const { artworkFor, appIds } = require('../electron/artwork.cjs');
+const { findArtwork, appIds } = require('../electron/artwork.cjs');
 const { ServerManager } = require('../electron/manager.cjs');
 
 async function temporary(testContext) {
@@ -15,19 +15,19 @@ async function temporary(testContext) {
 }
 const jpeg = tag => Buffer.concat([Buffer.from([0xff, 0xd8, 0xff, 0xe0]), Buffer.from(tag.padEnd(16, '.'))]);
 const png = tag => Buffer.concat([Buffer.from([137, 80, 78, 71, 13, 10, 26, 10]), Buffer.from(tag.padEnd(16, '.'))]);
-const decoded = image => Buffer.from(image.split(',')[1], 'base64').subarray(4).toString().replace(/\.+$/, '');
+const chosen = meta => meta ? path.basename(meta.file) : null;
 
 test('cards use wide Steam art, falling back from the hero to the store header and only then the tall cover', async t => {
   const cache = await temporary(t);
   const folder = path.join(cache, appIds.bo2);
   await fs.mkdir(folder);
   await fs.writeFile(path.join(folder, 'library_600x900.jpg'), jpeg('tall'));
-  assert.equal(decoded(await artworkFor('bo2', 'cover', undefined, [cache])), 'tall');
+  assert.equal(chosen(await findArtwork('bo2', 'cover', undefined, [cache])), 'library_600x900.jpg');
   await fs.writeFile(path.join(folder, 'header.jpg'), jpeg('header'));
-  assert.equal(decoded(await artworkFor('bo2', 'cover', undefined, [cache])), 'header');
+  assert.equal(chosen(await findArtwork('bo2', 'cover', undefined, [cache])), 'header.jpg');
   await fs.writeFile(path.join(folder, 'library_hero.jpg'), jpeg('hero'));
-  assert.equal(decoded(await artworkFor('bo2', 'cover', undefined, [cache])), 'hero');
-  assert.equal(decoded(await artworkFor('bo2', 'hero', undefined, [cache])), 'hero');
+  assert.equal(chosen(await findArtwork('bo2', 'cover', undefined, [cache])), 'library_hero.jpg');
+  assert.equal(chosen(await findArtwork('bo2', 'hero', undefined, [cache])), 'library_hero.jpg');
 });
 
 test('the transparent game logo is read from the Steam cache, including hashed subfolders', async t => {
@@ -35,9 +35,10 @@ test('the transparent game logo is read from the Steam cache, including hashed s
   const nested = path.join(cache, appIds.mw2, '0123abcd');
   await fs.mkdir(nested, { recursive: true });
   await fs.writeFile(path.join(nested, 'logo.png'), png('logo'));
-  const logo = await artworkFor('mw2', 'logo', undefined, [cache]);
-  assert.match(logo, /^data:image\/png;base64,/);
-  await assert.rejects(artworkFor('mw2', 'wallpaper', undefined, [cache]), /Unknown artwork type/);
+  const logo = await findArtwork('mw2', 'logo', undefined, [cache]);
+  assert.equal(chosen(logo), 'logo.png');
+  assert.equal(logo.mime, 'image/png');
+  await assert.rejects(findArtwork('mw2', 'wallpaper', undefined, [cache]), /Unknown artwork type/);
 });
 
 test('custom images replace the card and header, never the logo', async t => {
@@ -47,10 +48,9 @@ test('custom images replace the card and header, never the logo', async t => {
   const manager = new ServerManager(path.join(dir, 'settings.json'), () => {});
   manager.detected = { steamPath: path.join(dir, 'no-steam'), games: {} };
   manager.data.games.cod4 = { artwork: { cover: custom, hero: custom, logo: custom } };
-  assert.match(await manager.artwork('cod4', 'cover'), /^data:image\/png/);
-  assert.match(await manager.artwork('cod4', 'hero'), /^data:image\/png/);
-  const logo = await manager.artwork('cod4', 'logo');
-  assert.ok(logo === null || !decoded(logo).startsWith('custom'), 'the logo comes from Steam only');
+  assert.equal((await manager.artworkMeta('cod4', 'cover')).file, custom);
+  assert.equal((await manager.artworkMeta('cod4', 'hero')).file, custom);
+  assert.notEqual((await manager.artworkMeta('cod4', 'logo'))?.file, custom, 'the logo comes from Steam only');
 });
 
 test('the setup checklist flags follow each preflight area for a Plutonium game', async t => {
