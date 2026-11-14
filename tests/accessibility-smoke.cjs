@@ -44,7 +44,20 @@ async function audit(win, name, axeSource) {
     id: item.id, impact: item.impact, help: item.help,
     nodes: item.nodes.map(node => ({ target: node.target, summary: node.failureSummary }))
   })), incomplete: result.incomplete.length }))`);
-  if (result.violations.length) accessibilityFailures.push({ page: name, violations: result.violations });
+  if (result.violations.length) {
+    // Record the computed state of each failing node: CI-only failures are
+    // usually a different control state, and colors alone do not say which.
+    const targets = result.violations.flatMap(item => item.nodes.map(node => node.target));
+    const detail = await win.webContents.executeJavaScript(`(${JSON.stringify(targets)}).map(selector => {
+      const element = Array.isArray(selector) ? document.querySelector(selector.join(' ')) : document.querySelector(selector);
+      if (!element) return { selector, missing: true };
+      const style = getComputedStyle(element);
+      const chain = []; for (let node = element.parentElement; node && chain.length < 6; node = node.parentElement) chain.push(node.className || node.tagName);
+      return { selector, tag: element.tagName, disabled: element.disabled === true, text: (element.textContent || '').trim().slice(0, 40),
+        color: style.color, background: style.backgroundColor, opacity: style.opacity, chain, outer: element.outerHTML.slice(0, 240) };
+    })`).catch(() => []);
+    accessibilityFailures.push({ page: name, violations: result.violations, detail });
+  }
   console.log(`Accessibility: ${name} ${result.violations.length ? 'FAILED' : 'passed'} (${result.incomplete} checks require manual review).`);
 }
 async function layout(win, name, maxWidth = null) {
