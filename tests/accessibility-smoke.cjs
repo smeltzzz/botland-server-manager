@@ -109,6 +109,8 @@ async function audit(win, name, axeSource) {
         color: style.color, background: style.backgroundColor, opacity: style.opacity, chain, outer: element.outerHTML.slice(0, 240) };
     })`).catch(() => []);
     accessibilityFailures.push({ page: name, violations: result.violations, detail });
+    // Print immediately: a later assertion must not hide the rule and node.
+    console.error(`Accessibility detail for ${name}:`, JSON.stringify({ violations: result.violations, detail }, null, 2));
   }
   console.log(`Accessibility: ${name} ${result.violations.length ? 'FAILED' : 'passed'} (${result.incomplete} checks require manual review).`);
 }
@@ -156,7 +158,12 @@ async function responsive(win, name) {
   const before = await win.webContents.executeJavaScript('document.documentElement.clientWidth');
   win.webContents.setZoomFactor(2);
   try { await layout(win, `${name} 200% zoom`, Math.floor(before / 2)); }
-  finally { win.webContents.setZoomFactor(1); }
+  finally {
+    win.webContents.setZoomFactor(1);
+    win.setSize(1380, 1000);
+    // Zoom reset and resize are asynchronous; settle before the next assertion.
+    await layout(win, `${name} reset`);
+  }
 }
 async function capture(win, filename) {
   if (!captures) return;
@@ -223,12 +230,13 @@ app.whenReady().then(async () => {
     })`);
     await audit(win, 'Dashboard (pseudo RTL)', axeSource);
     await responsive(win, 'Dashboard (pseudo RTL)');
+    await win.webContents.executeJavaScript('new Promise(resolve => requestAnimationFrame(() => requestAnimationFrame(resolve)))');
     const mirrored = await win.webContents.executeJavaScript(`(() => {
       const sidebar = document.querySelector('.sidebar').getBoundingClientRect();
       return { dir: document.documentElement.dir, mirrored: sidebar.left > innerWidth / 2, overflow: document.documentElement.scrollWidth - document.documentElement.clientWidth };
     })()`);
     assert.equal(mirrored.dir, 'rtl');
-    assert.ok(mirrored.mirrored, 'the sidebar mirrors to the right in RTL');
+    assert.ok(mirrored.mirrored, `the sidebar mirrors to the right in RTL: ${JSON.stringify(mirrored)}`);
     assert.ok(mirrored.overflow <= 1, 'no horizontal overflow with expanded RTL strings');
     await win.webContents.executeJavaScript("document.querySelector('[data-game=\"cod4\"]').click()");
     await waitFor(win, '.detail-tabs');

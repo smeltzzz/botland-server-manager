@@ -2,7 +2,7 @@
 
 Notable changes to botLANd Server Manager are recorded here. This project follows [Semantic Versioning](https://semver.org/).
 
-## 1.2.27
+## 1.2.28
 
 ### Reliability
 
