@@ -61,16 +61,21 @@ function assignment(line, dialect = 'dvar') {
   }
   return { key: match[2].toLowerCase(), sourceKey: match[2], value, prefix: match[1] + match[2] + match[3], suffix };
 }
+// Line numbers only, never line text: the offending line may hold a secret.
+function unsafeConfig(reason, line) {
+  return new Error(`Cannot safely read config${line ? ` (line ${line})` : ''}: ${reason}`);
+}
 function withoutBlockComments(text) {
   // Keep offsets and line endings intact. Comment markers inside quoted values
   // or // comments are literal text, not the start/end of a block comment.
   const result = text.split('');
-  let block = false; let quoted = false; let lineComment = false; let lineStart = true;
+  let block = false; let quoted = false; let lineComment = false; let lineStart = true; let line = 1;
   for (let i = 0; i < result.length; i++) {
     const char = result[i]; const next = result[i + 1];
     if (char === '\r' || char === '\n') {
-      if (quoted) throw new Error('Cannot safely read config: an unterminated quoted value needs fixing in a text editor.');
+      if (quoted) throw unsafeConfig('an unterminated quoted value needs fixing in a text editor.', line);
       lineComment = false; lineStart = true;
+      if (char === '\n' || next !== '\n') line++;
       continue;
     }
     if (!block && !quoted && lineStart && (char === '#' || char === ';')) lineComment = true;
@@ -81,19 +86,21 @@ function withoutBlockComments(text) {
     } else if (!lineComment) {
       // Engines differ on escaped quotes. Do not guess and expose a trailing
       // command as a non-secret value (or rewrite the wrong command).
-      if (char === '\\' && next === '"') throw new Error('Cannot safely read config: escaped quotes need fixing in a text editor.');
+      if (char === '\\' && next === '"') throw unsafeConfig('escaped quotes need fixing in a text editor.', line);
       if (char === '"') quoted = !quoted;
       else if (!quoted && char === '/' && next === '/') lineComment = true;
       else if (!quoted && char === '/' && next === '*') { result[i] = result[++i] = ' '; block = true; }
     }
   }
-  if (quoted) throw new Error('Cannot safely read config: an unterminated quoted value needs fixing in a text editor.');
+  if (quoted) throw unsafeConfig('an unterminated quoted value needs fixing in a text editor.', line);
   return result.join('');
 }
 function parseEntries(text, dialect = 'dvar') {
   const entries = new Map();
   withoutBlockComments(text).split(/\r?\n/).forEach((line, lineIndex) => {
-    const item = assignment(line, dialect);
+    let item;
+    try { item = assignment(line, dialect); }
+    catch (error) { throw unsafeConfig(error.message.replace(/^Cannot safely read config: /, ''), lineIndex + 1); }
     if (!item) return;
     const old = entries.get(item.key);
     entries.set(item.key, { ...item, lineIndex, count: (old?.count || 0) + 1 });

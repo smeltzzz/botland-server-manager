@@ -26,6 +26,7 @@ test('chained commands fail closed for reads and previews, with no changed bytes
     await fs.writeFile(file, original);
     const check = error => /Cannot safely read config/.test(error.message) && !error.message.includes(secret);
     assert.throws(() => parseConfig(text, opts), check);
+    assert.throws(() => parseConfig(text, opts), /\(line 2\)/);
     await assert.rejects(readDocument(file, opts), check);
     await assert.rejects(previewConfig(file, { sv_hostname: 'After' }, opts), check);
     await assert.rejects(saveConfig(file, { sv_hostname: 'After' }, opts), check);

@@ -106,6 +106,10 @@ test('all six games block unreadable or malformed UTF-16 base configs before Sta
     assert.ok((await manager.check(id)).blockers.some(message => message.startsWith('Could not read server config')), id);
     manager.broadcastState = async () => {};
     await assert.rejects(manager.start(id), /Could not read server config/, id);
+    // A missing closing quote (as in some stock IW4x configs) names the line to fix.
+    await fs.writeFile(config, '// header\r\nset sv_maxclients "18"\r\nset scr_sab_playerrespawndelay "7.5   // Time before respawn.\r\n');
+    const quoted = (await manager.check(id)).blockers.find(message => message.startsWith('Could not read server config'));
+    assert.ok(quoted && quoted.includes('(line 3)') && quoted.includes('unterminated quoted value'), id);
     // Preflight is not an editor save: keep legacy values outside guided limits.
     await fs.writeFile(config, 'set sv_maxclients "99"\n');
     assert.ok(!(await manager.check(id)).blockers.some(message => message.startsWith('Could not read server config')), id);

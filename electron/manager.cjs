@@ -27,6 +27,13 @@ async function isFile(file) { try { return (await fs.stat(file)).isFile(); } cat
 const LOCALE = /^(?:[a-z]{2,3}(?:-[A-Za-z0-9]{2,8})?|pseudo|pseudo-rtl)$/;
 function validLocale(value) { return LOCALE.test(value); }
 function isPlainObject(value) { return !!value && typeof value === 'object' && !Array.isArray(value); }
+// Name the config and, for parser refusals (which only carry a line number,
+// never line text), say what to fix so users are not left guessing.
+function configReadBlocker(profile, error) {
+  const base = `Could not read server config: ${profile.config.replaceAll('/', '\\')}`;
+  const reason = String(error?.message || '').match(/^Cannot safely read config( \(line \d+\))?: (.{1,200})$/);
+  return reason ? `${base}${reason[1] || ''} - ${reason[2]}` : base;
+}
 // Resolves true once isClosed() holds (checked on 'close'), or false after ms.
 function waitForClose(child, isClosed, ms) {
   return new Promise(resolve => {
@@ -602,7 +609,7 @@ class ServerManager {
             if (mod && mod.value.toLowerCase().replaceAll('\\', '/') !== profile.mod) blockers.push('IW5 server.cfg overrides the Bot Warfare mod. Set fs_game to mods/bots.');
           }
         }
-      } catch { blockers.push(`Could not read server config: ${profile.config.replaceAll('/', '\\')}`); }
+      } catch (error) { blockers.push(configReadBlocker(profile, error)); }
     }
     setup.config = installed && !configMissing && count() === configStart;
     return { gamePath, installed, pathSource, keyStatus, keyReason, configMissing, setup, blockers, warnings, options };
@@ -614,7 +621,7 @@ class ServerManager {
       let config = {};
       if (result.installed && !result.configMissing) {
         try { config = await readConfig(path.join(result.gamePath, profile.config), { id, target: 'base', mode: result.options.mode }); }
-        catch { if (!result.blockers.some(x => x.startsWith('Could not read server config'))) result.blockers.push(`Could not read server config: ${profile.config.replaceAll('/', '\\')}`); }
+        catch (error) { if (!result.blockers.some(x => x.startsWith('Could not read server config'))) result.blockers.push(configReadBlocker(profile, error)); }
       }
       const instance = this.instances.get(id);
       const restart = this.restarts.get(id);
