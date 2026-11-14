@@ -29,13 +29,22 @@ async function waitFor(win, selector) {
     observer.observe(document.body, { childList: true, subtree: true, attributes: true });
   })`);
 }
-async function audit(win, name, axeSource) {
-  await win.webContents.executeJavaScript('document.fonts.ready');
-  await win.webContents.executeJavaScript('new Promise(resolve => requestAnimationFrame(() => requestAnimationFrame(resolve)))');
-  await win.webContents.executeJavaScript(axeSource);
-  // These aria-hidden glyphs are decorative artwork, not readable UI text.
-  // Keep meaningful labels, muted text, and status chips in the contrast audit.
-  const result = await win.webContents.executeJavaScript(`axe.run({ exclude: [
+// React replaces the page shortly after navigation (snapshot/artwork events).
+// axe holds references to the nodes it collected, so a re-render mid-run can
+// make it describe a detached node with colours it never had. Wait for 250 ms
+// without mutations, then only keep violations a second run reproduces.
+async function settleDom(win) {
+  await win.webContents.executeJavaScript(`new Promise(resolve => {
+    let quiet = null;
+    const observer = new MutationObserver(() => { clearTimeout(quiet); quiet = setTimeout(finish, 250); });
+    const finish = () => { observer.disconnect(); clearTimeout(quiet); resolve(); };
+    observer.observe(document.body, { childList: true, subtree: true, attributes: true, characterData: true });
+    quiet = setTimeout(finish, 250);
+    setTimeout(finish, 5000);
+  })`);
+}
+async function runAxe(win) {
+  return win.webContents.executeJavaScript(`axe.run({ exclude: [
     '.intro-mark[aria-hidden="true"]', '.detail-hero-art[aria-hidden="true"]',
     '.card-art-number[aria-hidden="true"]', '.card-art-code[aria-hidden="true"]'
   ] }, {
@@ -44,6 +53,23 @@ async function audit(win, name, axeSource) {
     id: item.id, impact: item.impact, help: item.help,
     nodes: item.nodes.map(node => ({ target: node.target, summary: node.failureSummary }))
   })), incomplete: result.incomplete.length }))`);
+}
+async function audit(win, name, axeSource) {
+  await win.webContents.executeJavaScript('document.fonts.ready');
+  await settleDom(win);
+  await win.webContents.executeJavaScript(axeSource);
+  let result = await runAxe(win);
+  if (result.violations.length) {
+    await settleDom(win);
+    const confirm = await runAxe(win);
+    result = {
+      incomplete: confirm.incomplete,
+      violations: confirm.violations
+        .map(item => ({ ...item, nodes: item.nodes.filter(node => result.violations.some(previous =>
+          previous.id === item.id && previous.nodes.some(old => old.target.join(' ') === node.target.join(' ')))) }))
+        .filter(item => item.nodes.length),
+    };
+  }
   if (result.violations.length) {
     // Record the computed state of each failing node: CI-only failures are
     // usually a different control state, and colors alone do not say which.

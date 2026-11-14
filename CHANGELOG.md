@@ -2,6 +2,10 @@
 
 Notable changes to botLANd Server Manager are recorded here. This project follows [Semantic Versioning](https://semver.org/).
 
+## 1.2.22
+
+- Settle the DOM before the accessibility audit and confirm any violation in a second axe run; a React re-render during the audit could make axe describe a replaced button with colours it never had.
+
 ## 1.2.21
 
 - Give the PowerShell-backed firewall script tests a generous process timeout; a loaded CI runner exceeded the old 20 s cap and reported slow startup as a behaviour failure.
