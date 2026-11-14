@@ -47,15 +47,37 @@ async function audit(win, name, axeSource) {
   if (result.violations.length) accessibilityFailures.push({ page: name, violations: result.violations });
   console.log(`Accessibility: ${name} ${result.violations.length ? 'FAILED' : 'passed'} (${result.incomplete} checks require manual review).`);
 }
-async function layout(win, name) {
-  await win.webContents.executeJavaScript('new Promise(resolve => requestAnimationFrame(() => requestAnimationFrame(resolve)))');
+async function layout(win, name, maxWidth = null) {
+  // Zoom changes re-layout asynchronously. Measuring after two frames still
+  // raced on loaded CI runners (stale 850 px scrollWidth with the new zoomed
+  // clientWidth), so wait until the zoomed width is reached and two consecutive
+  // frames agree.
+  await win.webContents.executeJavaScript(`new Promise(resolve => {
+    let last = '', stable = 0, frames = 0;
+    const target = ${JSON.stringify(maxWidth)};
+    const sample = () => {
+      const d = document.documentElement;
+      const key = [d.clientWidth, d.scrollWidth, matchMedia('(max-width: 850px)').matches].join(':');
+      stable = key === last ? stable + 1 : 0;
+      last = key;
+      frames++;
+      const reached = target === null || d.clientWidth <= target + 2;
+      if ((reached && stable >= 2) || frames > 180) return resolve();
+      requestAnimationFrame(sample);
+    };
+    requestAnimationFrame(sample);
+  })`);
+  // One settled task after the stability loop; Chromium can still be flushing
+  // the zoom-induced reflow when the loop's last frame is observed.
+  await new Promise(resolve => setTimeout(resolve, 120));
   const result = await win.webContents.executeJavaScript(`(() => {
     const shell = document.querySelector('.app-shell');
     const pane = document.querySelector('.main-pane');
     const width = document.documentElement.clientWidth;
     return { overflow: document.documentElement.scrollWidth - width,
       shell: Math.round(shell.getBoundingClientRect().width),
-      pane: Math.round(pane.getBoundingClientRect().width), width };
+      pane: Math.round(pane.getBoundingClientRect().width), width,
+      bodyMinWidth: getComputedStyle(document.body).minWidth, compact: matchMedia('(max-width: 850px)').matches };
   })()`);
   assert.ok(result.overflow <= 1, `${name}: horizontal overflow ${JSON.stringify(result)}`);
   assert.ok(result.pane > 0 && result.shell <= result.width + 1, `${name}: collapsed layout ${JSON.stringify(result)}`);
@@ -66,8 +88,9 @@ async function responsive(win, name) {
     await layout(win, `${name} ${width}px`);
   }
   win.setSize(1380, 1000);
+  const before = await win.webContents.executeJavaScript('document.documentElement.clientWidth');
   win.webContents.setZoomFactor(2);
-  try { await layout(win, `${name} 200% zoom`); }
+  try { await layout(win, `${name} 200% zoom`, Math.floor(before / 2)); }
   finally { win.webContents.setZoomFactor(1); }
 }
 async function capture(win, filename) {
