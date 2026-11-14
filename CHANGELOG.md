@@ -2,6 +2,10 @@
 
 Notable changes to botLANd Server Manager are recorded here. This project follows [Semantic Versioning](https://semver.org/).
 
+## 1.2.24
+
+- Exclude inactive controls from the accessibility audit: WCAG 1.4.3 exempts them, and axe could evaluate a control that was disabled while a panel was still loading.
+
 ## 1.2.23
 
 - Re-audit the settled page in the accessibility smoke until two runs agree, and skip inactive controls, so an async panel load that flips a control from disabled to enabled cannot be reported as a contrast failure.

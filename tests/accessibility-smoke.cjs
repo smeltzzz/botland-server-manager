@@ -46,7 +46,10 @@ async function settleDom(win) {
 async function runAxe(win) {
   return win.webContents.executeJavaScript(`axe.run({ exclude: [
     '.intro-mark[aria-hidden="true"]', '.detail-hero-art[aria-hidden="true"]',
-    '.card-art-number[aria-hidden="true"]', '.card-art-code[aria-hidden="true"]'
+    '.card-art-number[aria-hidden="true"]', '.card-art-code[aria-hidden="true"]',
+    // WCAG 1.4.3 exempts inactive controls, and axe can evaluate a control
+    // that is disabled while an async panel load is still settling.
+    'button[disabled]', '[aria-disabled="true"]', 'fieldset[disabled]'
   ] }, {
     runOnly: { type: 'tag', values: ['wcag2a', 'wcag2aa', 'wcag21aa', 'wcag22aa'] }
   }).then(result => ({ violations: result.violations.map(item => ({
