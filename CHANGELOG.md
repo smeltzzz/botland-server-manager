@@ -2,6 +2,10 @@
 
 Notable changes to botLANd Server Manager are recorded here. This project follows [Semantic Versioning](https://semver.org/).
 
+## 1.2.23
+
+- Re-audit the settled page in the accessibility smoke until two runs agree, and skip inactive controls, so an async panel load that flips a control from disabled to enabled cannot be reported as a contrast failure.
+
 ## 1.2.22
 
 - Settle the DOM before the accessibility audit and confirm any violation in a second axe run; a React re-render during the audit could make axe describe a replaced button with colours it never had.

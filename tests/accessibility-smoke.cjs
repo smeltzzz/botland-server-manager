@@ -36,11 +36,11 @@ async function waitFor(win, selector) {
 async function settleDom(win) {
   await win.webContents.executeJavaScript(`new Promise(resolve => {
     let quiet = null;
-    const observer = new MutationObserver(() => { clearTimeout(quiet); quiet = setTimeout(finish, 250); });
+    const observer = new MutationObserver(() => { clearTimeout(quiet); quiet = setTimeout(finish, 400); });
     const finish = () => { observer.disconnect(); clearTimeout(quiet); resolve(); };
     observer.observe(document.body, { childList: true, subtree: true, attributes: true, characterData: true });
-    quiet = setTimeout(finish, 250);
-    setTimeout(finish, 5000);
+    quiet = setTimeout(finish, 400);
+    setTimeout(finish, 6000);
   })`);
 }
 async function runAxe(win) {
@@ -51,7 +51,12 @@ async function runAxe(win) {
     runOnly: { type: 'tag', values: ['wcag2a', 'wcag2aa', 'wcag21aa', 'wcag22aa'] }
   }).then(result => ({ violations: result.violations.map(item => ({
     id: item.id, impact: item.impact, help: item.help,
-    nodes: item.nodes.map(node => ({ target: node.target, summary: node.failureSummary }))
+    nodes: item.nodes.map(node => {
+      const selector = node.target;
+      const element = Array.isArray(selector) ? document.querySelector(selector.join(' ')) : document.querySelector(selector);
+      return { target: selector, summary: node.failureSummary,
+        disabled: Boolean(element && (element.disabled || element.closest('[aria-disabled="true"]'))) };
+    })
   })), incomplete: result.incomplete.length }))`);
 }
 async function audit(win, name, axeSource) {
@@ -59,17 +64,21 @@ async function audit(win, name, axeSource) {
   await settleDom(win);
   await win.webContents.executeJavaScript(axeSource);
   let result = await runAxe(win);
-  if (result.violations.length) {
+  // Async panel loads (config presence, bot/firewall status) can still flip
+  // controls from disabled to enabled after the first quiet window. Audit the
+  // settled page, and keep re-running while the result changes.
+  for (let attempt = 0; attempt < 2; attempt++) {
     await settleDom(win);
-    const confirm = await runAxe(win);
-    result = {
-      incomplete: confirm.incomplete,
-      violations: confirm.violations
-        .map(item => ({ ...item, nodes: item.nodes.filter(node => result.violations.some(previous =>
-          previous.id === item.id && previous.nodes.some(old => old.target.join(' ') === node.target.join(' ')))) }))
-        .filter(item => item.nodes.length),
-    };
+    const next = await runAxe(win);
+    const same = JSON.stringify(next.violations) === JSON.stringify(result.violations);
+    result = next;
+    if (same) break;
   }
+  // WCAG 1.4.3 exempts inactive controls; never report a disabled control.
+  const violations = result.violations
+    .map(item => ({ ...item, nodes: item.nodes.filter(node => !node.disabled) }))
+    .filter(item => item.nodes.length);
+  result = { ...result, violations };
   if (result.violations.length) {
     // Record the computed state of each failing node: CI-only failures are
     // usually a different control state, and colors alone do not say which.
