@@ -22,6 +22,7 @@ const { SOURCES } = require('./botwarfare-source.cjs');
 const exec = promisify(execFile);
 const safeName = /^[a-z0-9_]+$/i;
 async function exists(file) { try { await fs.access(file); return true; } catch { return false; } }
+async function isFile(file) { try { return (await fs.stat(file)).isFile(); } catch { return false; } }
 function isPlainObject(value) { return !!value && typeof value === 'object' && !Array.isArray(value); }
 // Resolves true once isClosed() holds (checked on 'close'), or false after ms.
 function waitForClose(child, isClosed, ms) {
@@ -64,6 +65,7 @@ class ServerManager {
     // Explicitly refreshed at app startup; standalone test managers stay isolated
     // from the developer's real Steam library and game installations.
     this.detected = null;
+    this.detectError = null;
     this.modSource = services.modSource;
     this.modInstaller = services.modInstaller;
     this.modBusy = new Set();
@@ -211,12 +213,29 @@ class ServerManager {
     this.orphanTimer.unref?.();
   }
   async rescanInstallations() {
-    this.detected = await this.detectInstallations();
+    const previous = this.detected;
+    let next;
+    try { next = await this.detectInstallations(); }
+    catch (error) {
+      // A transient registry/Steam read failure must not erase every install.
+      this.detectError = error.message || 'Installation scan failed.';
+      throw error;
+    }
+    const before = Object.keys(previous?.games || {}).length;
+    const after = Object.keys(next?.games || {}).length;
+    this.detected = next;
+    // reg.exe has a short timeout; an antivirus or profile hiccup can return an
+    // empty library. Keep the result (the user may have moved Steam) but say the
+    // scan looked incomplete instead of silently dropping every card.
+    this.detectError = before > 0 && after === 0
+      ? 'Steam returned no game libraries this time. If your games are still installed, try Rescan installations again.'
+      : null;
     await this.rescanOrphans();
     // Keep the read-only diagnostic off the snapshot path. Only a real startup
     // installation scan installs this unref'd periodic refresh.
     this.ensureOrphanTimer();
     await this.broadcastState();
+    return true;
   }
   async rescanOrphans() {
     if (this.orphanScan) return this.orphanScan;
@@ -290,7 +309,7 @@ class ServerManager {
       profileFor(otherId).executable === 'plutonium' && instance.status !== 'restarting');
   }
   async plutoniumStatus() {
-    if (!this.plutonium) return { available: false, installed: Boolean(this.localAppData()) && await exists(bootstrapPath()), updating: false, lastUpdated: null, error: null };
+    if (!this.plutonium) return { available: false, installed: Boolean(this.localAppData()) && await isFile(bootstrapPath()), updating: false, lastUpdated: null, error: null };
     try { return { available: true, ...await this.plutonium.status() }; }
     catch { return { available: true, installed: false, updating: this.plutonium.updating, lastUpdated: null, error: null }; }
   }
@@ -471,20 +490,20 @@ class ServerManager {
       configMissing = !await exists(configPath);
       if (configMissing) blockers.push(`Server config missing at ${configPath}. Click Create server config in this game's setup checklist.`);
       const engineStart = count();
-      if (profile.id === 'cod4' && !await exists(path.join(gamePath, profile.executable))) blockers.push(`Cod4R/IW3x DedRun missing at ${path.join(gamePath, profile.executable)}. Follow the IW3x hosting guide to install it; stock CoD4x is not supported.`);
-      if (profile.id === 'mw2' && !await exists(path.join(gamePath, profile.executable))) blockers.push(`IW4x executable missing at ${path.join(gamePath, profile.executable)}. Install IW4x in the selected MW2 game folder.`);
+      if (profile.id === 'cod4' && !await isFile(path.join(gamePath, profile.executable))) blockers.push(`Cod4R/IW3x DedRun missing at ${path.join(gamePath, profile.executable)}. Follow the IW3x hosting guide to install it; stock CoD4x is not supported.`);
+      if (profile.id === 'mw2' && !await isFile(path.join(gamePath, profile.executable))) blockers.push(`IW4x executable missing at ${path.join(gamePath, profile.executable)}. Install IW4x in the selected MW2 game folder.`);
       if (profile.id === 'mw3') {
         try {
           // Current Plutonium IW5 also starts with a downgraded Steam install whose
           // iw5mp.exe is x64. Architecture alone does not establish compatibility.
           if (![0x14c, 0x8664].includes(await peMachine(path.join(gamePath, 'iw5mp.exe')))) blockers.push('MW3 multiplayer executable has an unsupported PE architecture.');
         } catch { blockers.push('MW3 multiplayer executable is missing or invalid. Select a working MW3 game folder.'); }
-        if (!await exists(path.join(gamePath, 'mss32.dll'))) blockers.push('MW3 game runtime mss32.dll is missing. Restore compatible MW3 game files; do not copy a DLL from another game.');
+        if (!await isFile(path.join(gamePath, 'mss32.dll'))) blockers.push('MW3 game runtime mss32.dll is missing. Restore compatible MW3 game files; do not copy a DLL from another game.');
       }
       if (!plutonium) setup.engine = count() === engineStart;
       const botsStart = count();
-      if (profile.id === 'cod4' && !await exists(path.join(gamePath, 'mods', 'mp_bots', 'z_svr_bots.iwd'))) blockers.push(`CoD4 Bot Warfare missing at ${path.join(gamePath, 'mods', 'mp_bots', 'z_svr_bots.iwd')}. Click Install Bot Warfare in this game's setup checklist.`);
-      if (profile.id === 'mw2' && !await exists(path.join(gamePath, 'userraw', 'z_svr_bots.iwd'))) blockers.push(`MW2 Bot Warfare missing at ${path.join(gamePath, 'userraw', 'z_svr_bots.iwd')}. Click Install Bot Warfare in this game's setup checklist.`);
+      if (profile.id === 'cod4' && !await isFile(path.join(gamePath, 'mods', 'mp_bots', 'z_svr_bots.iwd'))) blockers.push(`CoD4 Bot Warfare missing at ${path.join(gamePath, 'mods', 'mp_bots', 'z_svr_bots.iwd')}. Click Install Bot Warfare in this game's setup checklist.`);
+      if (profile.id === 'mw2' && !await isFile(path.join(gamePath, 'userraw', 'z_svr_bots.iwd'))) blockers.push(`MW2 Bot Warfare missing at ${path.join(gamePath, 'userraw', 'z_svr_bots.iwd')}. Click Install Bot Warfare in this game's setup checklist.`);
       if (!plutonium) setup.bots = count() === botsStart;
     }
     if (installed && (id === 'cod4' || id === 'mw2') && this.engineUpdater?.prepareLaunch) {
@@ -494,7 +513,7 @@ class ServerManager {
     if (profile.executable === 'plutonium' && !this.localAppData()) {
       blockers.push('The Windows LOCALAPPDATA folder is not set for this user, so Plutonium cannot be located. Sign in with a normal Windows account or restore the LOCALAPPDATA environment variable.');
     } else if (profile.executable === 'plutonium') {
-      setup.plutonium = await exists(bootstrapPath());
+      setup.plutonium = await isFile(bootstrapPath());
       if (!setup.plutonium) blockers.push(`Plutonium is not installed (expected at ${bootstrapPath()}). Click Install Plutonium in this game's setup checklist.`);
       if (keyStatus === 'missing') blockers.push(`Plutonium server key needed for ${profile.short}. Paste your key in this game's setup checklist.`);
       if (keyStatus === 'unavailable') {
@@ -507,14 +526,14 @@ class ServerManager {
       if (id === 'mw3') {
         const storageArchive = path.join(process.env.LOCALAPPDATA || '', 'Plutonium', 'storage', 'iw5', ...profile.mod.split('/'), 'z_svr_bots.iwd');
         const gameArchive = path.join(gamePath, ...profile.mod.split('/'), 'z_svr_bots.iwd');
-        if (!await exists(storageArchive) && (!gamePath || !await exists(gameArchive))) blockers.push('IW5 Bot Warfare archive missing: mods\\bots\\z_svr_bots.iwd. Install the mod in the game folder or Plutonium IW5 storage.');
+        if (!await isFile(storageArchive) && (!gamePath || !await isFile(gameArchive))) blockers.push('IW5 Bot Warfare archive missing: mods\\bots\\z_svr_bots.iwd. Install the mod in the game folder or Plutonium IW5 storage.');
       } else if (id === 'waw' || id === 'bo1') {
         const storageCode = id === 'waw' ? 't4' : 't5';
         const modFiles = id === 'waw' ? ['z_svr_bots.iwd'] : ['mod.ff', 'mp_bots.iwd'];
         const storageMod = path.join(process.env.LOCALAPPDATA || '', 'Plutonium', 'storage', storageCode, ...profile.mod.split('/'));
         const gameMod = gamePath ? path.join(gamePath, ...profile.mod.split('/')) : '';
         for (const name of modFiles) {
-          if (!await exists(path.join(storageMod, name)) && (!gameMod || !await exists(path.join(gameMod, name)))) {
+          if (!await isFile(path.join(storageMod, name)) && (!gameMod || !await isFile(path.join(gameMod, name)))) {
             blockers.push(`${profile.short} Bot Warfare ${name} is missing from ${storageMod}. Install the upstream mod before starting a bot server.`);
           }
         }
@@ -522,7 +541,7 @@ class ServerManager {
       if (id === 'bo2') {
         const scripts = path.join(process.env.LOCALAPPDATA || '', 'Plutonium', 'storage', 't6', 'scripts', 'mp');
         for (const name of ['bots.gsc', 'bots_adapter_pt6.gsc']) {
-          if (!await exists(path.join(scripts, name))) blockers.push(`T6 Bot Warfare ${name} is missing from ${scripts}. Install the upstream scripts before starting a bot server.`);
+          if (!await isFile(path.join(scripts, name))) blockers.push(`T6 Bot Warfare ${name} is missing from ${scripts}. Install the upstream scripts before starting a bot server.`);
         }
       }
       setup.bots = installed && count() === botsStart;
@@ -595,7 +614,7 @@ class ServerManager {
       }
       return { id, title: profile.title, short: profile.short, subtitle: profile.subtitle, family: profile.family, engine: profile.engine,
         configPath: result.gamePath ? path.join(result.gamePath, profile.config) : '',
-        gamePath: result.gamePath, installed: result.installed, pathSource: result.pathSource, keyStatus: result.keyStatus, keyReason: result.keyReason ?? null,
+        gamePath: result.gamePath, detectedPath: this.detected?.games?.[id]?.gamePath || null, installed: result.installed, pathSource: result.pathSource, keyStatus: result.keyStatus, keyReason: result.keyReason ?? null,
         configMissing: result.configMissing, setup: result.setup,
         modBusy: this.modBusy.has(id), engineBusy: this.engineBusy.has(id), config, options: result.options, blockers: result.blockers, warnings: result.warnings,
         status: instance?.status || 'stopped', pid: instance?.child?.pid ?? null, startedAt: instance?.startedAt ?? null,
@@ -612,7 +631,7 @@ class ServerManager {
           nextAttemptAt: restart?.nextAttemptAt || null, cutOff: restart?.cutOff || false },
         logs: (this.logs.get(id) || []).slice(-120) };
     }));
-    return { games, updatesEnabled: this.data.updatesEnabled, updates: this.botUpdates, plutonium: await this.plutoniumStatus() };
+    return { games, updatesEnabled: this.data.updatesEnabled, updates: this.botUpdates, detectError: this.detectError || null, plutonium: await this.plutoniumStatus() };
   }
   // Snapshots are built asynchronously and can finish out of order. A snapshot
   // that finishes after a newer one has been sent is stale and is dropped.
@@ -714,6 +733,31 @@ class ServerManager {
     await this.updateSettings(data => { data.games[id] = { ...data.games[id], ...this.options(id), ...changes }; });
     await this.broadcastState().catch(() => {});
   }
+  // Re-point a game at the folder Steam currently reports, without reopening the
+  // folder picker. Uses the same guards as chooseFolder so a running server can
+  // never be described by a different installation.
+  async useDetectedFolder(id) {
+    profileFor(id);
+    const detected = this.detected?.games?.[id]?.gamePath || '';
+    if (!detected) throw new Error('No detected folder is available for this game.');
+    const inspected = await inspectGameFolder(id, detected);
+    if (!inspected.installed) throw new Error(`No ${profileFor(id).short} multiplayer game executable was found in the detected folder.`);
+    const busy = () => {
+      if (['starting', 'stopping', 'running', 'restarting'].includes(this.instances.get(id)?.status)) throw new Error('Stop this server before changing its game folder.');
+      if (this.modBusy.has(id) || this.engineBusy.has(id)) throw new Error('Wait for the engine or Bot Warfare change to finish before changing this game folder.');
+    };
+    busy();
+    if (this.folderUpdates.has(id)) throw new Error('Wait for the game folder change to finish.');
+    this.folderUpdates.add(id);
+    try {
+      await this.updateSettings(data => {
+        busy();
+        data.games[id] = { ...data.games[id], ...this.options(id), gamePath: detected };
+      });
+    } finally { this.folderUpdates.delete(id); }
+    await this.broadcastState().catch(() => {});
+    return true;
+  }
   async chooseFolder(id, dialogWindow, dialog) {
     profileFor(id);
     const suggested = await this.gamePath(id);
@@ -746,7 +790,14 @@ class ServerManager {
     profileFor(id);
     const gamePath = await this.gamePath(id);
     if (!(await inspectGameFolder(id, gamePath)).installed) throw new Error('Select an installed game folder before creating a starter config.');
-    const file = await writeStarterConfig(id, gamePath);
+    const file = await writeStarterConfig(id, gamePath).catch(error => {
+      if (error.code === 'EEXIST') {
+        const friendly = new Error(`${profileFor(id).config} already exists. Open Configuration to edit it instead.`);
+        friendly.code = 'EEXIST';
+        throw friendly;
+      }
+      throw error;
+    });
     // The file now exists; a refresh failure must not report the creation as failed.
     await this.broadcastState().catch(() => {});
     return file;
@@ -764,7 +815,7 @@ class ServerManager {
     if (!modes.some(item => item.value === selectedMode)) throw new Error('Selected mode is not installed.');
     const file = id === 'mw3' ? path.join(gamePath, 'admin', `${selectedMode}.dsr`)
       : path.join(gamePath, 'main', 'gamesettings', `${selectedMode}.cfg`);
-    if (!await exists(file)) throw new Error('Mode rules file is missing.');
+    if (!await isFile(file)) throw new Error('Mode rules file is missing.');
     return { file, mode: selectedMode };
   }
   async document(id, target = 'base', mode) {
@@ -1058,10 +1109,10 @@ class ServerManager {
 
   buildCommand(profile, gamePath, port, mode, key, lan = true) {
     if (profile.id === 'cod4') return { file: path.join(gamePath, profile.executable), argv0: profile.executable, cwd: gamePath,
-      args: ['-nogui', '+set', 'dedicated', lan ? '1' : '2', '+set', 'sv_pure', '0', '+set', 'net_port', String(port), '+set', 'fs_game', profile.mod, '+exec', 'botserver.cfg', '+exec', 'botserver_rotation.cfg', '+map_rotate'] };
+      args: ['-nogui', '+set', 'dedicated', lan ? '1' : '2', '+set', 'sv_pure', '0', '+set', 'net_port', String(port), '+set', 'fs_game', profile.mod, '+exec', path.basename(profile.config), '+exec', path.basename(profile.rotation), '+map_rotate'] };
     // IW4x interprets an absolute argv[0] containing spaces as a console command.
     if (profile.id === 'mw2') return { file: path.join(gamePath, profile.executable), argv0: 'iw4x.exe', cwd: gamePath,
-      args: ['-dedicated', '-stdout', '+set', 'fs_game', '', '+set', 'sv_lanonly', lan ? '1' : '0', '+set', 'net_port', String(port), '+exec', 'serverlan.cfg', '+exec', 'serverlan_rotation.cfg', '+set', 'g_gametype', mode, '+set', 'logfile', '1', '+set', 'party_enable', '0', '+map_rotate'] };
+      args: ['-dedicated', '-stdout', '+set', 'fs_game', '', '+set', 'sv_lanonly', lan ? '1' : '0', '+set', 'net_port', String(port), '+exec', path.basename(profile.config), '+exec', path.basename(profile.rotation), '+set', 'g_gametype', mode, '+set', 'logfile', '1', '+set', 'party_enable', '0', '+map_rotate'] };
     const codes = { waw: 't4mp', bo1: 't5mp', mw3: 'iw5mp', bo2: 't6mp' };
     const args = [codes[profile.id], gamePath, '-dedicated'];
     // BO1's launch profile has no -lan path; the other Plutonium titles flip with it.
@@ -1070,7 +1121,7 @@ class ServerManager {
     args.push('+set', 'key', key, '+set', 'net_port', String(port));
     if (profile.mod) args.push('+set', 'fs_game', profile.mod);
     if (profile.id === 'bo1') args.push('+set', 'net_ip', '0.0.0.0');
-    if (profile.id === 'mw3') args.push('+set', 'sv_config', 'server.cfg');
+    if (profile.id === 'mw3') args.push('+set', 'sv_config', path.basename(profile.config));
     else args.push('+exec', path.basename(profile.config));
     if (profile.id === 'waw' || profile.id === 'bo1') args.push('+exec', path.basename(profile.rotation));
     if (profile.id !== 'mw3') args.push('+map_rotate');

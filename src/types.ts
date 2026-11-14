@@ -22,6 +22,8 @@ export interface Game {
   gamePath: string;
   installed: boolean;
   pathSource: 'manual' | 'steam' | 'none';
+  /** Folder Steam currently reports, even when a manual override is in use. */
+  detectedPath?: string | null;
   keyStatus: 'not-required' | 'stored' | 'missing' | 'unavailable';
   /** Why keyStatus is 'unavailable'; never contains key material. */
   keyReason?: 'unreadable' | 'damaged' | 'encryption-unavailable' | null;
@@ -49,7 +51,7 @@ export interface BotManifest { channel: string; ref: string; refType: 'tag' | 'c
 export interface BotStatus { state: 'installed' | 'unknown' | 'not-installed'; targetPath: string; manifest: BotManifest | null; channel: 'stable' | 'development'; source: { supported: boolean; ref: string | null; notes: string; status: string } }
 export interface BotUpdate { status: string; latest: { tag?: string; commit?: string; developmentCommit?: string | null }; updateAvailable: boolean | null }
 export interface PlutoniumStatus { available: boolean; installed: boolean; updating: boolean; lastUpdated: string | null; error: string | null }
-export interface Snapshot { games: Game[]; updatesEnabled: boolean; updates: Partial<Record<GameId, BotUpdate>>; plutonium: PlutoniumStatus }
+export interface Snapshot { games: Game[]; updatesEnabled: boolean; updates: Partial<Record<GameId, BotUpdate>>; detectError?: string | null; plutonium: PlutoniumStatus }
 export interface MapData { maps: string[]; modes: { value: string; label: string }[] }
 export type ConfigTarget = 'base' | 'mode';
 export interface ConfigField { key: string; sourceKey: string; section: string; label: string; hint?: string; type: 'text' | 'integer' | 'decimal' | 'select'; choices?: { value: string; label: string }[]; min?: number; max?: number; maxLength?: number; default?: string; presentOnly?: boolean; allowEmpty?: boolean; dependsOn?: { key: string; value: string } }
@@ -62,12 +64,16 @@ export type ManagerEvent = { type: 'state'; snapshot: Snapshot } | { type: 'log'
 export interface ManagerApi {
   snapshot(): Promise<Snapshot>;
   copyDiagnostics(): Promise<boolean>;
+  copyText(text: string): Promise<boolean>;
+  openLogs(): Promise<boolean>;
   setUnsavedChanges(dirty: boolean): Promise<boolean>;
   maps(id: GameId): Promise<MapData>;
   start(id: GameId): Promise<void>;
   stop(id: GameId): Promise<void>;
   chooseFolder(id: GameId): Promise<boolean>;
   rescanInstallations(): Promise<void>;
+  useDetectedFolder(id: GameId): Promise<boolean>;
+
   createStarterConfig(id: GameId): Promise<string>;
   copyConnectAddress(id: GameId, address: string): Promise<boolean>;
   setAutoRestart(id: GameId, enabled: boolean): Promise<void>;

@@ -127,6 +127,8 @@ export function createDemoManager(): ManagerApi {
   return {
     snapshot: async () => structuredClone(snapshot),
     copyDiagnostics: async () => false, // Browser preview never writes to the clipboard.
+    copyText: async () => false,
+    openLogs: async () => false,
     setUnsavedChanges: async () => true,
     maps: async (id): Promise<MapData> => ({ maps: pool, modes: demoModes(id) }),
     start: async id => {
@@ -143,6 +145,7 @@ export function createDemoManager(): ManagerApi {
     setAutoRestart: async (id, enabled) => { find(id).restart.enabled = enabled; emit(); },
     rescanOrphans: async () => { emit(); },
     chooseFolder: async id => { const game = find(id); game.installed = true; game.pathSource = 'manual'; game.gamePath = `C:\\Example\\SelectedGames\\${game.title}`; game.configPath = `${game.gamePath}\\main\\server.cfg`; updateDemoReadiness(id); return true; },
+    useDetectedFolder: async () => false,
     rescanInstallations: async () => { emit(); },
     createStarterConfig: async id => { const game = find(id); if (!game.installed) throw new Error('Choose a game folder first.'); game.config.sv_hostname = `botLANd ${game.short} Server`; configured.add(id); updateDemoReadiness(id); return game.configPath; },
     listConfigBackups: async () => [],

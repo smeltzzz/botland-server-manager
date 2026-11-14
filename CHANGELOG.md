@@ -2,6 +2,30 @@
 
 Notable changes to botLANd Server Manager are recorded here. This project follows [Semantic Versioning](https://semver.org/).
 
+## 1.2.26
+
+### Security and packaging
+
+- Serve the renderer from a custom pp://botland protocol that only returns files inside dist/, and enable grantFileProtocolExtraPrivileges: false; packaged builds now flip every recommended Electron fuse (runAsNode, NODE_OPTIONS, --inspect off; ASAR integrity, onlyLoadAppFromAsar on).
+
+### Reliability
+
+- Keep scanning supported when Steam returns no libraries: the cards still update but a notice explains the scan looked incomplete instead of failing silently.
+- File prerequisites (executables, mss32.dll, Bot Warfare archives, mode files) are checked with isFile, so a directory with the right name can no longer satisfy the checklist.
+- Launch arguments derive config/rotation names from the profile instead of hard-coded strings.
+- Creating a starter config over an existing file reports an actionable message and keeps EEXIST.
+- A manual game folder can be replaced with the folder Steam currently reports via "Use detected folder".
+
+### Performance
+
+- Coalesce console lines (80 ms) into one render instead of re-rendering the app per line, and compute configuration edits with key maps instead of scanning every entry per keystroke.
+
+### UI and accessibility
+
+- New console toolbar: filter, pause/resume (with buffered-line count), jump to latest, copy visible output and open the session-log folder; errors keep a text token and paused output is announced politely.
+- Skip-to-content link, per-game window titles, dialog focus starts at the heading, review rows read "Before/After" with decorative arrows hidden, map pool is a labelled group, and the main toggles have stable accessible names.
+- Explicit disabled-reason text for Bot Warfare actions, forced-colors styling for state chips/toggles, a sticky top bar with elapsed seconds for long operations, and the dashboard notices a no-libraries scan.
+
 ## 1.2.25
 
 - Report reduced-opacity/inactive controls as manual-review notes instead of CI failures in the accessibility smoke; a runner can catch a panel mid-transition from disabled to enabled, where the composited colour is not a user-visible state.

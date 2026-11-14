@@ -1,7 +1,7 @@
 const path = require('node:path');
 const fs = require('node:fs/promises');
 const { constants } = require('node:fs');
-const { app, BrowserWindow, Menu, clipboard, dialog, ipcMain, safeStorage, session, shell } = require('electron');
+const { app, BrowserWindow, Menu, clipboard, dialog, ipcMain, protocol, safeStorage, session, shell } = require('electron');
 const { ServerManager } = require('./manager.cjs');
 const { KeyStore } = require('./key-store.cjs');
 const { BotWarfareSource } = require('./botwarfare-source.cjs');
@@ -22,6 +22,47 @@ const engineGuides = {
   mw3: 'https://plutonium.pw/docs/server/iw5/setting-up-a-server/',
   bo2: 'https://plutonium.pw/docs/server/t6/setting-up-a-server/',
 };
+
+// Serve the built renderer from a real origin instead of file://. This is what
+// lets the packaged build disable `grantFileProtocolExtraPrivileges`, and it
+// keeps the page out of file://'s broad read access.
+if (typeof protocol?.registerSchemesAsPrivileged === 'function') {
+  protocol.registerSchemesAsPrivileged([
+    { scheme: 'app', privileges: { standard: true, secure: true, supportFetchAPI: true, codeCache: true } },
+  ]);
+}
+
+const MIME = {
+  '.html': 'text/html; charset=utf-8',
+  '.js': 'text/javascript; charset=utf-8',
+  '.css': 'text/css; charset=utf-8',
+  '.json': 'application/json',
+  '.svg': 'image/svg+xml',
+  '.png': 'image/png',
+  '.jpg': 'image/jpeg',
+  '.jpeg': 'image/jpeg',
+  '.webp': 'image/webp',
+  '.ico': 'image/x-icon',
+  '.ttf': 'font/ttf',
+  '.woff': 'font/woff',
+  '.woff2': 'font/woff2',
+};
+async function serveRenderer(request) {
+  const root = path.join(__dirname, '..', 'dist');
+  let pathname;
+  try { pathname = decodeURIComponent(new URL(request.url).pathname); }
+  catch { return new Response('Bad request', { status: 400 }); }
+  const relative = pathname === '/' || pathname === '' ? 'index.html' : pathname.replace(/^\/+/, '');
+  const target = path.resolve(root, relative);
+  // Only files inside dist; no traversal, no absolute or UNC escapes.
+  if (target !== root && !target.startsWith(root + path.sep)) return new Response('Not found', { status: 404 });
+  try {
+    const body = await fs.readFile(target);
+    return new Response(body, { headers: { 'content-type': MIME[path.extname(target).toLowerCase()] || 'application/octet-stream' } });
+  } catch {
+    return new Response('Not found', { status: 404 });
+  }
+}
 
 /** @type {import('electron').BrowserWindow | undefined} */
 let window;
@@ -126,7 +167,8 @@ async function createWindow() {
     manager?.cancelShutdown?.();
   });
   if (app.isPackaged) Menu.setApplicationMenu(null); // No Reload or DevTools shortcuts in releases.
-  if (app.isPackaged) await window.loadFile(path.join(__dirname, '..', 'dist', 'index.html'));
+  if (typeof protocol?.handle === 'function') protocol.handle('app', serveRenderer);
+  if (app.isPackaged) await window.loadURL('app://botland/index.html');
   else await window.loadURL('http://127.0.0.1:5173');
   // Metadata checks run in the background and never delay the first window.
   manager.checkBotUpdates?.().catch(() => {});
@@ -171,6 +213,18 @@ if (primaryInstance) app.whenReady().then(() => {
         clipboard.writeText(formatDiagnostics(await manager.snapshot(), app.getVersion(), process.platform, process.arch));
         return true;
       }
+      case 'copyText': {
+        if (typeof payload.text !== 'string' || payload.text.length > 200_000) throw new Error('Invalid text to copy.');
+        clipboard.writeText(payload.text);
+        return true;
+      }
+      case 'openLogs': {
+        const directory = path.join(app.getPath('userData'), 'session-logs');
+        await fs.mkdir(directory, { recursive: true });
+        const error = await shell.openPath(directory);
+        if (error) throw new Error(error);
+        return true;
+      }
       case 'maps': return manager.maps(id);
       case 'start': return manager.start(id);
       case 'stop': return manager.stop(id);
@@ -209,6 +263,7 @@ if (primaryInstance) app.whenReady().then(() => {
       }
       case 'chooseFolder': return manager.chooseFolder(id, window, dialog);
       case 'rescanInstallations': return manager.rescanInstallations();
+      case 'useDetectedFolder': return manager.useDetectedFolder(id);
       case 'createStarterConfig': return manager.createStarterConfig(id);
       case 'botStatus': return manager.botStatus(id);
       case 'botAction': return manager.botAction(id, payload.operation);

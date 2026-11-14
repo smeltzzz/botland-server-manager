@@ -132,3 +132,19 @@ test('config backups can be listed and restored when the live config is missing'
   // The missing file was created; no previous-copy backup was invented.
   assert.equal((await listBackups(file)).length, 1);
 });
+
+test('a manual folder can be replaced by the detected Steam folder, but not while running', async t => {
+  const dir = await temporary(t);
+  const manager = new ServerManager(path.join(dir, 'settings.json'), () => {});
+  manager.broadcastState = async () => {};
+  const install = path.join(dir, 'install');
+  await fs.mkdir(install, { recursive: true });
+  await fs.writeFile(path.join(install, 'iw3mp.exe'), 'synthetic');
+  manager.detected = { games: { cod4: { gamePath: install } } };
+  manager.data.games.cod4 = { gamePath: path.join(dir, 'old') };
+  manager.instances.set('cod4', { status: 'running' });
+  await assert.rejects(manager.useDetectedFolder('cod4'), /Stop this server before changing its game folder/);
+  manager.instances.delete('cod4');
+  assert.equal(await manager.useDetectedFolder('cod4'), true);
+  assert.equal(manager.data.games.cod4.gamePath, install);
+});
