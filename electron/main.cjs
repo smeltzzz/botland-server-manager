@@ -49,7 +49,7 @@ async function createWindow() {
   await migrateSettings();
   const modSource = new BotWarfareSource({ userData: app.getPath('userData') });
   const modInstaller = new BotWarfareInstaller({ source: modSource, localAppData: process.env.LOCALAPPDATA,
-    isRunning: id => manager?.instances.has(id) || false });
+    isRunning: id => manager?.instances.get(id) || false });
   manager = new ServerManager(path.join(app.getPath('userData'), 'settings.json'), data => {
     // Server output can arrive while the renderer is reloading or gone; sending to a
     // disposed frame throws and must not crash the main process or end a stream handler.

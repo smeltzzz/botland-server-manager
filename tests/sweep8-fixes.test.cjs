@@ -68,9 +68,9 @@ test('Start finishes installer recovery first and refuses to launch when it fail
   const manager = quietManager(dir, { modInstaller });
   manager.data.games.cod4 = { gamePath: dir };
   await assert.rejects(manager.start('cod4'), /interrupted Bot Warfare change.*journal/);
-  // Recovery runs before the instance is reserved, so the installer's
-  // running-game check does not mistake this launch for a live server.
-  assert.deepEqual(calls, [['cod4', dir, false]]);
+  // Reserve before recovery so folder edits and duplicate Starts cannot race it.
+  // prepareLaunch recovers journals without the explicit-mod-action running check.
+  assert.deepEqual(calls, [['cod4', dir, true]]);
   assert.equal(manager.instances.has('cod4'), false);
   assert.ok(manager.logs.get('cod4').some(entry => /interrupted Bot Warfare change/.test(entry.message)));
 });

@@ -123,7 +123,7 @@ function demoDocument(id: GameId, target: 'base' | 'mode', mode?: string): Confi
 export function createDemoManager(): ManagerApi {
   document.documentElement.dataset.demo = 'true';
   // Remember applied rules so the preview does not "lose" them on the next refresh.
-  const firewallRules: Partial<Record<GameId, 'lan' | 'any'>> = {};
+  const firewallRules: Partial<Record<GameId, { scope: 'lan' | 'any'; port: number }>> = {};
   return {
     snapshot: async () => structuredClone(snapshot),
     copyDiagnostics: async () => false, // Browser preview never writes to the clipboard.
@@ -135,7 +135,7 @@ export function createDemoManager(): ManagerApi {
       if (game.status !== 'stopped') throw new Error('This server is already starting or running.');
       if (game.modBusy) throw new Error('Wait for the Bot Warfare change to finish before starting this server.');
       if (game.engineBusy) throw new Error('Wait for the engine update to finish before starting this server.');
-      if (id === 'bo1' && firewallRules.bo1 !== 'any') throw new Error('A verified public inbound UDP firewall rule is required before starting BO1.');
+      if (id === 'bo1' && (firewallRules.bo1?.scope !== 'any' || firewallRules.bo1.port !== game.options.port)) throw new Error('A verified public inbound UDP firewall rule is required before starting BO1.');
       game.status = 'running'; game.pid = 4108; game.activePort = game.options.port; game.startedAt = new Date().toISOString(); game.restart = { ...game.restart, attempts: 0, nextAttemptAt: null, cutOff: false }; demoConnect(game); game.logs = [{ at: new Date().toISOString(), level: 'info', source: 'manager', message: `Started ${game.engine} with the selected map rotation.` }, { at: new Date().toISOString(), level: 'info', source: 'stdout', message: 'Demo server output (no game process launched).' }]; emit();
     },
     stop: async id => { const game = find(id); game.status = 'stopped'; game.pid = null; game.activePort = null; game.connect = { primaryAddress: null, ambiguous: false, candidates: [] }; game.restart.nextAttemptAt = null; emit(); },
@@ -186,8 +186,18 @@ export function createDemoManager(): ManagerApi {
       return demoDocument(id, target, mode);
     },
     artwork: async () => null, openDocs: async () => {}, chooseArtwork: async () => false, resetArtwork: async () => null, openDocument: async () => false,
-    firewallStatus: async id => ({ name: `botLANd ${find(id).short} UDP`, port: find(id).activePort ?? find(id).options.port, state: firewallRules[id] ?? 'missing', ...(firewallRules[id] ? { managed: true } : {}) }),
-    firewallApply: async id => { firewallRules[id] = id === 'bo1' || !find(id).options.lan ? 'any' : 'lan'; return { name: `botLANd ${find(id).short} UDP`, port: find(id).activePort ?? find(id).options.port, state: firewallRules[id], managed: true }; },
+    firewallStatus: async id => {
+      const port = find(id).activePort ?? find(id).options.port;
+      const rule = firewallRules[id];
+      return { name: `botLANd ${find(id).short} UDP`, port, state: !rule ? 'missing' : rule.port === port ? rule.scope : 'drift', ...(rule ? { managed: true } : {}) };
+    },
+    firewallApply: async id => {
+      const game = find(id);
+      const scope = id === 'bo1' || !game.options.lan ? 'any' : 'lan';
+      const port = game.activePort ?? game.options.port;
+      firewallRules[id] = { scope, port };
+      return { name: `botLANd ${game.short} UDP`, port, state: scope, managed: true };
+    },
     firewallRemove: async id => { if (id === 'bo1' && find(id).status !== 'stopped') throw new Error('Stop BO1 before removing its required public firewall rule.'); delete firewallRules[id]; return { name: `botLANd ${find(id).short} UDP`, port: find(id).activePort ?? find(id).options.port, state: 'missing' }; },
     // Mirror the real manager's validation: a browser preview must not confirm
     // options that the desktop app would reject.

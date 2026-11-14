@@ -141,7 +141,7 @@ class BotWarfareInstaller {
     this.localAppData = localAppData;
     this.isRunning = isRunning;
     this.now = now;
-    this.fault = fault; // Injectable fault after each published file; tests use this for rollback.
+    this.fault = fault; // Offline tests inject edits at staging boundaries or faults after publication.
     this.pending = new Map();
   }
   queued(id, task) {
@@ -199,8 +199,12 @@ class BotWarfareInstaller {
       await fs.rm(done, { recursive: true }).catch(() => {});
     } catch { /* Retried on the next Bot Warfare action. */ }
   }
-  async checkRunning(id) {
+  async checkRunning(id, launchReservation) {
     const state = await this.isRunning(id);
+    // Only the exact launch that requested recovery may hold this reservation.
+    // A spawned child (even before its spawn event) must never be exempted.
+    if (state && typeof state === 'object' && state === launchReservation &&
+        state.status === 'starting' && !state.child) return;
     if (state === true || state === 'running' || state === 'starting' ||
         (state && typeof state === 'object' && (state.running || state.starting || ['running', 'starting'].includes(state.status)))) {
       throw new Error('Stop the starting or running game before changing Bot Warfare.');
@@ -223,7 +227,7 @@ class BotWarfareInstaller {
   // leaves a journaled stage folder; finish or roll it back first so the game
   // never loads a half-published mix of versions. Targets this installer cannot
   // manage (for example a missing Plutonium storage root) have nothing to recover.
-  async prepareLaunch(id, gamePath) {
+  async prepareLaunch(id, gamePath, launchReservation) {
     return this.queued(id, async () => {
       let paths;
       try { paths = await this.paths(id, gamePath); }
@@ -231,10 +235,10 @@ class BotWarfareInstaller {
         if (TARGETS[id][0] === 'plutonium' && error.code === 'PLUTONIUM_STORAGE_ABSENT') return;
         throw error;
       }
-      await this.recover(id, paths);
+      await this.recover(id, paths, launchReservation);
     });
   }
-  async recover(id, paths) {
+  async recover(id, paths, launchReservation) {
     await noLinks(paths.parent);
     await this.discardLegacyHistory(id, paths);
     let names;
@@ -243,7 +247,7 @@ class BotWarfareInstaller {
     catch (error) { if (error.code === 'ENOENT') return; throw error; }
     for (const name of names) {
       if (!/^\.botland-(?:stage|done)-[a-z0-9]+-[a-zA-Z0-9]{6}$/u.test(name)) throw journalError();
-      await this.checkRunning(id);
+      await this.checkRunning(id, launchReservation);
       const dir = path.join(paths.parent, name);
       if (name.startsWith(donePrefix(id))) {
         await noLinks(dir);
@@ -355,6 +359,9 @@ class BotWarfareInstaller {
     const previous = await readManifest(paths.folder, id);
     const owned = new Map((previous?.files || []).map(file => [file.path, file.sha256]));
     const changes = new Map();
+    // Remove's ownership decision must survive the later staging read. Otherwise
+    // an edit in between becomes the journal's "before" and is silently deleted.
+    const removalHashes = new Map();
     const names = new Set([...owned.keys(), ...desired.keys()]);
     for (const name of names) {
       if (!allowed(id, name)) throw new Error('Invalid Bot Warfare managed path.');
@@ -367,22 +374,32 @@ class BotWarfareInstaller {
       const wanted = desired.get(name);
       if (wanted && !Buffer.isBuffer(wanted)) throw new Error('Invalid Bot Warfare payload.');
       if (wanted && current && current.equals(wanted)) continue;
-      if (wanted || current) changes.set(name, wanted || null);
+      if (wanted || current) {
+        changes.set(name, wanted || null);
+        if (!overwrite) removalHashes.set(name, current === null ? null : hash);
+      }
     }
     const manifestFile = path.join(paths.folder, MANIFEST);
     const oldManifest = await regular(manifestFile);
     const newManifest = nextManifest ? Buffer.from(JSON.stringify(nextManifest, null, 2) + '\n') : null;
-    if (oldManifest || newManifest) changes.set(MANIFEST, newManifest);
+    if (oldManifest || newManifest) {
+      changes.set(MANIFEST, newManifest);
+      if (!overwrite) removalHashes.set(MANIFEST, oldManifest === null ? null : digest(oldManifest));
+    }
     await mkdirSafe(paths.parent);
     const stage = await fs.mkdtemp(path.join(paths.parent, stagePrefix(id)));
     await syncDir(paths.parent);
     let prepared = false;
     let committed = false;
     try {
+      await this.fault(0, 'before-staging');
       const entries = [];
       for (const [name, bytes] of changes) {
         const index = entries.length;
         const original = await regular(name === MANIFEST ? manifestFile : within(paths.folder, name));
+        if (removalHashes.has(name) && (original === null ? null : digest(original)) !== removalHashes.get(name)) {
+          throw new Error('Bot Warfare owned target changed before staging; Remove cancelled.');
+        }
         if (original) await durableFile(path.join(stage, `before-${index}`), original);
         if (bytes) await durableFile(path.join(stage, `after-${index}`), bytes);
         entries.push({ path: name, before: original === null ? null : digest(original),
@@ -391,6 +408,7 @@ class BotWarfareInstaller {
       const journal = Buffer.from(JSON.stringify({ version: 1, id, folder: paths.folder, snapshot: null, changes: entries }));
       await durableFile(path.join(stage, JOURNAL), journal);
       prepared = true;
+      await this.fault(0, 'after-staging');
       await this.checkRunning(id);
       let count = 0;
       for (const [name, bytes] of changes) {

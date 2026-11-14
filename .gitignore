@@ -16,6 +16,7 @@ botland-install.json
 session-logs/
 .botland-stage-*/
 .botland-engine-stage-*/
+.botland-engine-done-*/
 .botland-versions-*/
 *.bak-*
 .env

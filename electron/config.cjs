@@ -12,7 +12,10 @@ const secretName = /(?:password|passwd|secret|token|api.?key|server.?key|licen[c
 const safeKey = /^[a-z_][a-z0-9_.]*$/i;
 function isSecret(key) { return secretName.test(key); }
 function decode(buffer) {
-  if (buffer.subarray(0, 3).equals(Buffer.from([0xef, 0xbb, 0xbf]))) return { text: buffer.subarray(3).toString('utf8'), encoding: 'utf8', bom: true };
+  if (buffer.subarray(0, 3).equals(Buffer.from([0xef, 0xbb, 0xbf]))) {
+    try { return { text: new TextDecoder('utf-8', { fatal: true, ignoreBOM: true }).decode(buffer.subarray(3)), encoding: 'utf8', bom: true }; }
+    catch { throw new Error('This config file starts with a UTF-8 marker but is not valid UTF-8 text. Re-save it in a text editor as UTF-8.'); }
+  }
   for (const [bom, encoding] of [[[0xff, 0xfe], 'utf16le'], [[0xfe, 0xff], 'utf16be']]) {
     if (!buffer.subarray(0, 2).equals(Buffer.from(bom))) continue;
     try { return { text: new TextDecoder(encoding === 'utf16le' ? 'utf-16le' : 'utf-16be', { fatal: true }).decode(buffer.subarray(2)), encoding, bom: true }; }
@@ -47,15 +50,45 @@ function assignment(line, dialect = 'dvar') {
     if (closing < 0) return null;
     value = rest.slice(1, closing);
     suffix = rest.slice(closing + 1);
+    // A second command is not part of this value. Refuse the document rather
+    // than leaking credentials or claiming an earlier assignment is effective.
+    if (!/^\s*(?:\/\/.*)?$/.test(suffix)) throw new Error('Cannot safely read config: put each command on a separate line in a text editor.');
   } else {
-    const comment = match[4].search(/\s+\/\//);
+    const comment = match[4].search(/\s*\/\//);
     value = (comment < 0 ? match[4] : match[4].slice(0, comment)).trim();
     suffix = comment < 0 ? '' : match[4].slice(comment);
+    if (/[;"]/.test(value)) throw new Error('Cannot safely read config: put each command on a separate line in a text editor.');
   }
   return { key: match[2].toLowerCase(), sourceKey: match[2], value, prefix: match[1] + match[2] + match[3], suffix };
 }
 function withoutBlockComments(text) {
-  return text.replace(/\/\*[\s\S]*?(?:\*\/|$)/g, comment => comment.replace(/[^\r\n]/g, ' '));
+  // Keep offsets and line endings intact. Comment markers inside quoted values
+  // or // comments are literal text, not the start/end of a block comment.
+  const result = text.split('');
+  let block = false; let quoted = false; let lineComment = false; let lineStart = true;
+  for (let i = 0; i < result.length; i++) {
+    const char = result[i]; const next = result[i + 1];
+    if (char === '\r' || char === '\n') {
+      if (quoted) throw new Error('Cannot safely read config: an unterminated quoted value needs fixing in a text editor.');
+      lineComment = false; lineStart = true;
+      continue;
+    }
+    if (!block && !quoted && lineStart && (char === '#' || char === ';')) lineComment = true;
+    if (!/\s/.test(char)) lineStart = false;
+    if (block) {
+      result[i] = ' ';
+      if (char === '*' && next === '/') { result[++i] = ' '; block = false; }
+    } else if (!lineComment) {
+      // Engines differ on escaped quotes. Do not guess and expose a trailing
+      // command as a non-secret value (or rewrite the wrong command).
+      if (char === '\\' && next === '"') throw new Error('Cannot safely read config: escaped quotes need fixing in a text editor.');
+      if (char === '"') quoted = !quoted;
+      else if (!quoted && char === '/' && next === '/') lineComment = true;
+      else if (!quoted && char === '/' && next === '*') { result[i] = result[++i] = ' '; block = true; }
+    }
+  }
+  if (quoted) throw new Error('Cannot safely read config: an unterminated quoted value needs fixing in a text editor.');
+  return result.join('');
 }
 function parseEntries(text, dialect = 'dvar') {
   const entries = new Map();
@@ -131,8 +164,10 @@ function updateConfigText(text, values, opts = {}) {
   const dialect = dialectFor(opts);
   for (const [key, value] of Object.entries(patch)) {
     let last = -1;
-    for (let i = 0; i < activeLines.length; i += 2) if (assignment(activeLines[i], dialect)?.key === key && assignment(lines[i], dialect)) last = i;
-    if (last === -1) {
+    // A block comment may span other commands/lines; never replace its bytes.
+    // Append an override instead if the active assignment contains one.
+    for (let i = 0; i < activeLines.length; i += 2) if (assignment(activeLines[i], dialect)?.key === key) last = i;
+    if (last === -1 || activeLines[last] !== lines[last]) {
       const sourceKey = (opts.id && fieldFor(opts.id, opts.target || 'base', key, opts.mode)?.sourceKey) || key;
       const prefix = dialect === 'dvar' ? 'set ' : dialect === 'gameOpt' ? 'gameOpt ' : 'gts ';
       const added = `${prefix}${sourceKey} "${value}"`;

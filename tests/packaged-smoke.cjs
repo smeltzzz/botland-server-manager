@@ -34,9 +34,17 @@ const snapshot = {
 };
 const documentFixture = {
   path: 'C:\\Example\\Game\\main\\server.cfg', target: 'base', mode: 'dom', sourceRepo: '',
-  values: { sv_hostname: 'Synthetic server' },
-  entries: [{ key: 'sv_hostname', value: 'Synthetic server', masked: false, hasValue: true, count: 1 }],
-  fields: [{ key: 'sv_hostname', sourceKey: 'sv_hostname', label: 'Server name', section: 'Server & access', type: 'text', default: 'Synthetic server' }],
+  values: { sv_hostname: 'Synthetic server', bots_manage_fill_mode: '0', bots_manage_fill: '8' },
+  entries: [
+    { key: 'sv_hostname', value: 'Synthetic server', masked: false, hasValue: true, count: 1 },
+    { key: 'bots_manage_fill_mode', value: '0', masked: false, hasValue: true, count: 1 },
+    { key: 'bots_manage_fill', value: '8', masked: false, hasValue: true, count: 1 },
+  ],
+  fields: [
+    { key: 'sv_hostname', sourceKey: 'sv_hostname', label: 'Server name', section: 'Server & access', type: 'text', default: 'Synthetic server' },
+    { key: 'bots_manage_fill_mode', sourceKey: 'bots_manage_fill_mode', label: 'Fill mode', section: 'Bot population', type: 'select', default: '0', choices: [{ value: '0', label: 'Fill' }, { value: '1', label: 'Disabled' }] },
+    { key: 'bots_manage_fill', sourceKey: 'bots_manage_fill', label: 'Fill target', section: 'Bot population', type: 'number', default: '8', dependsOn: { key: 'bots_manage_fill_mode', value: '0' } },
+  ],
 };
 let failSnapshotOnce = false;
 let failMapsOnce = false;
@@ -48,6 +56,10 @@ let memoryBackups = [];
 let savedOptions = null;
 let saveOptionsCalls = 0;
 let deferredOptionsWrite = null;
+let deferredDocumentRead = null;
+let failCommitReloadOnce = false;
+let deferredFirewallChange = null;
+let deferredBo1StatusRead = null;
 let mapsVersion = 1;
 let mapInventory = ['mp_crash', 'mp_second', 'mp_third', 'mp_fourth'];
 const stopCalls = [];
@@ -95,6 +107,14 @@ async function waitForAbsent(win, selector) {
   })`);
 }
 
+async function waitForCondition(win, expression) {
+  await win.webContents.executeJavaScript(`new Promise((resolve, reject) => {
+    const check = () => { if (${expression}) { clearTimeout(timeout); resolve(); } else requestAnimationFrame(check); };
+    const timeout = setTimeout(() => reject(new Error('Renderer condition timed out: ' + ${JSON.stringify(expression)})), 10000);
+    check();
+  })`);
+}
+
 app.whenReady().then(async () => {
   ipcMain.handle('manager:action', (_event, action, payload) => {
     switch (action) {
@@ -109,9 +129,32 @@ app.whenReady().then(async () => {
       case 'maps':
         if (failMapsOnce) { failMapsOnce = false; throw new Error('Synthetic map scan failure.'); }
         return { maps: mapInventory.slice(0, mapsVersion), modes: [{ value: 'dom', label: 'Domination' }] };
-      case 'firewallStatus': return payload?.id === 'bo1' ? structuredClone(bo1Rule) : { name: 'botLANd CoD4 UDP', port: 28962, state: 'missing' };
+      case 'firewallStatus': {
+        const status = payload?.id === 'bo1' ? structuredClone(bo1Rule) : { name: 'botLANd CoD4 UDP', port: 28962, state: 'missing' };
+        if (payload?.id === 'bo1' && deferredBo1StatusRead) return new Promise(resolve => {
+          deferredBo1StatusRead.release = () => resolve(status);
+          deferredBo1StatusRead.started();
+        });
+        return status;
+      }
+      case 'firewallApply':
+      case 'firewallRemove': {
+        if (!deferredFirewallChange || payload.id !== 'bo1') throw new Error('Synthetic smoke refuses firewall actions.');
+        return new Promise(resolve => {
+          deferredFirewallChange.release = () => {
+            bo1Rule = { ...bo1Rule, state: action === 'firewallApply' ? 'any' : 'missing', managed: action === 'firewallApply' };
+            resolve(structuredClone(bo1Rule));
+          };
+          deferredFirewallChange.started();
+        });
+      }
       case 'botStatus': return structuredClone(botFixture);
-      case 'document': return structuredClone(memoryConfig);
+      case 'document':
+        if (deferredDocumentRead) return new Promise(resolve => {
+          deferredDocumentRead.release = () => resolve(structuredClone(memoryConfig));
+          deferredDocumentRead.started();
+        });
+        return structuredClone(memoryConfig);
       case 'openDocument': openDocumentAttempts++; return false;
       case 'listConfigBackups': return memoryBackups.map(item => structuredClone(item.meta));
       case 'previewSettings': return { token: '0'.repeat(64), changed: true, changes: [
@@ -126,6 +169,10 @@ app.whenReady().then(async () => {
         memoryBackups.unshift({ meta: { id: 'sample-backup', date: '2026-11-12T12:00:00.000Z', bytes: 32 }, values: structuredClone(memoryConfig.values) });
         Object.assign(memoryConfig.values, payload.values);
         memoryConfig.entries[0].value = memoryConfig.values.sv_hostname;
+        if (failCommitReloadOnce) {
+          failCommitReloadOnce = false;
+          throw new Error('The configuration was saved, but it could not be reloaded: synthetic follow-up read failure.');
+        }
         return structuredClone(memoryConfig);
       }
       case 'previewConfigRestore': {
@@ -181,6 +228,7 @@ app.whenReady().then(async () => {
     })`);
     assert.equal(dashboard.cards, 1);
     assert.equal(dashboard.missing, 5);
+    assert.equal(await win.webContents.executeJavaScript("document.querySelector('.card-visibility')?.textContent"), 'NEXT: LAN', 'Saved visibility must not be presented as the running server state');
     assert.ok(dashboard.scrollWidth <= dashboard.width, 'Dashboard must not clip at a 640-DIP window');
     const pointerTargets = await win.webContents.executeJavaScript(`(() => {
       const size = selector => {
@@ -218,6 +266,22 @@ app.whenReady().then(async () => {
     assert.equal(manageFocus.label, 'Call of Duty 4 — Overview');
     const heading = await win.webContents.executeJavaScript("document.querySelector('.detail-hero h1').textContent");
     assert.equal(heading, 'Call of Duty 4');
+    assert.match(await win.webContents.executeJavaScript("document.querySelector('.visibility-switch')?.getAttribute('aria-label')"), /next start/);
+    // Reduced motion must stop infinite status spins, not accelerate them into
+    // a .01ms infinite animation. Emulation touches this synthetic page only.
+    win.webContents.debugger.attach('1.3');
+    try {
+      await win.webContents.debugger.sendCommand('Emulation.setEmulatedMedia', { features: [{ name: 'prefers-reduced-motion', value: 'reduce' }] });
+      const motion = await win.webContents.executeJavaScript(`(() => {
+        const icon = document.createElement('span'); icon.className = 'busy-spin'; document.body.append(icon);
+        const style = getComputedStyle(icon);
+        const result = { reduced: matchMedia('(prefers-reduced-motion: reduce)').matches, iterations: style.animationIterationCount, duration: style.animationDuration };
+        icon.remove(); return result;
+      })()`);
+      assert.equal(motion.reduced, true);
+      assert.equal(motion.iterations, '1');
+      assert.ok(parseFloat(motion.duration) <= 0.00001);
+    } finally { win.webContents.debugger.detach(); }
     // At the short minimum desktop size, every game section must fit without
     // horizontal page scrolling (vertical scrolling and tab-strip scrolling are fine).
     win.setSize(640, 600);
@@ -338,6 +402,66 @@ app.whenReady().then(async () => {
       setTimeout(() => { observer.disconnect(); reject(new Error('Restored config did not reload: ' + JSON.stringify({ input: document.querySelector('.config-field-grid input')?.value, notice: document.querySelector('.config-main .config-notice')?.textContent, dialog: !!document.querySelector('dialog[open]') }))); }, 10000);
     })`);
     assert.equal(memoryConfig.values.sv_hostname, 'Synthetic server');
+
+    // A dependent edit must be reset identically whether its parent is changed
+    // through Guided or All existing settings.
+    for (const advanced of [false, true]) {
+      await win.webContents.executeJavaScript(`(() => {
+        const input = document.querySelector('.config-groups input[type=number]');
+        input[Object.keys(input).find(key => key.startsWith('__reactProps$'))].onChange({ target: { value: '12' } });
+      })()`);
+      await waitForCondition(win, "document.querySelector('.config-savebar')?.textContent.includes('1 unsaved change')");
+      if (advanced) {
+        await win.webContents.executeJavaScript("[...document.querySelectorAll('.config-switch button')].find(button => button.textContent.includes('All existing')).click()");
+        await waitFor(win, 'input[aria-label="Value for bots_manage_fill_mode"]');
+      }
+      const parentSelector = advanced ? 'input[aria-label="Value for bots_manage_fill_mode"]' : '.config-groups select';
+      await win.webContents.executeJavaScript(`(() => {
+        const input = document.querySelector(${JSON.stringify(parentSelector)});
+        input[Object.keys(input).find(key => key.startsWith('__reactProps$'))].onChange({ target: { value: '1' } });
+      })()`);
+      await waitForCondition(win, "document.querySelector('.config-savebar')?.textContent.includes('1 unsaved change')");
+      if (advanced) assert.equal(await win.webContents.executeJavaScript("document.querySelector('input[aria-label=\"Value for bots_manage_fill\"]')?.value"), '8');
+      else assert.equal(await win.webContents.executeJavaScript("document.querySelector('.config-groups input[type=number]')"), null);
+      await win.webContents.executeJavaScript(`(() => {
+        const input = document.querySelector(${JSON.stringify(parentSelector)});
+        input[Object.keys(input).find(key => key.startsWith('__reactProps$'))].onChange({ target: { value: '0' } });
+        if (${advanced}) document.querySelector('.config-switch button').click();
+      })()`);
+      await waitFor(win, '.config-groups input[type=number]');
+      await waitForCondition(win, "document.querySelector('.config-savebar button')?.disabled === true");
+      assert.equal(await win.webContents.executeJavaScript("document.querySelector('.config-groups input[type=number]')?.value"), '8');
+    }
+
+    // The mutation has succeeded even when its follow-up read fails. Defer the
+    // recovery read, then verify the outcome survives loading and is in view.
+    await win.webContents.executeJavaScript(`(() => {
+      const input = document.querySelector('.config-field-grid input');
+      input[Object.keys(input).find(key => key.startsWith('__reactProps$'))].onChange({ target: { value: 'Synthetic recovery name' } });
+    })()`);
+    await waitFor(win, '.config-savebar button:not(:disabled)');
+    await win.webContents.executeJavaScript("document.querySelector('.config-savebar button').click()");
+    await waitFor(win, 'dialog[open]');
+    failCommitReloadOnce = true;
+    const recoveryStarted = new Promise(resolve => { deferredDocumentRead = { started: resolve, release: null }; });
+    await win.webContents.executeJavaScript("document.querySelector('dialog .review-actions .primary-button').click()");
+    await recoveryStarted;
+    await waitForAbsent(win, '.config-savebar');
+    const releaseRecovery = deferredDocumentRead.release;
+    deferredDocumentRead = null;
+    releaseRecovery();
+    await waitFor(win, '.config-field-grid input');
+    await waitForCondition(win, "document.querySelector('.config-notice.error')?.textContent.includes('Settings have now been reloaded') && document.activeElement === document.querySelector('.config-notice.error')");
+    const recovered = await win.webContents.executeJavaScript(`(() => {
+      const notice = document.querySelector('.config-notice.error');
+      const bounds = notice.getBoundingClientRect();
+      return { text: notice.textContent, top: bounds.top, bottom: bounds.bottom, height: innerHeight,
+        draft: document.querySelector('.config-field-grid input')?.value, disabled: document.querySelector('.config-savebar button')?.disabled };
+    })()`);
+    assert.match(recovered.text, /configuration was saved, but it could not be reloaded/i);
+    assert.equal(recovered.draft, 'Synthetic recovery name');
+    assert.equal(recovered.disabled, true, 'A completed save must not remain retryable as an unsaved draft');
+    assert.ok(recovered.top >= 0 && recovered.bottom <= recovered.height, 'Commit errors must be scrolled into view');
     await win.webContents.executeJavaScript(`(() => {
       const input = document.querySelector('.config-field-grid input');
       const props = Object.keys(input).find(key => key.startsWith('__reactProps$'));
@@ -492,6 +616,29 @@ app.whenReady().then(async () => {
     await waitFor(win, '.map-option.chosen:nth-child(2)');
     assert.equal(await win.webContents.executeJavaScript("document.querySelector('.rotation-panel .primary-button')?.disabled"), false);
 
+    // A folder move cannot silently retarget a draft to a different install,
+    // even when a fresh scan finds exactly the same map names there.
+    const portBeforeMove = await win.webContents.executeJavaScript("document.querySelector('.rotation-controls input[type=number]')?.value");
+    win.webContents.send('manager:event', { type: 'state', snapshot: gameSnapshot({
+      gamePath: 'C:\\Example\\MovedGame', configPath: 'C:\\Example\\MovedGame\\main\\server.cfg',
+      options: { ...snapshot.games[0].options, port: 28970 }, status: 'running', pid: 4321, activePort: 28962,
+    }) });
+    await waitFor(win, '.rotation-path-warning');
+    await waitFor(win, '.map-grid .map-option:nth-child(3)');
+    const movedRotation = await win.webContents.executeJavaScript(`({
+      port: document.querySelector('.rotation-controls input[type=number]')?.value,
+      disabled: document.querySelector('.rotation-panel .primary-button')?.disabled,
+      selected: [...document.querySelectorAll('.map-option.chosen small')].map(item => item.textContent),
+    })`);
+    assert.equal(movedRotation.port, portBeforeMove, 'A snapshot option update cannot overwrite the old-folder draft');
+    assert.equal(movedRotation.disabled, true);
+    assert.deepEqual(movedRotation.selected, ['mp_second']);
+    await win.webContents.executeJavaScript("document.querySelector('.rotation-panel .primary-button').click()");
+    assert.equal(saveOptionsCalls, optionsBeforeMissingMap);
+    win.webContents.send('manager:event', { type: 'state', snapshot: gameSnapshot({ status: 'running', pid: 4321, activePort: 28962 }) });
+    await waitForAbsent(win, '.rotation-path-warning');
+    await waitFor(win, '.rotation-panel .primary-button:not(:disabled)');
+
     // Hold the in-memory rotation write unresolved: a global write busy flag
     // must not disable the independent Stop or Cancel start safety controls.
     const optionsWriteStarted = new Promise(resolve => { deferredOptionsWrite = { started: resolve, release: null }; });
@@ -499,6 +646,11 @@ app.whenReady().then(async () => {
     await optionsWriteStarted;
     await waitFor(win, '.busy-indicator');
     assert.equal(saveOptionsCalls, optionsBeforeMissingMap + 1, 'Reselecting available maps must permit Save');
+    assert.equal(await win.webContents.executeJavaScript("[...document.querySelectorAll('.rotation-controls input, .rotation-controls select, .toggle input, .map-tools button, .map-option')].every(input => input.disabled)"), true,
+      'The rotation form must lock its own edits until the deferred save settles');
+    await win.webContents.executeJavaScript("document.querySelector('.map-option').click(); [...document.querySelectorAll('.detail-tabs button')].find(button => button.textContent.includes('Overview')).click()");
+    assert.match(await win.webContents.executeJavaScript("document.querySelector('main')?.getAttribute('aria-label')"), /Maps & modes/);
+    assert.equal(await win.webContents.executeJavaScript("document.querySelectorAll('.map-option.chosen').length"), 1, 'A pending save cannot admit newer map edits that its completion would overwrite');
     assert.equal(await win.webContents.executeJavaScript("document.querySelector('.detail-hero-action .stop-button')?.disabled"), false);
     await win.webContents.executeJavaScript("window.confirm = () => true; document.querySelector('.detail-hero-action .stop-button').click()");
     await waitFor(win, '.detail-hero-action .primary-button');
@@ -640,7 +792,9 @@ app.whenReady().then(async () => {
     await waitFor(win, '.server-card.accent-bo .setup-button');
     await win.webContents.executeJavaScript("document.querySelector('.server-card.accent-bo .card-open').click()");
     await waitFor(win, '.firewall-apply');
-    assert.match(await win.webContents.executeJavaScript("document.querySelector('.firewall-hint')?.textContent"), /Public inbound UDP.*any address/);
+    const bo1FirewallHint = await win.webContents.executeJavaScript("document.querySelector('.firewall-hint')?.textContent");
+    assert.match(bo1FirewallHint, /Observed rule: LAN-only inbound \(local subnet\)/);
+    assert.match(bo1FirewallHint, /Apply target: Public inbound UDP.*any address/);
     bo1Rule = { name: 'botLANd BO1 UDP', port: 28961, state: 'any', managed: true };
     // A different game's Overview still needs BO1's actual firewall status in
     // the sidebar, rather than defaulting to 'Check public firewall'.
@@ -660,6 +814,42 @@ app.whenReady().then(async () => {
     await win.webContents.executeJavaScript("document.querySelector('.server-card.accent-bo .card-open').click()");
     await waitFor(win, '.setup-wizard .readiness-pill.good');
     assert.equal(await win.webContents.executeJavaScript("document.querySelector('.detail-hero-action .primary-button')?.disabled"), false);
+
+    // Elevation may finish after navigation, while a prior BO1 cache read is
+    // still in flight. Both removing and applying must reverify that cache;
+    // neither a stale read nor a mutation result belongs to the new game page.
+    const originalBo1 = structuredClone(snapshot.games.find(entry => entry.id === 'bo1'));
+    Object.assign(snapshot.games.find(entry => entry.id === 'bo1'), bo1Snapshot().games.find(entry => entry.id === 'bo1'));
+    for (const apply of [false, true]) {
+      const staleReadStarted = new Promise(resolve => { deferredBo1StatusRead = { started: resolve, release: null }; });
+      await win.webContents.executeJavaScript("[...document.querySelectorAll('.sidebar .game-nav-item')].find(button => button.textContent.includes('CoD4')).click()");
+      await staleReadStarted;
+      const releaseStaleRead = deferredBo1StatusRead.release;
+      deferredBo1StatusRead = null;
+      await win.webContents.executeJavaScript("[...document.querySelectorAll('.sidebar .game-nav-item')].find(button => button.textContent.includes('BO1')).click()");
+      await waitFor(win, apply ? '.firewall-apply:not(:disabled)' : '.firewall-row .inline-link:not(:disabled)');
+      const firewallStarted = new Promise(resolve => { deferredFirewallChange = { started: resolve, release: null }; });
+      await win.webContents.executeJavaScript(`window.confirm = () => true; document.querySelector(${JSON.stringify(apply ? '.firewall-apply' : '.firewall-row .inline-link')}).click()`);
+      await firewallStarted;
+      await waitFor(win, '.busy-indicator');
+      await win.webContents.executeJavaScript("[...document.querySelectorAll('.sidebar .game-nav-item')].find(button => button.textContent.includes('CoD4')).click()");
+      await waitFor(win, 'main[aria-label^="Call of Duty 4"]');
+      const releaseFirewall = deferredFirewallChange.release;
+      deferredFirewallChange = null;
+      releaseFirewall();
+      await waitForAbsent(win, '.busy-indicator');
+      const readyExpression = "[...document.querySelectorAll('.sidebar .game-nav-item')].find(button => button.textContent.includes('BO1'))?.textContent.includes('Ready to launch')";
+      await waitForCondition(win, apply ? readyExpression : `!(${readyExpression})`);
+      releaseStaleRead();
+      await win.webContents.executeJavaScript('new Promise(resolve => requestAnimationFrame(() => requestAnimationFrame(resolve)))');
+      assert.equal(await win.webContents.executeJavaScript(readyExpression), apply, 'A pre-mutation BO1 read must never overwrite the verified post-mutation cache');
+      await win.webContents.executeJavaScript("document.querySelector('.sidebar > .nav-item').click()");
+      await waitFor(win, '.server-card.accent-bo');
+      await waitForCondition(win, apply ? "!!document.querySelector('.server-card.accent-bo .primary-button')" : "!!document.querySelector('.server-card.accent-bo .setup-button')");
+      await win.webContents.executeJavaScript("document.querySelector('.server-card.accent-bo .card-open').click()");
+      await waitFor(win, apply ? '.firewall-row .inline-link' : '.firewall-apply');
+    }
+    Object.assign(snapshot.games.find(entry => entry.id === 'bo1'), originalBo1);
     win.setSize(400, 850);
     const narrow = await win.webContents.executeJavaScript('({ width: innerWidth, scrollWidth: document.documentElement.scrollWidth })');
     assert.ok(narrow.scrollWidth <= narrow.width, 'BO1 Overview must not clip at a narrow window');
@@ -763,6 +953,6 @@ app.whenReady().then(async () => {
       setTimeout(() => { observer.disconnect(); reject(new Error('IW4x sidebar button did not switch to Update')); }, 10000);
     })`);
 
-    console.log('Synthetic packaged renderer: startup fallback, BO1 firewall status, memory-only config and rotation writes, missing-map rescan guard, independent Stop/Cancel, lifecycle, engine readiness, four-tab short-window layout and modal keyboard smoke passed.');
+    console.log('Synthetic packaged renderer: startup fallback, deferred BO1 firewall navigation/cache, Guided/Advanced dependency cleanup, saved/reload-failed recovery and error focus, rotation save lock/folder ownership, next-start visibility, reduced motion, memory-only writes, missing-map guards, independent Stop/Cancel, lifecycle, engine sidebar, short-window layout and modal keyboard smoke passed.');
   } finally { win.destroy(); app.quit(); }
 }).catch(error => { console.error(error); app.exit(1); });

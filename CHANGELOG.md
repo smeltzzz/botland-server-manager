@@ -2,6 +2,60 @@
 
 Notable changes to botLANd Server Manager are recorded here. This project follows [Semantic Versioning](https://semver.org/).
 
+## 1.2.17
+
+### Safety and correctness
+
+- Refuse ambiguous chained config commands and quotes before returning config values or writing changes, preventing a trailing secret command from appearing as a non-secret setting. Preserve literal quoted comment markers and block-comment bytes, including duplicate assignments.
+- Reject malformed BOM-marked UTF-8 instead of silently replacing invalid bytes; valid encodings, BOMs, mixed line endings and exact-byte backups remain preserved.
+- Redact bare unquoted credential commands before delivering or truncating session output.
+- Reserve launch identity before installer recovery and prevent folder publication from racing Start, engine updates or Bot Warfare changes. Real recovery recognizes only its exact pre-spawn launch reservation.
+- Revoke pending firewall permission on timeout so late UAC approval cannot execute a canceled change. Already-started elevated work retains an unresolved reservation and recovery journal across app restarts until a terminal outcome can be recovered.
+- Verify firewall readiness against traced effective ActiveStore policy, refusing duplicate, Group Policy and unprovenanced rules.
+- Cancel Bot Warfare Remove if a selected managed file changes before staging. Install/Update/Reinstall retain their intentional overwrite behavior.
+- Rename resolved engine transactions into a disposable cleanup namespace before deletion, so interrupted housekeeping cannot damage an active recovery journal. Failed/interrupted external IW4x runs still retain blocking journals.
+- Update Electron from 45.2.2 to 45.3.2.
+
+### UI and UX
+
+- Lock rotation controls during Save, preserve drafts across snapshot updates, and bind drafts to their original game folder with an explicit discard/recovery warning after folder changes.
+- Reconcile firewall status after asynchronous changes even when navigating to another game or Dashboard during elevation.
+- Label saved LAN/Public settings as next-start visibility and separate observed firewall state from the proposed Apply target and its immediate effects.
+- Apply conditional-field cleanup consistently in Guided and Advanced configuration views.
+- Reveal and focus configuration errors, preserve the distinction between a completed save and a failed reload, and respect reduced motion during navigation.
+- Improve contrast for sidebar descriptions, heading counts, map identifiers, rotation labels and console guidance; hide decorative card glyphs from assistive technology.
+- Model applied firewall ports in the browser preview instead of silently moving rules when saved ports change.
+
+### Verification and documentation
+
+- Add deterministic security, encoding, installer fault-injection, lifecycle and real-recovery integration regressions, plus deferred synthetic renderer cases.
+- Add an offline axe-core accessibility/layout smoke to CI, covering all game Overviews, available editor/rotation/console pages, compact widths and 200% content zoom. Automated results are not a claim of complete accessibility conformance.
+- Refresh public screenshots from synthetic data and document safe screenshot generation, verification commands, config compatibility and unresolved-firewall recovery.
+
+## 1.2.16
+
+- Clarify Black Ops 1 joining through the Plutonium server browser rather than suggesting unsupported connection guidance.
+
+## 1.2.15
+
+- Stabilize application columns at compact desktop widths.
+
+## 1.2.13
+
+- Stack game details at compact desktop widths rather than allowing minimum column widths to overflow.
+
+## 1.2.12
+
+- Improve synthetic smoke diagnostics for compact-window overflow.
+
+## 1.2.11
+
+- Prevent Overview content from overflowing compact desktop layouts.
+
+## 1.2.10
+
+- Keep updater reservations through process completion and fix navigation edge cases, with synthetic regression coverage.
+
 ## 1.2.9
 
 - Fail closed on unsafe Bot Warfare recovery, uncertain automatic-restart ports, unreadable base configs, and BO1 firewall changes racing a Start. Check that MW3/BO2 base configs execute the generated rotation at the correct path.

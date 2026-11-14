@@ -5,7 +5,7 @@ botLANd is maintained with direct commits to `main`; pull requests are not used.
 ## Development
 
 - Use Windows and Node.js 22 or later. From this repository root, run `npm ci`, then `npm run dev` for the desktop development build.
-- Run `npm test`, `npm run build`, `npm run lint`, and `npm run format:check` before committing.
+- Run `npm test`, `npm run build`, `npm run lint`, and `npm run format:check` before committing. After building, run `node_modules/.bin/electron tests/packaged-smoke.cjs` and `npm run test:accessibility` for synthetic renderer and accessibility/layout coverage; neither accesses a real game installation. `npm run capture:demo` refreshes README screenshots using only those synthetic demo fixtures.
 - Keep changes limited to this app. Do not include game installs, Plutonium/engine files, downloaded Bot Warfare mods, or private launch scripts.
 - Preserve transactional config saves, byte-for-byte backups, and secret masking. New Electron IPC actions need matching preload, main-process, and renderer API changes.
 - Do not commit generated `dist/` or `release/` output.

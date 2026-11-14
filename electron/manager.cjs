@@ -70,6 +70,8 @@ class ServerManager {
     this.botUpdates = {};
     this.instances = new Map();
     this.firewallOperations = new Map();
+    this.firewallUnresolved = new Map();
+    this.folderUpdates = new Set();
     this.firewallBusy = new Set();
     this.firewallStarting = new Set();
     this.logs = new Map();
@@ -95,6 +97,23 @@ class ServerManager {
   }
   // Returns the path of a preserved copy when unreadable settings were reset.
   async initialize() {
+    // A wrapper timeout can leave an elevated process alive across app restarts.
+    // Restore the fail-closed reservation before exposing any launch actions.
+    for (const id of order) {
+      try {
+        const pending = JSON.parse(await fs.readFile(this.firewallJournal(id), 'utf8'));
+        const workspace = pending?.workspace;
+        if (typeof workspace !== 'string' || path.dirname(workspace) !== os.tmpdir() || !/^botland-elevate-[a-z0-9]+$/i.test(path.basename(workspace))) throw new Error('Invalid firewall journal');
+        this.firewallUnresolved.set(id, { workspace, resultFile: path.join(workspace, 'result.json') });
+        this.firewallBusy.add(id);
+      } catch (error) {
+        if (error.code !== 'ENOENT') {
+          // Unreadable/corrupt evidence must never silently unlock a change.
+          this.firewallUnresolved.set(id, {});
+          this.firewallBusy.add(id);
+        }
+      }
+    }
     let text;
     try { text = await fs.readFile(this.settingsPath, 'utf8'); }
     catch (error) { if (error.code === 'ENOENT') return null; throw error; }
@@ -283,6 +302,7 @@ class ServerManager {
     if (id !== 'cod4' && id !== 'mw2') throw new Error('Only CoD4 and MW2 have an engine update action.');
     if (!this.engineUpdater) throw new Error('Engine updates are unavailable.');
     if (this.shuttingDown) throw new Error('The manager is shutting down.');
+    if (this.folderUpdates.has(id)) throw new Error('Wait for the game folder change to finish before updating its engine.');
     if (this.instances.get(id)?.status === 'restarting') this.cancelRestart(id);
     if (this.instances.has(id) || this.engineBusy.has(id) || this.modBusy.has(id)) throw new Error('Stop this server and finish other changes before updating its engine.');
     this.engineBusy.add(id);
@@ -290,6 +310,7 @@ class ServerManager {
       await this.broadcastState().catch(() => {});
       const gamePath = await this.gamePath(id);
       if (!gamePath || !(await inspectGameFolder(id, gamePath)).installed) throw new Error('Select an installed game folder before updating its engine.');
+      if (this.folderUpdates.has(id)) throw new Error('Wait for the game folder change to finish before updating its engine.');
       await this.engineUpdater.update(id, gamePath);
       return true;
     } finally {
@@ -383,6 +404,7 @@ class ServerManager {
     profileFor(id);
     if (!['install', 'update', 'reinstall', 'remove'].includes(operation)) throw new Error('Unknown Bot Warfare action.');
     if (!this.modInstaller) throw new Error('Bot Warfare installer is unavailable.');
+    if (this.folderUpdates.has(id)) throw new Error('Wait for the game folder change to finish before changing Bot Warfare.');
     // A pending restart has no live process; changing mod files cancels that retry.
     if (this.instances.get(id)?.status === 'restarting') this.cancelRestart(id);
     if (this.modBusy.has(id) || this.engineBusy.has(id) || this.instances.has(id)) throw new Error('Stop this server and finish engine changes before changing Bot Warfare.');
@@ -393,7 +415,9 @@ class ServerManager {
       await this.broadcastState();
       const gamePath = await this.gamePath(id);
       if (!gamePath || !(await inspectGameFolder(id, gamePath)).installed) throw new Error('Select an installed game folder first.');
+      if (this.folderUpdates.has(id)) throw new Error('Wait for the game folder change to finish before changing Bot Warfare.');
       const status = await this.modInstaller.status(id, gamePath);
+      if (this.folderUpdates.has(id)) throw new Error('Wait for the game folder change to finish before changing Bot Warfare.');
       if (operation === 'install' && status.state === 'installed') throw new Error('Bot Warfare is already managed. Use Update or Reinstall.');
       if (operation === 'update' && status.state !== 'installed') throw new Error('Install Bot Warfare before updating it.');
       if (operation === 'remove') await this.modInstaller.remove(id, gamePath);
@@ -687,14 +711,20 @@ class ServerManager {
     const inspected = await inspectGameFolder(id, result.filePaths[0]);
     if (!inspected.installed) throw new Error(`No ${profileFor(id).short} multiplayer game executable was found in that folder. Choose the actual game installation.`);
     const busy = () => {
-      if (this.instances.get(id)?.status === 'starting') throw new Error('Wait for this server to finish starting before changing its game folder.');
+      if (['starting', 'stopping'].includes(this.instances.get(id)?.status)) throw new Error('Wait for this server to finish starting or stopping before changing its game folder.');
       if (this.modBusy.has(id) || this.engineBusy.has(id)) throw new Error('Wait for the engine or Bot Warfare change to finish before changing this game folder.');
     };
     busy();
-    await this.updateSettings(data => {
-      busy();
-      data.games[id] = { ...data.games[id], ...this.options(id), gamePath: result.filePaths[0] };
-    });
+    if (this.folderUpdates.has(id)) throw new Error('Wait for the game folder change to finish.');
+    // Keep the reservation through persistence AND publication of this.data.
+    // Checking only inside updateSettings leaves a window during its disk write.
+    this.folderUpdates.add(id);
+    try {
+      await this.updateSettings(data => {
+        busy();
+        data.games[id] = { ...data.games[id], ...this.options(id), gamePath: result.filePaths[0] };
+      });
+    } finally { this.folderUpdates.delete(id); }
     await this.broadcastState().catch(() => {}); return true;
   }
   async createStarterConfig(id) {
@@ -829,7 +859,7 @@ class ServerManager {
     const script = [
       "$ErrorActionPreference = 'Stop'",
       "$ProgressPreference = 'SilentlyContinue'",
-      `$found = @(Get-NetFirewallRule -DisplayName '${name.replaceAll("'", "''")}' -ErrorAction SilentlyContinue -ErrorVariable lookupErrors)`,
+      `$found = @(Get-NetFirewallRule -PolicyStore ActiveStore -TracePolicyStore -DisplayName '${name.replaceAll("'", "''")}' -ErrorAction SilentlyContinue -ErrorVariable lookupErrors)`,
       "$failure = @($lookupErrors | Where-Object { $_.CategoryInfo.Category -ne 'ObjectNotFound' })",
       'if ($failure.Count) { throw $failure[0] }',
       '$rules = foreach ($rule in $found) {',
@@ -856,7 +886,7 @@ class ServerManager {
     try { rules = await this.firewallQuery(name); }
     catch { return { name, port, state: 'unknown' }; }
     if (!rules.length) return { name, port, state: 'missing' };
-    // Duplicate rules with this name are not something botLANd created; Update replaces them all.
+    // Effective duplicates (including GPO rules) are ambiguous; fail closed.
     if (rules.length > 1) return { name, port, state: 'drift' };
     const rule = rules[0] || {};
     const list = value => (Array.isArray(value) ? value : [value]).map(item => String(item ?? '').trim().toLowerCase());
@@ -880,11 +910,18 @@ class ServerManager {
     // fingerprint check, but must not be mistaken for botLANd ownership here.
     return { name, port, state, ...(owned ? { managed: true } : {}), ...(legacy ? { legacy: true } : {}) };
   }
-  async runElevated(lines) {
+  firewallJournal(id) { return `${this.settingsPath}.firewall-${id}.json`; }
+  async runElevated(lines, id) {
     const workspace = await fs.mkdtemp(path.join(os.tmpdir(), 'botland-elevate-'));
     const resultFile = path.join(workspace, 'result.json');
+    const permit = path.join(workspace, 'permit');
+    const started = path.join(workspace, 'started');
+    await fs.writeFile(permit, '');
     const script = [
       "$ErrorActionPreference = 'Stop'",
+      // Atomic claim vs timeout revocation: a late UAC approval cannot execute
+      // any firewall commands after the unelevated parent revokes the permit.
+      `try { [System.IO.File]::Move('${permit.replaceAll("'", "''")}', '${started.replaceAll("'", "''")}') } catch { exit 1 }`,
       "$message = ''",
       'try {',
       ...lines.map(line => '  ' + line),
@@ -902,22 +939,43 @@ class ServerManager {
       + `-ArgumentList @('-NoProfile','-NonInteractive','-ExecutionPolicy','Bypass','-EncodedCommand','${encoded}') } `
       + `catch { $e = $_.Exception; while ($e) { if ($e.NativeErrorCode -eq 1223) { exit 1223 }; $e = $e.InnerException }; throw }; `
       + `if ($p) { $p.WaitForExit(); exit $p.ExitCode }`;
+    let unresolved = false;
     try {
+      if (id) {
+        // Persist evidence BEFORE anything can be elevated. On a crash/restart,
+        // absence of a terminal result is still a blocker, not a fresh start.
+        await fs.mkdir(path.dirname(this.settingsPath), { recursive: true });
+        await fs.writeFile(this.firewallJournal(id), JSON.stringify({ workspace }));
+      }
+      let wrapperError;
       try {
         await exec('powershell.exe', ['-NoProfile', '-NonInteractive', '-ExecutionPolicy', 'Bypass', '-Command', command],
           { timeout: 120000, windowsHide: true, maxBuffer: 1_000_000 });
-      } catch (error) {
-        const text = `${error?.stderr ?? ''} ${error?.stdout ?? ''}`;
-        if (error?.code === 1223 || /cancel/i.test(text)) throw new Error('The elevation prompt was canceled, so the firewall was not changed.');
-        if (error?.killed || error?.signal) throw new Error('Timed out waiting for the administrator prompt; the change may still apply. Refresh the rule status.');
-        throw new Error('Windows could not complete the firewall change. Approve the administrator prompt and try again.');
-      }
+      } catch (error) { wrapperError = error; }
+      // Killing the unelevated wrapper does NOT terminate an elevated child or
+      // cancel UAC. Revoke an unclaimed permit, otherwise require its terminal
+      // result. Never infer completion from a firewall status read.
+      let revoked = false;
+      try { await fs.unlink(permit); revoked = true; }
+      catch (error) { if (error.code !== 'ENOENT') { /* Treat an unrevocable permit as unresolved. */ } }
       let result;
-      try { result = JSON.parse((await fs.readFile(resultFile, 'utf8')).replace(/^\uFEFF/, '')); }
-      catch { throw new Error('Windows did not report the firewall outcome. Check the rule in the Overview panel.'); }
-      if (result?.ok !== true) throw new Error(`The firewall change failed: ${String(result?.message || 'the elevated script did not report success.').slice(0, 300)}`);
+      try { result = JSON.parse((await fs.readFile(resultFile, 'utf8')).replace(/^\uFEFF/, '')); } catch { /* May still be executing. */ }
+      if (typeof result?.ok !== 'boolean') {
+        if (revoked) {
+          if (wrapperError?.code === 1223 || /cancel/i.test(`${wrapperError?.stderr ?? ''} ${wrapperError?.stdout ?? ''}`)) throw new Error('The elevation prompt was canceled, so the firewall was not changed.');
+          throw new Error('The firewall change did not start and its permission was revoked. Dismiss any pending administrator prompt, then try again.');
+        }
+        unresolved = true;
+        const error = new Error(`The elevated firewall outcome is unresolved. Further changes${id === 'bo1' ? ' and BO1 Start are' : ' are'} blocked. Wait for elevated PowerShell to finish, then retry the firewall action; refreshing status or restarting botLANd cannot resolve a pending change.${id ? ` If it never finishes, close its administrator prompt and terminate its elevated PowerShell, then manually remove the recovery journal at ${this.firewallJournal(id)}.` : ''}`);
+        error.firewallPending = { workspace, resultFile };
+        throw error;
+      }
+      if (!result.ok) throw new Error(`The firewall change failed: ${String(result.message || 'the elevated script did not report success.').slice(0, 300)}`);
     } finally {
-      await fs.rm(workspace, { recursive: true, force: true }).catch(() => {});
+      if (!unresolved) {
+        if (id) await fs.rm(this.firewallJournal(id), { force: true }).catch(() => {});
+        await fs.rm(workspace, { recursive: true, force: true }).catch(() => {});
+      }
     }
   }
   // BO1 has no -lan mode and always needs a public inbound rule. Other games
@@ -930,14 +988,30 @@ class ServerManager {
   // BO1 synchronously so Start cannot pass preflight while a UAC prompt is open.
   queueFirewall(id, action) {
     profileFor(id);
-    if (id === 'bo1') this.firewallBusy.add(id);
+    this.firewallBusy.add(id);
     const previous = this.firewallOperations.get(id) || Promise.resolve();
-    const current = previous.catch(() => {}).then(action);
+    const current = previous.catch(() => {}).then(async () => {
+      const pending = this.firewallUnresolved.get(id);
+      if (pending) {
+        let result;
+        try { result = JSON.parse((await fs.readFile(pending.resultFile, 'utf8')).replace(/^\uFEFF/, '')); } catch { /* Still unresolved. */ }
+        if (typeof result?.ok !== 'boolean') throw new Error(`The previous elevated firewall change is still unresolved. Wait for elevated PowerShell to finish and retry. Status refresh or app restart does not cancel pending elevation${id === 'bo1' ? '; BO1 Start remains blocked' : ''}. If no outcome can be recovered, close its administrator prompt and terminate its elevated PowerShell before manually removing ${this.firewallJournal(id)} and restarting botLANd.`);
+        await fs.rm(this.firewallJournal(id), { force: true });
+        this.firewallUnresolved.delete(id);
+        await fs.rm(pending.workspace, { recursive: true, force: true }).catch(() => {});
+        if (!result.ok) throw new Error(`The previous firewall change failed: ${String(result.message || 'unknown error').slice(0, 300)}. Retry the action.`);
+      }
+      try { return await action(); }
+      catch (error) {
+        if (error.firewallPending) this.firewallUnresolved.set(id, error.firewallPending);
+        throw error;
+      }
+    });
     this.firewallOperations.set(id, current);
     current.finally(() => {
       if (this.firewallOperations.get(id) === current) {
         this.firewallOperations.delete(id);
-        this.firewallBusy.delete(id);
+        if (!this.firewallUnresolved.has(id)) this.firewallBusy.delete(id);
       }
     }).catch(() => {});
     return current;
@@ -947,7 +1021,7 @@ class ServerManager {
       const port = this.firewallPort(id);
       const name = this.firewallName(id);
       const scope = this.firewallScope(id) === 'lan' ? 'localsubnet' : 'any';
-      await this.runElevated(buildFirewallApplyLines({ name, port, scope }));
+      await this.runElevated(buildFirewallApplyLines({ name, port, scope }), id);
       return this.firewallStatus(id);
     });
   }
@@ -962,7 +1036,7 @@ class ServerManager {
         throw new Error('Stop BO1 before removing its required public firewall rule.');
       }
       const name = this.firewallName(id);
-      await this.runElevated(buildFirewallRemoveLines({ name }));
+      await this.runElevated(buildFirewallRemoveLines({ name }), id);
       return this.firewallStatus(id);
     });
   }
@@ -1036,38 +1110,21 @@ class ServerManager {
     const profile = profileFor(id);
     if (this.shuttingDown) throw new Error('The manager is shutting down.');
     if (id === 'bo1') {
-      if (this.firewallBusy.has(id)) throw new Error('Wait for the BO1 firewall change to finish before starting.');
+      if (this.firewallBusy.has(id)) throw new Error(this.firewallUnresolved.has(id) ? 'The previous elevated BO1 firewall change is unresolved. Start remains blocked; retry the firewall action to recover its terminal outcome, not just Refresh status.' : 'Wait for the BO1 firewall change to finish before starting.');
       if (this.firewallStarting.has(id)) throw new Error('This server is already starting.');
       this.firewallStarting.add(id);
     }
     let instance;
     let restart;
+    // Capture the effective installation and reserve synchronously, before ANY
+    // cleanup, installer recovery, broadcast, or settings persistence can yield.
+    const launchPath = this.options(id).gamePath || this.detected?.games?.[id]?.gamePath || '';
     try {
       if (!retry && this.instances.get(id)?.status === 'restarting') this.cancelRestart(id);
-      // Closing an earlier session may still be draining its tail. Never let that
-      // close race a new session opened for this game (manual or automatic retry).
-      if (this.sessionCleanup.has(id)) await this.sessionCleanup.get(id);
-      if (this.shuttingDown) throw new Error('The manager is shutting down.');
       if (this.instances.has(id)) throw new Error('This server is already starting or running.');
+      if (this.folderUpdates.has(id)) throw new Error('Wait for the game folder change to finish before starting this server.');
       if (this.modBusy.has(id)) throw new Error('Wait for the Bot Warfare change to finish before starting this server.');
       if (this.engineBusy.has(id)) throw new Error('Wait for the engine update to finish before starting this server.');
-      if (this.modInstaller && typeof this.modInstaller.prepareLaunch === 'function') {
-        const gamePath = await this.gamePath(id);
-        if (gamePath) {
-          try { await this.modInstaller.prepareLaunch(id, gamePath); }
-          catch (error) {
-            const message = `Could not finish recovering an interrupted Bot Warfare change, so the server was not started: ${error.message}`;
-            if (retry) this.restartState(id).cutOff = true;
-            this.addLog(id, message, 'error');
-            throw new Error(message);
-          }
-        }
-        // Recovery is asynchronous; re-check what a concurrent action may have changed.
-        if (this.shuttingDown) throw new Error('The manager is shutting down.');
-        if (this.instances.has(id)) throw new Error('This server is already starting or running.');
-        if (this.modBusy.has(id)) throw new Error('Wait for the Bot Warfare change to finish before starting this server.');
-        if (this.engineBusy.has(id)) throw new Error('Wait for the engine update to finish before starting this server.');
-      }
       restart = this.restartState(id);
       if (!retry) { restart.crashes = []; restart.attempts = 0; restart.cutOff = false; }
       else if (restart.cutOff || restart.suppressed || this.data.games?.[id]?.autoRestart !== true) return;
@@ -1078,6 +1135,19 @@ class ServerManager {
     } finally { this.firewallStarting.delete(id); }
     let launchKey = '';
     try {
+      // Closing an earlier session may still be draining its tail.
+      if (this.sessionCleanup.has(id)) await this.sessionCleanup.get(id);
+      if (instance.cancelled || this.shuttingDown) throw new Error('Launch cancelled.');
+      if (this.modInstaller && typeof this.modInstaller.prepareLaunch === 'function' && launchPath) {
+        try { await this.modInstaller.prepareLaunch(id, launchPath, instance); }
+        catch (error) {
+          const message = `Could not finish recovering an interrupted Bot Warfare change, so the server was not started: ${error.message}`;
+          if (retry) this.restartState(id).cutOff = true;
+          this.addLog(id, message, 'error');
+          throw new Error(message);
+        }
+      }
+      if (instance.cancelled || this.shuttingDown) throw new Error('Launch cancelled.');
       await this.broadcastState();
       if (profile.executable === 'plutonium' && this.plutonium) {
         // Another Plutonium server is using the bootstrapper; updating now would
@@ -1088,6 +1158,9 @@ class ServerManager {
       const check = await this.check(id);
       if (check.blockers.length) throw new Error(check.blockers.join(' '));
       const { gamePath, options } = check;
+      const currentPath = this.options(id).gamePath || this.detected?.games?.[id]?.gamePath || '';
+      if (currentPath !== launchPath || (launchPath && gamePath !== launchPath)) throw new Error('The game folder changed during launch preparation. Start again to recover and verify the selected installation.');
+      if (instance.cancelled || this.shuttingDown) throw new Error('Launch cancelled.');
       if (this.engineUpdater && (id === 'cod4' || id === 'mw2')) await this.engineUpdater.prepareLaunch(id, gamePath);
       instance.activePort = options.port;
       // T5 has no -lan argument. Require its verified public inbound rule

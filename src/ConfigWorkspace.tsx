@@ -31,6 +31,7 @@ export default function ConfigWorkspace({ game, maps, refreshRevision, onDirtyCh
   // State updates are asynchronous; a ref blocks a second click in the same tick.
   const working = useRef(false);
   const dialogRef = useRef<HTMLDialogElement | null>(null);
+  const noticeRef = useRef<HTMLDivElement | null>(null);
   const [search, setSearch] = useState('');
   // Start in the loading state so the "could not be opened" message never flashes on open.
   const [loading, setLoading] = useState(true);
@@ -121,6 +122,16 @@ export default function ConfigWorkspace({ game, maps, refreshRevision, onDirtyCh
       });
     };
   }, [reviewOpen]);
+  // Errors can originate from the sticky save bar or the backup sidebar, far
+  // below this message. Run after modal focus restoration so it cannot hide it.
+  useEffect(() => {
+    if (!notice?.error) return;
+    const frame = window.requestAnimationFrame(() => {
+      noticeRef.current?.focus({ preventScroll: true });
+      noticeRef.current?.scrollIntoView({ block: 'nearest', behavior: 'instant' });
+    });
+    return () => window.cancelAnimationFrame(frame);
+  }, [notice]);
   function canSwitch() {
     if (busy || pending || restoreReview) return false;
     if (changeCount && !window.confirm('Discard unsaved configuration changes?')) return false;
@@ -159,8 +170,23 @@ export default function ConfigWorkspace({ game, maps, refreshRevision, onDirtyCh
         setPending(null);
         // The main process reports explicitly when the file was already saved
         // but the follow-up read failed; reload instead of inviting a retry.
-        if (/^The configuration was saved, but it could not be reloaded/i.test(message)) setReloadRevision(previous => previous + 1);
-        setNotice({ text: message, error: true });
+        if (/^The configuration was saved, but it could not be reloaded/i.test(message)) {
+          // The write succeeded. Drop the submitted draft so it cannot be saved
+          // twice, but retain that outcome even if our recovery read succeeds.
+          setDocument(null); setDraft({}); setLoading(true);
+          let detail = '';
+          try {
+            const result = await window.manager.document(game.id, target, mode);
+            if (request !== requestId.current || contextKey !== currentContext.current) return;
+            setDocument(result); setDraft(result.values); loadBackups(request);
+            detail = ' Settings have now been reloaded; the save already completed.';
+          } catch (reloadError) {
+            detail = ` Retry loading the settings before editing again: ${messageOf(reloadError)}`;
+          } finally {
+            if (request === requestId.current && contextKey === currentContext.current) setLoading(false);
+          }
+          if (request === requestId.current && contextKey === currentContext.current) setNotice({ text: message + detail, error: true });
+        } else setNotice({ text: message, error: true });
       }
     }
     finally { working.current = false; setBusy(false); }
@@ -237,18 +263,21 @@ export default function ConfigWorkspace({ game, maps, refreshRevision, onDirtyCh
       setBusy(false);
     }
   }
-  function fieldControl(field: ConfigField) {
-    const value = draft[field.key] ?? (field.default ?? '');
-    const setValue = (next: string) => setDraft(previous => {
-      const updated = { ...previous, [field.key]: next };
+  function updateValue(key: string, next: string) {
+    setDraft(previous => {
+      const updated = { ...previous, [key]: next };
       // Fields this choice hides must not keep pending edits that would still be saved.
       for (const other of document?.fields || []) {
-        if (other.dependsOn?.key !== field.key || other.dependsOn.value === next) continue;
+        if (other.dependsOn?.key !== key || other.dependsOn.value === next) continue;
         if (document && Object.hasOwn(document.values, other.key)) updated[other.key] = document.values[other.key]!;
         else delete updated[other.key];
       }
       return updated;
     });
+  }
+  function fieldControl(field: ConfigField) {
+    const value = draft[field.key] ?? (field.default ?? '');
+    const setValue = (next: string) => updateValue(field.key, next);
     if (field.type === 'select') return <select value={value} disabled={busy || !!restoreReview} onChange={event => setValue(event.target.value)}>{!field.choices?.some(item => item.value === value) && <option value={value}>{value || 'Not set'}</option>}{field.choices?.map(item => <option value={item.value} key={item.value}>{item.label}</option>)}</select>;
     // MW2, MW3 and BO2 cap player slots at 18 (the schema and save path enforce
     // the same cap), so the guided input must not offer a higher value.
@@ -262,7 +291,7 @@ export default function ConfigWorkspace({ game, maps, refreshRevision, onDirtyCh
       {supportsModeFile && <div className="config-targets"><button className={target === 'base' ? 'active' : ''} aria-pressed={target === 'base'} onClick={() => { if (target !== 'base' && canSwitch()) setTarget('base'); }}>Server & bots</button><button className={target === 'mode' ? 'active' : ''} aria-pressed={target === 'mode'} onClick={() => { if (target !== 'mode' && canSwitch()) setTarget('mode'); }}>Mode rules</button>{target === 'mode' && <label><span>RULESET</span><select value={mode} disabled={busy || !!pending || !!activeRestore} onChange={event => { if (event.target.value !== mode && canSwitch()) setMode(event.target.value); }}>{maps?.modes?.length ? <>{!maps.modes.some(item => item.value === mode) && <option value={mode} disabled>{mode} (not installed)</option>}{maps.modes.map(item => <option value={item.value} key={item.value}>{item.label}</option>)}</> : <option value={mode}>{mode}</option>}</select><ChevronDown size={14} /></label>}</div>}
       <div className="config-toolbar"><div className="config-switch"><button className={view === 'guided' ? 'selected' : ''} aria-pressed={view === 'guided'} onClick={() => { setView('guided'); setSearch(''); }}>Guided settings</button><button className={view === 'advanced' ? 'selected' : ''} aria-pressed={view === 'advanced'} onClick={() => { setView('advanced'); setSearch(''); }}>All existing settings <span>{document?.entries.length || 0}</span></button></div><div className="config-search"><Search size={15} /><input type="search" aria-label="Search configuration settings" placeholder="Search settings…" value={search} onChange={event => setSearch(event.target.value)} /></div></div>
       {pathConflict && <div className="config-path-warning" role="alert"><TriangleAlert size={17} /><div><strong>Configuration location changed while you were editing.</strong><p>Your unsaved edits are still shown below for reference. Saving to the old location is blocked. Copy anything you need before loading the new file.</p><button className="outline-button" onClick={() => { setDraft(document?.values || {}); setPathConflict(false); setReloadRevision(previous => previous + 1); }}>Discard edits and load new file</button></div></div>}
-      {notice && <div className={`config-notice ${notice.error ? 'error' : 'success'}`} role={notice.error ? 'alert' : 'status'}>{notice.error ? <TriangleAlert size={16} /> : <Check size={16} />}<span>{notice.text}</span><button className="config-notice-dismiss" onClick={() => setNotice(null)} aria-label="Dismiss"><X size={15} /></button></div>}
+      {notice && <div ref={noticeRef} tabIndex={-1} className={`config-notice ${notice.error ? 'error' : 'success'}`} role={notice.error ? 'alert' : 'status'}>{notice.error ? <TriangleAlert size={16} /> : <Check size={16} />}<span>{notice.text}</span><button className="config-notice-dismiss" onClick={() => setNotice(null)} aria-label="Dismiss"><X size={15} /></button></div>}
       {loading && <div className="config-empty" role="status">Loading settings from the installed game…</div>}
       {!loading && !document && <div className="config-empty"><FileText size={22} /> The config file could not be opened. Check the game folder on the Overview tab, then retry. <button className="inline-link" onClick={() => setReloadRevision(previous => previous + 1)}>Retry</button></div>}
       {!loading && document && <>
@@ -271,7 +300,7 @@ export default function ConfigWorkspace({ game, maps, refreshRevision, onDirtyCh
           if (!visible.length) return null;
           return <div className="config-group" key={section}><div className="config-group-title"><span>{section.toUpperCase()}</span><span>{visible.length.toString().padStart(2, '0')}</span></div><div className="config-field-grid">{visible.map(field => <label className="form-field" key={field.key}><span>{field.label}{!(field.key in document.values) && <em title="The game currently uses its default until you edit this field.">DEFAULT</em>}</span><small>{field.hint || field.sourceKey}</small>{fieldControl(field)}</label>)}</div></div>;
         })}{!guided.length && <div className="config-empty">No guided settings match this search.</div>}</div>
-          : <><div className="advanced-tip"><LockKeyhole size={15} /> Sensitive values are never read into the UI. You may replace them, but the game still stores them in its config and backup files.</div><div className="advanced-list">{entries.map(entry => <div className="advanced-row" key={entry.key}><div><strong>{entry.key}</strong>{entry.count > 1 && <span className="duplicate-tag" title="The last active assignment takes effect.">DUPLICATE ×{entry.count}</span>}{entry.masked && <span title="Sensitive value hidden"><LockKeyhole size={14} /></span>}</div><input type={entry.masked ? 'password' : 'text'} aria-label={`Value for ${entry.key}`} title={entry.key === 'bots_manage_add' ? 'One-shot runtime command; editing its saved value is not supported.' : undefined} disabled={busy || !!restoreReview || entry.key === 'bots_manage_add'} placeholder={entry.masked ? 'Replace hidden value' : ''} value={Object.hasOwn(draft, entry.key) ? draft[entry.key] : (entry.masked ? '' : entry.value)} onChange={event => setDraft(previous => ({ ...previous, [entry.key]: event.target.value }))} /></div>)}{!entries.length && <div className="config-empty">No existing settings match this search.</div>}</div></>}
+          : <><div className="advanced-tip"><LockKeyhole size={15} /> Sensitive values are never read into the UI. You may replace them, but the game still stores them in its config and backup files.</div><div className="advanced-list">{entries.map(entry => <div className="advanced-row" key={entry.key}><div><strong>{entry.key}</strong>{entry.count > 1 && <span className="duplicate-tag" title="The last active assignment takes effect.">DUPLICATE ×{entry.count}</span>}{entry.masked && <span title="Sensitive value hidden"><LockKeyhole size={14} /></span>}</div><input type={entry.masked ? 'password' : 'text'} aria-label={`Value for ${entry.key}`} title={entry.key === 'bots_manage_add' ? 'One-shot runtime command; editing its saved value is not supported.' : undefined} disabled={busy || !!restoreReview || entry.key === 'bots_manage_add'} placeholder={entry.masked ? 'Replace hidden value' : ''} value={Object.hasOwn(draft, entry.key) ? draft[entry.key] : (entry.masked ? '' : entry.value)} onChange={event => updateValue(entry.key, event.target.value)} /></div>)}{!entries.length && <div className="config-empty">No existing settings match this search.</div>}</div></>}
         <div className="config-savebar"><span><ShieldCheck size={16} /> {changeCount ? `${changeCount} unsaved change${changeCount === 1 ? '' : 's'}` : 'Changes are backed up before saving.'}</span><button className="button primary-button" disabled={!game.installed || !changeCount || busy || !!restoreReview || pathConflict || loadedPath.current !== pathKey} onClick={review}><Save size={16} /> Review changes</button></div>
       </>}
     </section>

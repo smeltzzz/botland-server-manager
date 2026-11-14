@@ -17,6 +17,7 @@ const ARGS = Object.freeze(['--skip-launch', '--no-self-update', '--no-shortcuts
 const HASH = /^[a-f0-9]{64}$/u;
 const digest = bytes => createHash('sha256').update(bytes).digest('hex');
 const STAGE = '.botland-engine-stage-';
+const DONE = '.botland-engine-done-';
 const IDLE_MS = 30_000;
 const TOTAL_MS = 5 * 60_000;
 // IW4x may update clients, assets and DLC on a slow connection. Avoid killing
@@ -171,10 +172,17 @@ async function regular(file) {
   if (!stat.isFile() || stat.size > 128 * 1024 * 1024) throw new Error('Engine target is not a bounded regular file.');
   return fs.readFile(file);
 }
+async function syncDir(dir) {
+  try { const handle = await fs.open(dir, 'r'); try { await handle.sync(); } finally { await handle.close(); } }
+  catch (error) {
+    if (process.platform !== 'win32' || !['EPERM', 'EINVAL', 'EISDIR', 'ENOTSUP'].includes(error.code)) throw error;
+  }
+}
 async function durable(file, bytes) {
   await noLinks(file);
   const handle = await fs.open(file, 'wx');
   try { await handle.writeFile(bytes); await handle.sync(); } finally { await handle.close(); }
+  await syncDir(path.dirname(file));
 }
 async function replace(file, bytes, stage) {
   await noLinks(file);
@@ -201,22 +209,46 @@ class EngineUpdater {
   // `pins` is a fixture seam for offline tests only; production callers must not
   // override the hard-coded release digests. `confirmOverwrite` must obtain user
   // consent for EACH unknown existing executable before any files are changed.
-  constructor({ fetch: fetcher = globalThis.fetch, run = runLauncher, userData, confirmOverwrite = () => false, pins = PINS } = {}) {
-    if (typeof fetcher !== 'function' || typeof run !== 'function' || typeof confirmOverwrite !== 'function') throw new TypeError('Invalid engine updater hooks.');
+  constructor({ fetch: fetcher = globalThis.fetch, run = runLauncher, userData, confirmOverwrite = () => false, pins = PINS, fault = () => {} } = {}) {
+    if (typeof fetcher !== 'function' || typeof run !== 'function' || typeof confirmOverwrite !== 'function' || typeof fault !== 'function') throw new TypeError('Invalid engine updater hooks.');
     if (userData !== undefined && (typeof userData !== 'string' || !path.isAbsolute(userData))) throw new Error('Absolute app data folder required.');
     this.fetch = fetcher;
     this.run = run;
     this.confirmOverwrite = confirmOverwrite;
     this.pins = pins;
+    this.fault = fault; // Offline tests can simulate process death at transaction boundaries.
     this.busy = new Set();
   }
+  async discardResolved(id, folder, stage) {
+    const done = path.join(folder, path.basename(stage).replace(`${STAGE}${id}-`, `${DONE}${id}-`));
+    await noLinks(done);
+    await fs.rename(stage, done);
+    // Only resolved transactions enter this namespace. Persist the rename before
+    // recursive deletion so a crash cannot leave a half-deleted active journal.
+    try {
+      await syncDir(folder);
+      await this.fault('resolved', done);
+      await this.fault('cleanup', done);
+      await fs.rm(done, { recursive: true });
+      await syncDir(folder);
+    } catch (error) {
+      if (error?.simulateCrash) throw error;
+      // Housekeeping is retried by recover(); it must not undo a resolved update.
+    }
+  }
   async recover(id, folder, pin) {
-    const names = (await fs.readdir(folder)).filter(name => name.startsWith(`${STAGE}${id}-`));
+    const names = (await fs.readdir(folder)).filter(name =>
+      name.startsWith(`${STAGE}${id}-`) || name.startsWith(`${DONE}${id}-`));
     for (const name of names) {
-      if (!new RegExp(`^${STAGE}${id}-[a-zA-Z0-9]{6}$`, 'u').test(name)) throw new Error('Invalid engine stage directory; manual inspection required.');
+      if (!new RegExp(`^\\.botland-engine-(?:stage|done)-${id}-[a-zA-Z0-9]{6}$`, 'u').test(name)) throw new Error('Invalid engine stage directory; manual inspection required.');
       const stage = path.join(folder, name);
       await noLinks(stage);
       if (!(await fs.lstat(stage)).isDirectory()) throw new Error('Invalid engine stage directory.');
+      if (name.startsWith(`${DONE}${id}-`)) {
+        await fs.rm(stage, { recursive: true });
+        await syncDir(folder);
+        continue;
+      }
       if (await regular(path.join(stage, 'process-unknown')) !== null) {
         throw new Error('IW4x launcher may still be running; journal retained for manual inspection.');
       }
@@ -227,7 +259,7 @@ class EngineUpdater {
         const contents = await fs.readdir(stage);
         if (!contents.every(item => /^before-[01]$/u.test(item))) throw new Error('Unprepared engine stage; manual inspection required.');
         for (const item of contents) if (await regular(path.join(stage, item)) === null) throw new Error('Invalid engine stage.');
-        await fs.rm(stage, { recursive: true });
+        await this.discardResolved(id, folder, stage);
         continue;
       }
       if (raw.length > 4096) throw new Error('Invalid engine journal.');
@@ -287,7 +319,10 @@ class EngineUpdater {
         if (moved !== null) await fs.rename(path.join(stage, `moved-${entry.name}`), file);
         else if (entry.before !== null) await replace(file, await regular(path.join(stage, `before-${i}`)), stage);
       }
-      await fs.rm(stage, { recursive: true });
+      // Never discard an active external IW4x journal: the validation and
+      // external-started/process-unknown guards above must all succeed first.
+      await syncDir(folder);
+      await this.discardResolved(id, folder, stage);
     }
   }
   async prepareLaunch(id, gamePath) {
@@ -339,6 +374,7 @@ class EngineUpdater {
       originals.push(current);
     }
     const stage = await fs.mkdtemp(path.join(folder, `${STAGE}${id}-`));
+    await syncDir(folder);
     let journalWritten = false;
     try {
       for (const [i, bytes] of originals.entries()) if (bytes !== null) await durable(path.join(stage, `before-${i}`), bytes);
@@ -353,14 +389,16 @@ class EngineUpdater {
         if ((current === null ? null : digest(current)) !== journal.files[i].before) throw new Error('Engine target changed during staging.');
       }
       if (!originals[0]?.equals(body)) await replace(path.join(folder, pin.target), body, stage);
+      await this.fault('published', stage);
       if (id === 'mw2') {
         // The launcher is verified before execution; its own downloaded output is
         // NOT pinned. Never claim it is a verified artifact.
         await durable(path.join(stage, 'external-started'), Buffer.from('IW4x launcher was invoked.'));
+        await this.fault('external-started', stage);
         let runError;
         try { await this.run(path.join(folder, pin.target), ARGS.slice(), { cwd: folder, timeout: RUN_MS }); }
         catch (error) { runError = error; }
-        if (runError?.processUnknown) throw runError;
+        if (runError?.processUnknown || runError?.simulateCrash) throw runError;
         // An immutable marker identifies the output for recovery. If the process
         // crashes during the external run, no marker exists and any new output
         // is preserved as a conflict, never silently discarded.
@@ -370,10 +408,13 @@ class EngineUpdater {
         if (output === null) throw new Error('IW4x launcher finished without creating iw4x.exe.');
       }
       const finalJournal = await regular(path.join(stage, 'journal.json'));
+      await syncDir(folder);
       await durable(path.join(stage, 'committed'), Buffer.from(digest(finalJournal)));
+      await this.fault('committed', stage);
       await this.recover(id, folder, pin);
       return { id, version: pin.version };
     } catch (error) {
+      if (error?.simulateCrash) throw error;
       if (!journalWritten) await fs.rm(stage, { recursive: true }).catch(() => {});
       else if (error?.processUnknown) {
         await durable(path.join(stage, 'process-unknown'), Buffer.from('IW4x launcher exit was not observed.'));

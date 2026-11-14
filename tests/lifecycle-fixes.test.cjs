@@ -700,27 +700,34 @@ test('a second app instance hands off to the first and never opens a window', as
 
 test('elevated firewall changes run inline, report the real failure and clean up', async () => {
   const manager = new ServerManager('unused', () => {});
-  const before = (await fs.readdir(os.tmpdir())).filter(name => name.startsWith('botland-elevate-'));
+  const workspaces = [];
+  const resultFor = args => {
+    const encoded = args.at(-1).match(/'-EncodedCommand','([A-Za-z0-9+/=]+)'/)[1];
+    const script = Buffer.from(encoded, 'base64').toString('utf16le');
+    const resultFile = script.match(/-LiteralPath '([^']+)'/)[1];
+    workspaces.push(path.dirname(resultFile));
+    return resultFile;
+  };
   let seen;
   execImpl = (_file, args, _options, callback) => {
     seen = args.at(-1);
-    const encoded = seen.match(/'-EncodedCommand','([A-Za-z0-9+/=]+)'/)[1];
-    const script = Buffer.from(encoded, 'base64').toString('utf16le');
-    const resultFile = script.match(/-LiteralPath '([^']+)'/)[1];
+    const resultFile = resultFor(args);
     fs.writeFile(resultFile, '{ "ok": false, "message": "netsh exploded" }')
       .then(() => callback(null, '', ''))
       .catch(callback);
   };
   await assert.rejects(manager.runElevated(['netsh advfirewall show']), /The firewall change failed: netsh exploded/);
   assert.doesNotMatch(seen, /-File/);
-  execImpl = (_file, _args, _options, callback) => {
+  execImpl = (_file, args, _options, callback) => {
+    resultFor(args);
     const error = new Error('failed');
     error.stderr = 'Start-Process : This command cannot be run due to the error: The operation was canceled by the user.';
     callback(error);
   };
   await assert.rejects(manager.runElevated(['netsh advfirewall show']), /elevation prompt was canceled/);
-  const after = (await fs.readdir(os.tmpdir())).filter(name => name.startsWith('botland-elevate-'));
-  assert.deepEqual(after.sort(), before.sort());
+  // Other test processes can create/clean their own elevation fixtures in
+  // parallel. Assert cleanup of this test's workspaces, not global temp state.
+  for (const workspace of workspaces) await assert.rejects(fs.access(workspace), { code: 'ENOENT' });
   execImpl = (_file, _args, _options, callback) => callback(null, '', '');
 });
 

@@ -24,6 +24,8 @@ jobs:
       - run: npm run build
       - name: Smoke built renderer with synthetic data
         run: .\node_modules\.bin\electron.cmd tests\packaged-smoke.cjs
+      - name: Audit accessibility and layouts with offline synthetic data
+        run: npm run test:accessibility
       - run: npm run lint
       - name: Check workflow and tooling formatting
         run: npm run format:check

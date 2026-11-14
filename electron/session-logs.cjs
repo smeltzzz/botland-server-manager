@@ -15,8 +15,10 @@ const name = String.raw`[a-z0-9_.-]*(?:guid|token|key|secret|passwd|password|aut
 const authorization = /(\b(?:Proxy-)?Authorization[ \t]*:[ \t]*)[^\r\n]*/gi;
 const assignment = new RegExp(String.raw`(\b${name}[ \t]*(?:=|:)[ \t]*)${value}`, 'gi');
 const setCommand = new RegExp(String.raw`(\bset(?:a|s|u)?[ \t]+${name}[ \t]+)${value}`, 'gi');
-// A quoted console command can be echoed without `set` (e.g. `rcon_password "x"`).
-const bareCommand = new RegExp(String.raw`(\b${name}[ \t]+)(?:"(?:\\.|[^"\\\r\n])*"|'(?:\\.|[^'\\\r\n])*'|"[^\r\n]*|'[^\r\n]*)`, 'gi');
+// Console commands can be echoed without `set`, with quoted or bare values.
+// Require a complete name boundary: do not start matching inside another dvar.
+// Horizontal whitespace keeps a value on its own line; separators remain intact.
+const bareCommand = new RegExp(String.raw`(?<![a-z0-9_.-])(${name}[ \t]+)${value}`, 'gi');
 const sessionName = /^session-\d{8}T\d{9}Z-[a-f0-9-]{36}\.jsonl$/;
 // games_mp.log event lines (join, quit, kill, damage, weapon, say) carry player
 // GUIDs as semicolon-separated fields, e.g. `0:12 J;0123abcd...;3;Name`.
