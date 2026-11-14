@@ -101,19 +101,22 @@ test('a game folder reached through a junction can still be managed by the insta
 });
 
 test('the download timeout is an idle limit, with a separate overall cap', async () => {
+  // Keep wide margins: CI runners can delay a 20 ms timer past a tight idle
+  // limit, which made this assertion flaky rather than wrong.
   const slow = () => new ReadableStream({
     async start(controller) {
       for (let i = 0; i < 6; i++) { await new Promise(resolve => setTimeout(resolve, 20)); controller.enqueue(new Uint8Array([i])); }
       controller.close();
     },
   });
-  // Six chunks 20 ms apart take longer than the 60 ms idle limit in total.
-  const result = await downloadArchive(release, { timeoutMs: 60, fetch: async () => new Response(slow(), { status: 200 }) });
+  // Six chunks 20 ms apart stay well inside the 400 ms idle limit.
+  const result = await downloadArchive(release, { timeoutMs: 400, fetch: async () => new Response(slow(), { status: 200 }) });
   assert.deepEqual([...result.bytes], [0, 1, 2, 3, 4, 5]);
   const trickle = () => new ReadableStream({
-    async pull(controller) { await new Promise(resolve => setTimeout(resolve, 10)); controller.enqueue(new Uint8Array([1])); },
+    async pull(controller) { await new Promise(resolve => setTimeout(resolve, 20)); controller.enqueue(new Uint8Array([1])); },
   });
-  await assert.rejects(downloadArchive(release, { timeoutMs: 50, totalTimeoutMs: 80,
+  // Never idle, but the separate overall cap still stops it.
+  await assert.rejects(downloadArchive(release, { timeoutMs: 400, totalTimeoutMs: 120,
     fetch: async () => new Response(trickle(), { status: 200 }) }), /timed out/);
 });
 

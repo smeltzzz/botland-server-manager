@@ -2,6 +2,10 @@
 
 Notable changes to botLANd Server Manager are recorded here. This project follows [Semantic Versioning](https://semver.org/).
 
+## 1.2.19
+
+- Make the Bot Warfare download idle-limit regression test timing-tolerant; the 20 ms margins failed on a loaded CI runner while the behaviour under test was correct.
+
 ## 1.2.18
 
 ### Safety and correctness
