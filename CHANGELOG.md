@@ -2,6 +2,10 @@
 
 Notable changes to botLANd Server Manager are recorded here. This project follows [Semantic Versioning](https://semver.org/).
 
+## 1.2.25
+
+- Report reduced-opacity/inactive controls as manual-review notes instead of CI failures in the accessibility smoke; a runner can catch a panel mid-transition from disabled to enabled, where the composited colour is not a user-visible state.
+
 ## 1.2.24
 
 - Exclude inactive controls from the accessibility audit: WCAG 1.4.3 exempts them, and axe could evaluate a control that was disabled while a panel was still loading.
