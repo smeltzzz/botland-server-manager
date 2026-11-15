@@ -37,9 +37,18 @@ const snapshot = {
     config: { sv_hostname: 'Synthetic server' },
     options: { port: 28962, mode: 'dom', shuffle: true, selectedMaps: [], gamePath: '', lan: true },
     blockers: id === 'cod4' ? [] : ['Game folder not found.'], warnings: [],
-    status: 'stopped', pid: null, startedAt: null, activePort: null, logs: [],
+    status: 'stopped', pid: null, startedAt: null, activePort: null,
   })),
 };
+// Snapshots carry no logs; the renderer seeds from getLogs on startup, game
+// open and session start, then follows live 'log' events.
+const smokeLogs = {};
+// Simulates a session start so the renderer re-requests getLogs for cod4.
+function reseedLogs(win, entries) {
+  smokeLogs.cod4 = entries;
+  win.webContents.send('manager:event', { type: 'state', snapshot: gameSnapshot({ status: 'starting' }) });
+  win.webContents.send('manager:event', { type: 'state', snapshot: gameSnapshot({}) });
+}
 const documentFixture = {
   path: 'C:\\Example\\Game\\main\\server.cfg', target: 'base', mode: 'dom', sourceRepo: '',
   values: { sv_hostname: 'Synthetic server', bots_manage_fill_mode: '0', bots_manage_fill: '8' },
@@ -153,6 +162,7 @@ app.whenReady().then(async () => {
         if (copyResult === 'error') throw new Error('Synthetic clipboard failure.');
         return copyResult;
       case 'openLogs': return false;
+      case 'getLogs': return structuredClone(smokeLogs[payload.id] || []);
       case 'maps':
         if (failMapsOnce) { failMapsOnce = false; throw new Error('Synthetic map scan failure.'); }
         return { maps: mapInventory.slice(0, mapsVersion), modes: [{ value: 'dom', label: 'Domination' }] };
@@ -247,6 +257,10 @@ app.whenReady().then(async () => {
   const win = new BrowserWindow({ width: 640, height: 900, show: false, backgroundColor: '#1B1A19',
     webPreferences: { preload: path.join(__dirname, '..', 'electron', 'preload.cjs'), contextIsolation: true, nodeIntegration: false, sandbox: true, backgroundThrottling: false, offscreen: true } });
   hardenSmokeWindow(win);
+  // The shipped CSP has no 'unsafe-inline' styles and no data: images; any
+  // blocked inline style/image would surface here as a CSP console error.
+  const cspViolations = [];
+  win.webContents.on('console-message', details => { if (/Content Security Policy/i.test(details.message)) cspViolations.push(details.message); });
   // A packaged window whose preload failed must explain the problem instead of
   // throwing while React mounts. Keep the main window alive while this window is
   // destroyed, or Electron quits before the rest of the smoke can run.
@@ -1012,6 +1026,9 @@ app.whenReady().then(async () => {
     })`);
 
     await verifyKeyboardAndConsole(win);
+    assert.deepEqual(cspViolations, [], 'The renderer must not trigger Content Security Policy violations');
+    const csp = await executeRenderer(win, "document.querySelector('meta[http-equiv=Content-Security-Policy]')?.content || ''");
+    assert.doesNotMatch(csp, /unsafe-inline|data:/, 'The shipped CSP allows neither inline styles nor data: URLs');
     assert.deepEqual(offline.blocked, [], 'No external/file/data network requests are permitted by the smoke');
     console.log('Synthetic packaged renderer: shared production app:// and ASAR handler, startup fallback, keyboard tabs/dirty-cancel, named map group, streamed console overlap/pause/jump/copy feedback, missing-file restore/partial prune, successful save focus, BO1 firewall cache, dependency cleanup, rotation guards, independent Stop/Cancel, engine sidebar and modal smoke passed.');
   } finally { win.destroy(); app.quit(); }
@@ -1112,13 +1129,13 @@ async function verifyKeyboardAndConsole(win) {
 async function verifyStreamedConsole(win) {
   const history = Array.from({ length: 120 }, (_, index) => logFixture(index));
   const next = index => logFixture(index);
-  win.webContents.send('manager:event', { type: 'state', snapshot: gameSnapshot({ logs: history }) });
+  reseedLogs(win, history);
   await waitForCondition(win, "document.querySelectorAll('.console-line').length === 120");
   await executeRenderer(win, "document.querySelector('.console-lines').focus()");
   // Same entry in a streamed batch and an overlapping snapshot must render once;
   // a line already queued before a snapshot must not be silently lost either.
   win.webContents.send('manager:event', { type: 'log', id: 'cod4', entry: next(120) });
-  win.webContents.send('manager:event', { type: 'state', snapshot: gameSnapshot({ logs: [...history.slice(1), next(120)] }) });
+  reseedLogs(win, [...history.slice(1), next(120)]);
   win.webContents.send('manager:event', { type: 'log', id: 'cod4', entry: next(121) });
   await waitForCondition(win, "document.querySelector('.console-line:last-child')?.textContent.includes('Synthetic streamed output 121')");
   const overlap = await executeRenderer(win, `({
@@ -1136,7 +1153,7 @@ async function verifyStreamedConsole(win) {
   const paused = await executeRenderer(win, "document.querySelector('.console-lines').textContent");
   win.webContents.send('manager:event', { type: 'log', id: 'cod4', entry: next(122) });
   win.webContents.send('manager:event', { type: 'log', id: 'cod4', entry: next(123) });
-  win.webContents.send('manager:event', { type: 'state', snapshot: gameSnapshot({ logs: [...history.slice(4), next(120), next(121), next(122), next(123)] }) });
+  reseedLogs(win, [...history.slice(4), next(120), next(121), next(122), next(123)]);
   await waitForCondition(win, "/2 new lines buffered/.test(document.querySelector('.console-paused')?.textContent || '')");
   assert.equal(await executeRenderer(win, "document.querySelector('.console-lines').textContent"), paused, 'Pause freezes all 120 retained history lines while new output arrives');
   await executeRenderer(win, "[...document.querySelectorAll('.console-actions button')].find(button => /^Resume/.test(button.textContent.trim())).click()");
@@ -1162,7 +1179,7 @@ async function verifyStreamedConsole(win) {
   assert.match(lastCopiedText, /Synthetic streamed output 123/);
   assert.match(lastCopiedText, /stdout|stderr|g_log/);
   const huge = Array.from({ length: 120 }, (_, index) => logFixture(500 + index, `Oversize output ${index} ${'x'.repeat(1900)}`));
-  win.webContents.send('manager:event', { type: 'state', snapshot: gameSnapshot({ logs: huge }) });
+  reseedLogs(win, huge);
   await waitForCondition(win, "document.querySelector('.console-line:last-child')?.textContent.includes('Oversize output 119')");
   await executeRenderer(win, `(${copy}).click()`);
   await waitForCondition(win, `/too (?:large|long)|200.?000|filter|reduce|fewer|limit|invalid text to copy/i.test(${feedback})`);

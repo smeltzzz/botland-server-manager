@@ -7,6 +7,7 @@ contextBridge.exposeInMainWorld('manager', {
   copyDiagnostics: () => invoke('copyDiagnostics'),
   copyText: (text) => invoke('copyText', { text }),
   openLogs: () => invoke('openLogs'),
+  getLogs: (id) => invoke('getLogs', { id }),
   setUnsavedChanges: (dirty) => invoke('setUnsavedChanges', { dirty }),
   maps: (id) => invoke('maps', { id }),
   start: (id) => invoke('start', { id }),

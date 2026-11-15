@@ -1,9 +1,10 @@
 import { useSyncExternalStore } from 'react';
-import type { Game, GameId, LogEntry } from './types';
+import type { GameId, LogEntry } from './types';
 
 // Live console lines live outside React state so an 80 ms log flush only
 // re-renders the console that shows them, not the whole App tree. Snapshots
-// still carry logs; each fresh snapshot reseeds this store.
+// no longer carry logs; each game is seeded from getLogs (startup, game open,
+// session start) and then extended by live log events.
 const LIMIT = 120;
 const empty: LogEntry[] = [];
 const lines = new Map<GameId, LogEntry[]>();
@@ -11,12 +12,22 @@ const listeners = new Set<() => void>();
 
 function notify() { for (const listener of listeners) listener(); }
 
-export function seedLogs(games: Pick<Game, 'id' | 'logs'>[]) {
-  let changed = false;
-  for (const game of games) {
-    if (lines.get(game.id) !== game.logs) { lines.set(game.id, game.logs); changed = true; }
-  }
-  if (changed) notify();
+// getLogs already includes every line emitted before it resolved; live lines
+// queued after that are de-duplicated by appendLogs' overlap check.
+export function seedGameLogs(id: GameId, entries: LogEntry[]) {
+  lines.set(id, entries.slice(-LIMIT));
+  notify();
+}
+
+const requests = new Map<GameId, number>();
+export async function loadGameLogs(id: GameId) {
+  const request = (requests.get(id) || 0) + 1;
+  requests.set(id, request);
+  try {
+    const entries = await window.manager.getLogs(id);
+    // An older request finishing late must not replace a newer seed.
+    if (requests.get(id) === request && Array.isArray(entries)) seedGameLogs(id, entries);
+  } catch { /* The console keeps what it already has. */ }
 }
 
 function same(a: LogEntry, b: LogEntry) { return a.at === b.at && a.message === b.message && a.source === b.source; }

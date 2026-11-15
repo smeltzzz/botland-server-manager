@@ -673,8 +673,7 @@ class ServerManager {
           return orphan?.port === result.options.port && !owned ? orphan : null;
         })(),
         restart: { enabled: this.data.games?.[id]?.autoRestart === true, attempts: restart?.attempts || 0,
-          nextAttemptAt: restart?.nextAttemptAt || null, cutOff: restart?.cutOff || false },
-        logs: (this.logs.get(id) || []).slice(-120) };
+          nextAttemptAt: restart?.nextAttemptAt || null, cutOff: restart?.cutOff || false } };
     }));
     return { games, updatesEnabled: this.data.updatesEnabled, updates: this.botUpdates, detectError: this.detectError || null, locale: this.data.locale || 'en', plutonium: await this.plutoniumStatus() };
   }
@@ -686,6 +685,13 @@ class ServerManager {
     if (sequence < this.lastBroadcast) return;
     this.lastBroadcast = sequence;
     this.notify({ type: 'state', snapshot });
+  }
+  // Recent console lines for one game. Snapshots no longer carry logs; the
+  // renderer seeds from here and follows live 'log' events. Entries were
+  // bounded and redacted by addLog; return copies so callers cannot mutate them.
+  getLogs(id) {
+    profileFor(id);
+    return (this.logs.get(id) || []).slice(-120).map(entry => ({ ...entry }));
   }
   addLog(id, text, level = 'info', key = '', source = 'manager') {
     // Bound the input before running the redaction patterns. If a key crosses

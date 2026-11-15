@@ -10,13 +10,18 @@ const devCsp = {
   name: 'botland-dev-csp',
   apply: 'serve' as const,
   transformIndexHtml(html: string) {
-    return html.replace("connect-src 'self'", "connect-src 'self' ws://127.0.0.1:5173");
+    // Vite's dev server injects CSS as <style> elements; the built app links
+    // a stylesheet file and ships without 'unsafe-inline'.
+    return html.replace("connect-src 'self'", "connect-src 'self' ws://127.0.0.1:5173")
+      .replace("style-src 'self'", "style-src 'self' 'unsafe-inline'");
   },
 };
 
 export default defineConfig({
   plugins: [react(), devCsp],
   base: './',
+  // The CSP has no data: source; never inline assets as data URLs.
+  build: { assetsInlineLimit: 0 },
   define: { __APP_VERSION__: JSON.stringify(version) },
   server: { host: '127.0.0.1', port: 5173, strictPort: true, watch: { ignored: ['**/release/**', '**/dist/**'] } },
 });

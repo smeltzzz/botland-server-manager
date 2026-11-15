@@ -141,7 +141,10 @@ test('a long key crossing the log input cap never leaks a prefix to events, snap
   const jsonl = await fs.readFile(file, 'utf8');
   assert.equal(messages[0], 'a'.repeat(1900));
   assert.equal(messages[1].length, 2000);
-  assert.equal(snapshot.games.find(item => item.id === 'bo2').logs.length, 2);
+  assert.equal(snapshot.games.find(item => item.id === 'bo2').logs, undefined, 'Snapshots carry no log lines');
+  const recent = manager.getLogs('bo2');
+  assert.equal(recent.length, 2);
+  assert.equal(JSON.stringify(recent).includes(prefix), false);
   assert.equal(jsonl.trim().split('\n').length, 2);
   for (const published of [JSON.stringify(events), JSON.stringify(snapshot), jsonl]) {
     assert.equal(published.includes(prefix), false);

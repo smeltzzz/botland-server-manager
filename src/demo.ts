@@ -1,12 +1,12 @@
 // Browser-only design preview. This module is loaded only by the Vite dev server
 // when the Electron preload is absent; packaged builds never use these fixtures.
-import type { BotStatus, ConfigDocument, ConfigField, Game, GameId, ManagerApi, ManagerEvent, MapData, Snapshot } from './types';
+import type { BotStatus, ConfigDocument, ConfigField, Game, GameId, LogEntry, ManagerApi, ManagerEvent, MapData, Snapshot } from './types';
 
-const base: Pick<Game, 'options' | 'config' | 'blockers' | 'warnings' | 'logs' | 'status' | 'pid' | 'startedAt' | 'connect' | 'orphan' | 'restart' | 'setup'> = {
+const base: Pick<Game, 'options' | 'config' | 'blockers' | 'warnings' | 'status' | 'pid' | 'startedAt' | 'connect' | 'orphan' | 'restart' | 'setup'> = {
   setup: { folder: false, engine: null, plutonium: null, key: null, bots: false, config: false, maps: false },
   options: { port: 28961, mode: 'dom', shuffle: true, selectedMaps: [], gamePath: '', lan: true },
   config: { sv_hostname: 'botLANd — Domination', sv_maxclients: '18', bots_main: '1', bots_manage_fill: '14', bots_skill: '4', bots_team: 'autoassign', bots_manage_fill_mode: '0', bots_play_obj: '1', scr_dom_timelimit: '15', scr_dom_scorelimit: '200' },
-  blockers: [], warnings: [], logs: [], status: 'stopped', pid: null, startedAt: null,
+  blockers: [], warnings: [], status: 'stopped', pid: null, startedAt: null,
   connect: { primaryAddress: null, ambiguous: false, candidates: [] }, orphan: null,
   restart: { enabled: false, attempts: 0, nextAttemptAt: null, cutOff: false },
 };
@@ -51,6 +51,7 @@ function demoModes(id: GameId): MapData['modes'] {
     { value: 'dm', label: 'Free for All' }, { value: 'sd', label: 'Search & Destroy' },
   ];
 }
+const demoLogs: Partial<Record<GameId, LogEntry[]>> = {};
 const subscribers = new Set<(event: ManagerEvent) => void>();
 const emit = () => subscribers.forEach(listener => listener({ type: 'state', snapshot: structuredClone(snapshot) }));
 const find = (id: GameId) => snapshot.games.find(game => game.id === id)!;
@@ -130,6 +131,7 @@ export function createDemoManager(): ManagerApi {
     copyDiagnostics: async () => false, // Browser preview never writes to the clipboard.
     copyText: async () => false,
     openLogs: async () => false,
+    getLogs: async id => structuredClone(demoLogs[id] || []),
     setUnsavedChanges: async () => true,
     maps: async (id): Promise<MapData> => ({ maps: pool, modes: demoModes(id) }),
     start: async id => {
@@ -139,7 +141,7 @@ export function createDemoManager(): ManagerApi {
       if (game.modBusy) throw new Error('Wait for the Bot Warfare change to finish before starting this server.');
       if (game.engineBusy) throw new Error('Wait for the engine update to finish before starting this server.');
       if (id === 'bo1' && (firewallRules.bo1?.scope !== 'any' || firewallRules.bo1.port !== game.options.port)) throw new Error('A verified public inbound UDP firewall rule is required before starting BO1.');
-      game.status = 'running'; game.pid = 4108; game.activePort = game.options.port; game.startedAt = new Date().toISOString(); game.restart = { ...game.restart, attempts: 0, nextAttemptAt: null, cutOff: false }; demoConnect(game); game.logs = [{ at: new Date().toISOString(), level: 'info', source: 'manager', message: `Started ${game.engine} with the selected map rotation.` }, { at: new Date().toISOString(), level: 'info', source: 'stdout', message: 'Demo server output (no game process launched).' }]; emit();
+      game.status = 'running'; game.pid = 4108; game.activePort = game.options.port; game.startedAt = new Date().toISOString(); game.restart = { ...game.restart, attempts: 0, nextAttemptAt: null, cutOff: false }; demoConnect(game); demoLogs[id] = [{ at: new Date().toISOString(), level: 'info', source: 'manager', message: `Started ${game.engine} with the selected map rotation.` }, { at: new Date().toISOString(), level: 'info', source: 'stdout', message: 'Demo server output (no game process launched).' }]; emit();
     },
     stop: async id => { const game = find(id); game.status = 'stopped'; game.pid = null; game.activePort = null; game.connect = { primaryAddress: null, ambiguous: false, candidates: [] }; game.restart.nextAttemptAt = null; emit(); },
     copyConnectAddress: async (id, address) => { const game = find(id); return game.status === 'running' && game.connect.candidates.some(candidate => candidate.connectAddress === address); },

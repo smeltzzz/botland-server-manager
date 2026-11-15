@@ -18,6 +18,12 @@ test('main drains session cleanup after stopAll has finished launch/process clea
   harness.win.handlers.close(close);
   assert.equal(close.prevented, true);
   assert.equal(harness.prompts.length, 1);
+  // A second close while the async prompt is open must not stack another prompt.
+  const again = event();
+  harness.win.handlers.close(again);
+  assert.equal(again.prevented, true);
+  assert.equal(harness.prompts.length, 1);
+  await tick();
   assert.deepEqual(calls, ['launch/process cleanup']);
   running = false;
   stop.resolve();

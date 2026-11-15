@@ -100,8 +100,10 @@ test('schema fixtures install all six titles and expose every real title/mode sc
     const base = schemaDocument(game.id);
     assert.deepEqual(base.fields, schemaFor(game.id).fields);
     assert.ok(base.entries.some(entry => entry.masked && entry.value === ''));
-    assert.equal(game.logs.length, 120);
-    assert.equal(game.logs[119].message, logFixture(119).message);
+    assert.equal(Object.hasOwn(game, 'logs'), false, 'Snapshots carry no log lines');
+    const logs = await fixture.services.getLogs(game.id);
+    assert.equal(logs.length, 120);
+    assert.equal(logs[119].message, logFixture(119).message);
     const conditional = schemaDocument(game.id, 'base', game.options.mode, 'conditional');
     assert.equal(conditional.values.bots_team, 'custom');
     const defaults = schemaDocument(game.id, 'base', game.options.mode, 'defaults');
@@ -115,7 +117,8 @@ test('schema fixtures install all six titles and expose every real title/mode sc
     }
   }
   // Fixtures clone at the bridge boundary and never mutate a prior snapshot.
-  fixture.state.games[0].logs.push(logFixture(120));
-  assert.equal(snapshot.games[0].logs.length, 120);
-  assert.equal((await fixture.services.snapshot()).games[0].logs.length, 121);
+  const before = await fixture.services.getLogs(order[0]);
+  fixture.logs[order[0]].push(logFixture(120));
+  assert.equal(before.length, 120);
+  assert.equal((await fixture.services.getLogs(order[0])).length, 121);
 });

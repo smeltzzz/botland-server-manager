@@ -45,7 +45,7 @@ function options(values) {
   }
 }
 
-const idOnly = new Set(['maps', 'start', 'stop', 'chooseFolder', 'useDetectedFolder', 'createStarterConfig', 'botStatus',
+const idOnly = new Set(['getLogs', 'maps', 'start', 'stop', 'chooseFolder', 'useDetectedFolder', 'createStarterConfig', 'botStatus',
   'removeKey', 'openEngineGuide', 'firewallStatus', 'firewallApply', 'firewallRemove', 'openDocs', 'openConfig']);
 
 function validatePayload(action, payload) {

@@ -48,6 +48,7 @@ async function fakeMain(t, manager) {
   };
   const dialog = {
     showMessageBoxSync: (...args) => { const options = args.at(-1); prompts.push(options); return options.type === 'warning' ? 1 : 0; },
+    showMessageBox: async (...args) => { const options = args.at(-1); prompts.push(options); return { response: options.type === 'warning' ? 1 : 0 }; },
     showErrorBox: (title, message) => { errors.push({ title, message }); },
   };
   Object.assign(manager, { initialize: async () => {}, rescanInstallations: async () => {}, checkBotUpdates: async () => {} });

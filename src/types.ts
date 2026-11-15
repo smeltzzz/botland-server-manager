@@ -45,7 +45,6 @@ export interface Game {
   pid: number | null;
   startedAt: string | null;
   activePort?: number | null;
-  logs: LogEntry[];
 }
 export interface BotManifest { channel: string; ref: string; refType: 'tag' | 'commit'; sha256: string; date: string; repo: string; patches: string[] }
 export interface BotStatus { state: 'installed' | 'unknown' | 'not-installed'; targetPath: string; manifest: BotManifest | null; channel: 'stable' | 'development'; source: { supported: boolean; ref: string | null; notes: string; status: string } }
@@ -66,6 +65,8 @@ export interface ManagerApi {
   copyDiagnostics(): Promise<boolean>;
   copyText(text: string): Promise<boolean>;
   openLogs(): Promise<boolean>;
+  /** Recent console lines for one game (bounded and redacted); snapshots carry none. */
+  getLogs(id: GameId): Promise<LogEntry[]>;
   setUnsavedChanges(dirty: boolean): Promise<boolean>;
   maps(id: GameId): Promise<MapData>;
   start(id: GameId): Promise<void>;

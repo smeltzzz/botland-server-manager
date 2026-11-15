@@ -120,7 +120,7 @@ async function createWindow() {
   window.once('ready-to-show', () => window.show());
   window.on('close', event => {
     if (quitAfterStop) return;
-    if (stoppingForQuit) { event.preventDefault(); return; }
+    if (stoppingForQuit || quitPromptOpen) { event.preventDefault(); return; }
     if (!needsQuitPrompt()) return;
     event.preventDefault();
     requestQuit();
@@ -152,6 +152,8 @@ async function createWindow() {
   window.webContents.on('will-prevent-unload', event => {
     // The quit prompt already covered the unsaved drafts.
     if (discardConfirmed) { event.preventDefault(); return; }
+    // Stays synchronous: Electron decides the unload as soon as this handler
+    // returns, so preventDefault cannot be deferred until an async dialog resolves.
     const choice = dialog.showMessageBoxSync(window, {
       type: 'warning', buttons: ['Keep editing', 'Discard changes'], defaultId: 0, cancelId: 0,
       title: 'Unsaved changes', message: 'Discard your unsaved changes?',
@@ -244,6 +246,7 @@ if (primaryInstance) app.whenReady().then(() => {
         if (error) throw new Error(error);
         return true;
       }
+      case 'getLogs': profileFor(id); return manager.getLogs(id);
       case 'maps': return manager.maps(id);
       case 'start': return manager.start(id);
       case 'stop': return manager.stop(id);
@@ -317,14 +320,22 @@ if (primaryInstance) app.whenReady().then(() => {
 });
 
 function needsQuitPrompt() { return Boolean(manager?.hasRunning() || manager?.hasModWork?.()); }
-function showBox(options) {
-  return window && !window.isDestroyed() ? dialog.showMessageBoxSync(window, options) : dialog.showMessageBoxSync(options);
+// Async message boxes keep the main process (IPC, log tails, server output)
+// responsive while a quit prompt is open. quitPromptOpen stops a second close
+// or before-quit from stacking another prompt or slipping past the first one.
+let quitPromptOpen = false;
+async function showBox(options) {
+  quitPromptOpen = true;
+  try {
+    const { response } = window && !window.isDestroyed() ? await dialog.showMessageBox(window, options) : await dialog.showMessageBox(options);
+    return response;
+  } finally { quitPromptOpen = false; }
 }
 function showInstallerBusy() {
   // Quitting mid-install would leave files for the next launch to recover.
   const plutonium = Boolean(manager?.plutonium?.updating);
   const engine = Boolean(manager?.engineBusy?.size);
-  showBox({
+  return showBox({
     type: 'info', buttons: ['OK'], defaultId: 0, cancelId: 0,
     title: plutonium ? 'Plutonium update in progress' : engine ? 'Engine update in progress' : 'Bot Warfare change in progress',
     message: plutonium ? 'Wait for the Plutonium update to finish before closing botLANd.' : engine ? 'Wait for the engine update to finish before closing botLANd.' : 'Wait for the Bot Warfare change to finish before closing botLANd.',
@@ -343,7 +354,7 @@ async function finishQuit() {
       stoppingForQuit = false;
       discardConfirmed = false;
       manager.cancelShutdown?.();
-      showInstallerBusy();
+      showInstallerBusy().catch(() => {});
       return;
     }
     if (manager?.hasRunning()) {
@@ -363,21 +374,24 @@ async function finishQuit() {
     dialog.showErrorBox('Could not close', error.message);
   }
 }
-function requestQuit() {
-  if (stoppingForQuit) return;
-  if (manager?.hasModWork?.()) { showInstallerBusy(); return; }
-  const result = showBox({
+async function requestQuit() {
+  if (stoppingForQuit || quitPromptOpen) return;
+  if (manager?.hasModWork?.()) { await showInstallerBusy().catch(() => {}); return; }
+  let result;
+  try {
+    result = await showBox({
     type: 'warning', buttons: ['Keep app open', 'Stop servers and exit'], defaultId: 0, cancelId: 0,
     title: 'Servers are still running', message: 'Stop your managed servers before closing botLANd?',
     detail: 'Stopping a server ends its current game session. Only processes started by this app will be targeted.'
       + (rendererDirty ? '\n\nYour unsaved configuration or rotation edits will also be discarded.' : ''),
-  });
-  if (result !== 1) return;
+    });
+  } catch { return; }
+  if (result !== 1 || stoppingForQuit) return;
   discardConfirmed = true;
-  finishQuit();
+  await finishQuit();
 }
 app.on('before-quit', event => {
-  if (stoppingForQuit) { event.preventDefault(); return; }
+  if (stoppingForQuit || quitPromptOpen) { event.preventDefault(); return; }
   // Do not let a prior confirmation bypass installer work or cleanup which
   // appeared while a stop, disk-log close, or native unload prompt was pending.
   if (quitAfterStop) {

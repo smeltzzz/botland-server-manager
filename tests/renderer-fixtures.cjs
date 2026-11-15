@@ -63,14 +63,17 @@ function createRendererFixtures() {
         config: { sv_hostname: doc.values.sv_hostname, sv_maxclients: doc.values.sv_maxclients, bots_manage_fill: doc.values.bots_manage_fill },
         connect: { primaryAddress: null, ambiguous: false, candidates: [] }, orphan: null,
         restart: { enabled: false, attempts: 0, nextAttemptAt: null, cutOff: false }, blockers: [], warnings: [],
-        status: 'stopped', pid: null, startedAt: null, activePort: null, logs: Array.from({ length: 120 }, (_, index) => logFixture(index)),
+        status: 'stopped', pid: null, startedAt: null, activePort: null,
       };
     }),
   };
+  // Snapshots carry no logs; the renderer seeds each game through getLogs.
+  const logs = Object.fromEntries(order.map(id => [id, Array.from({ length: 120 }, (_, index) => logFixture(index))]));
   const emit = () => { for (const listener of listeners) listener({ type: 'state', snapshot: structuredClone(state) }); };
   const keyFor = (id, target, mode) => `${id}:${target}:${mode}`;
   const services = {
     snapshot: async () => structuredClone(state),
+    getLogs: async id => structuredClone(logs[id] || []),
     setLocale: async next => { locale = next; state.locale = locale; emit(); },
     maps: async id => ({ maps: [...maps], modes: modesFor(id) }),
     document: async (id, target = 'base', mode = profiles[id].defaultMode) => structuredClone(documents.get(keyFor(id, target, mode)) || schemaDocument(id, target, mode, variant)),
@@ -102,7 +105,7 @@ function createRendererFixtures() {
     setUnsavedChanges: async () => true,
     subscribe: listener => { listeners.add(listener); return () => listeners.delete(listener); },
   };
-  return { services, state, setVariant: next => { variant = next; documents.clear(); },
+  return { services, state, logs, setVariant: next => { variant = next; documents.clear(); },
     deferPreview: callback => { deferredPreview = callback; }, emit };
 }
 module.exports = { createRendererFixtures, schemaDocument, modesFor, logFixture };

@@ -63,9 +63,13 @@ async function verifyAuditSelfCheck(win, axeSource) {
     fixture.id = 'audit-self-check';
     fixture.setAttribute('aria-label', 'Audit regression fixture');
     fixture.style.cssText = 'position:fixed;inset:0;z-index:2147483647;background:white;color:black;padding:20px';
-    fixture.innerHTML = '<button id="audit-opacity" style="opacity:.88;min-width:44px;min-height:44px"></button>'
-      + '<button id="audit-contrast" style="opacity:.88;background:#fff;color:#bbb;font:16px Arial">Contrast regression</button>'
+    // Inline style attributes in HTML strings are blocked by the CSP (no
+    // 'unsafe-inline' in style-src); CSSOM style assignments are allowed.
+    fixture.innerHTML = '<button id="audit-opacity"></button>'
+      + '<button id="audit-contrast">Contrast regression</button>'
       + '<div id="audit-semantic" role="checkbox" aria-disabled="true" aria-label="Missing required state" tabindex="0">Missing state</div>';
+    fixture.querySelector('#audit-opacity').style.cssText = 'opacity:.88;min-width:44px;min-height:44px';
+    fixture.querySelector('#audit-contrast').style.cssText = 'opacity:.88;background:#fff;color:#bbb;font:16px Arial';
     document.body.append(fixture);
   })()`);
   try {

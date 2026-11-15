@@ -447,7 +447,7 @@ test('window close and before-quit stay blocked while stopAll is pending', async
     getPath: name => name === 'appData' ? __dirname : path.join(__dirname, 'BotLANd Server Manager'),
     isPackaged: false, quit: () => { quits++; }, requestSingleInstanceLock: () => true,
   };
-  const dialog = { showMessageBoxSync: () => { prompts++; return 1; }, showErrorBox: (_title, message) => { startupError = message; } };
+  const dialog = { showMessageBox: async () => { prompts++; return { response: 1 }; }, showErrorBox: (_title, message) => { startupError = message; } };
   const sandbox = {
     module: { exports: {} }, process, __dirname: path.join(__dirname, '..', 'electron'),
     require: name => name === 'electron' ? { app, dialog, BrowserWindow: FakeWindow, ipcMain: { handle() {} }, shell: {}, session: fakeSession }
@@ -502,7 +502,7 @@ test('before-quit waits for session cleanup without asking the user to stop serv
     getPath: name => name === 'appData' ? __dirname : path.join(__dirname, 'BotLANd Server Manager'),
     isPackaged: false, quit: () => { quits++; }, requestSingleInstanceLock: () => true,
   };
-  const dialog = { showMessageBoxSync: () => { throw new Error('Cleanup must not show a server-stop prompt.'); }, showErrorBox: (_title, message) => { startupError = message; } };
+  const dialog = { showMessageBox: () => { throw new Error('Cleanup must not show a server-stop prompt.'); }, showMessageBoxSync: () => { throw new Error('Cleanup must not show a server-stop prompt.'); }, showErrorBox: (_title, message) => { startupError = message; } };
   const sandbox = {
     module: { exports: {} }, process, __dirname: path.join(__dirname, '..', 'electron'),
     require: name => name === 'electron' ? { app, dialog, BrowserWindow: FakeWindow, ipcMain: { handle() {} }, shell: {}, session: fakeSession }

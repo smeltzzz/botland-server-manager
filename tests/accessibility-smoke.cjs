@@ -16,7 +16,7 @@ const captures = process.argv.includes('--screenshots');
 const failures = [];
 const profile = isolateSmokeProfile(app, 'botland-a11y');
 registerSmokeSchemes(protocol);
-const readActions = new Set(['snapshot', 'maps', 'document', 'botStatus', 'firewallStatus', 'listConfigBackups']);
+const readActions = new Set(['snapshot', 'getLogs', 'maps', 'document', 'botStatus', 'firewallStatus', 'listConfigBackups']);
 const auditActions = new Set(['setUnsavedChanges', 'previewSettings', 'commitSettings', 'previewConfigRestore']);
 let brightArtwork = false;
 
