@@ -68,15 +68,21 @@ function checksum(data, previous = 0xffffffff) {
   return crc >>> 0;
 }
 
-function readModArchive(input, options = {}) {
-  if (!(input instanceof Uint8Array)) throw new TypeError('ZIP input must be a Buffer or Uint8Array');
-  const bytes = Buffer.from(input.buffer, input.byteOffset, input.byteLength);
+function archiveLimits(options = {}) {
   const limits = { ...ARCHIVE_LIMITS, ...options };
   for (const key of Object.keys(ARCHIVE_LIMITS)) {
     if (!Number.isSafeInteger(limits[key]) || limits[key] < 0 || limits[key] > ARCHIVE_LIMITS[key]) {
       throw new RangeError(`${key} must be an integer between 0 and ${ARCHIVE_LIMITS[key]}`);
     }
   }
+  // Only the finite limit fields cross the archive worker boundary.
+  return Object.fromEntries(Object.keys(ARCHIVE_LIMITS).map(key => [key, limits[key]]));
+}
+
+function readModArchive(input, options = {}) {
+  if (!(input instanceof Uint8Array)) throw new TypeError('ZIP input must be a Buffer or Uint8Array');
+  const bytes = Buffer.from(input.buffer, input.byteOffset, input.byteLength);
+  const limits = archiveLimits(options);
   if (bytes.length > limits.maxInputBytes) fail('compressed input limit exceeded');
   if (bytes.length < 22) fail('missing end of central directory');
 
@@ -229,4 +235,4 @@ function readModArchive(input, options = {}) {
   return result;
 }
 
-module.exports = { readModArchive, ARCHIVE_LIMITS };
+module.exports = { readModArchive, archiveLimits, ARCHIVE_LIMITS };

@@ -31,6 +31,9 @@ function fakeSafeStorage() {
       decipher.setAuthTag(value.subarray(12, 28));
       return Buffer.concat([decipher.update(value.subarray(28)), decipher.final()]).toString('utf8');
     },
+    async isAsyncEncryptionAvailable() { return this.isEncryptionAvailable(); },
+    async encryptStringAsync(value) { return this.encryptString(value); },
+    async decryptStringAsync(value) { return { result: this.decryptString(value), shouldReEncrypt: false }; },
   };
 }
 
@@ -92,7 +95,6 @@ test('serializes simultaneous saves, replaces keys and removes one game without 
 
 test('rejects invalid game IDs and key input before writing', async () => fixture(async file => {
   assert.throws(() => new KeyStore('keys.json', fakeSafeStorage()), /absolute key-store path/);
-  assert.throws(() => new KeyStore(file, {}), /safeStorage is required/);
   const store = new KeyStore(file, fakeSafeStorage());
   for (const id of ['cod4', 'mw2', '../bo2', '', null, '__proto__']) {
     await assert.rejects(store.save(id, 'secret'));
@@ -228,4 +230,17 @@ test('resetDamaged keeps the unreadable file aside, never touches a readable one
   assert.equal(await store.get('waw'), 'fresh-secret');
   assert.equal((await fs.readdir(path.dirname(file))).length, 2);
   assert.equal((await fs.readdir(dir)).length, 1);
+}));
+
+
+test('fails closed when only the removed synchronous safeStorage API exists', async () => fixture(async file => {
+  const provider = fakeSafeStorage();
+  const syncOnly = { isEncryptionAvailable: () => true, encryptString: provider.encryptString, decryptString: provider.decryptString };
+  for (const candidate of [syncOnly, {}, null]) {
+    const store = new KeyStore(file, candidate);
+    await assert.rejects(store.save('waw', 'secret-value'), { code: 'encryption-unavailable' });
+    await assert.rejects(store.has('waw'), { code: 'encryption-unavailable' });
+    await assert.rejects(store.get('waw'), { code: 'encryption-unavailable' });
+  }
+  await assert.rejects(fs.stat(file), { code: 'ENOENT' });
 }));

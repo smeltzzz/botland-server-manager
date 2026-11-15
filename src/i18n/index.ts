@@ -24,9 +24,15 @@ const accents: Record<string, string> = {
   A: 'Á', E: 'É', I: 'Í', O: 'Ó', U: 'Ú', Y: 'Ý',
 };
 function pseudoValue(value: string) {
-  const accented = value.replace(/[aeiouyAEIOUY]/g, char => accents[char] || char);
-  // Add roughly 20% more width so truncation and overflow show up.
-  return `⟦${accented.split(' ').map(word => `${word}${'·'.repeat(Math.ceil(word.length / 5))}`).join(' ')}⟧`;
+  // Transform the message, never its placeholders. Interpolation happens later
+  // so names, paths, config keys and other supplied values stay byte-for-byte.
+  const segments = value.split(/(\{\w+\})/g).map(segment => {
+    if (/^\{\w+\}$/.test(segment)) return segment;
+    const accented = segment.replace(/[aeiouyAEIOUY]/g, char => accents[char] || char);
+    // Add roughly 20% more width to literal words, preserving whitespace.
+    return accented.replace(/\S+/g, word => `${word}${'·'.repeat(Math.ceil(word.length / 5))}`);
+  });
+  return `⟦${segments.join('')}⟧`;
 }
 
 function interpolate(value: string, vars?: Record<string, string | number>) {

@@ -2,6 +2,8 @@ const fs = require('node:fs/promises');
 const path = require('node:path');
 const { profileFor } = require('./profiles.cjs');
 
+const MAX_ARTWORK_BYTES = 6_000_000;
+
 // Images are loaded from the user's own Steam cache, never shipped with the app.
 const appIds = { cod4: '7940', waw: '10090', mw2: '10180', bo1: '42700', mw3: '42690', bo2: '202970' };
 // Server cards and the game page header are both wide banners, so the "cover"
@@ -32,14 +34,18 @@ function mimeFor(buffer) {
 // the artwork protocol, so nothing here needs a base64 copy in memory.
 async function imageMeta(file) {
   try {
+    // Keep aliases/casing of one source from becoming separate cache identities.
+    file = await fs.realpath(file);
     const stat = await fs.stat(file);
-    if (!stat.isFile() || stat.size > 6_000_000 || stat.size < 12) return null;
+    if (!stat.isFile() || stat.size > MAX_ARTWORK_BYTES || stat.size < 12) return null;
     const handle = await fs.open(file, 'r');
     try {
+      const opened = await handle.stat();
+      if (!opened.isFile() || opened.size !== stat.size || opened.mtimeMs !== stat.mtimeMs || opened.ctimeMs !== stat.ctimeMs) return null;
       const head = Buffer.alloc(12);
       const { bytesRead } = await handle.read(head, 0, head.length, 0);
       const mime = mimeFor(head.subarray(0, bytesRead));
-      return mime ? { file, mime, size: stat.size, mtimeMs: stat.mtimeMs } : null;
+      return mime ? { file, mime, size: opened.size, mtimeMs: opened.mtimeMs, ctimeMs: opened.ctimeMs } : null;
     } finally { await handle.close(); }
   } catch { return null; }
 }
@@ -69,4 +75,4 @@ async function findArtwork(id, kind, override, extraRoots = []) {
   }
   return null;
 }
-module.exports = { findArtwork, imageMeta, mimeFor, cacheRoots, appIds, fileNames };
+module.exports = { findArtwork, imageMeta, mimeFor, cacheRoots, appIds, fileNames, MAX_ARTWORK_BYTES };

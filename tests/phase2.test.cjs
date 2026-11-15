@@ -73,6 +73,9 @@ function fakeSafeStorage() {
       decipher.setAuthTag(bytes.subarray(12, 28));
       return Buffer.concat([decipher.update(bytes.subarray(28)), decipher.final()]).toString('utf8');
     },
+    async isAsyncEncryptionAvailable() { return this.isEncryptionAvailable(); },
+    async encryptStringAsync(value) { return this.encryptString(value); },
+    async decryptStringAsync(bytes) { return { result: this.decryptString(bytes), shouldReEncrypt: false }; },
   };
 }
 

@@ -2,8 +2,7 @@ const fs = require('node:fs/promises');
 const path = require('node:path');
 const { randomUUID, createHash } = require('node:crypto');
 const { downloadArchive } = require('./botwarfare-download.cjs');
-const { readModArchive } = require('./mod-archive.cjs');
-const { recipeFor } = require('./botwarfare-recipes.cjs');
+const { planBotWarfareAsync } = require('./archive-cpu.cjs');
 
 const MANIFEST = 'botland-install.json';
 const TARGETS = Object.freeze({
@@ -131,13 +130,14 @@ async function readManifest(base, id) {
 
 class BotWarfareInstaller {
   constructor({ source, download = downloadArchive, localAppData, isRunning = () => false,
-    now = () => new Date(), fault = () => {} } = {}) {
+    now = () => new Date(), fault = () => {}, planArchive = planBotWarfareAsync } = {}) {
     if (!source || typeof source.resolveSource !== 'function' || typeof download !== 'function' ||
-        typeof isRunning !== 'function' || typeof now !== 'function' || typeof fault !== 'function') {
+        typeof isRunning !== 'function' || typeof now !== 'function' || typeof fault !== 'function' || typeof planArchive !== 'function') {
       throw new TypeError('Bot Warfare installer requires source, download and callable hooks.');
     }
     this.source = source;
     this.download = download;
+    this.planArchive = planArchive; // Pure CPU work only; filesystem transactions stay here.
     this.localAppData = localAppData;
     this.isRunning = isRunning;
     this.now = now;
@@ -460,7 +460,7 @@ class BotWarfareInstaller {
       if (!(bytes instanceof Uint8Array) || !HASH.test(sha256) || digest(bytes) !== sha256) {
         throw new Error('Bot Warfare download SHA-256 mismatch: the archive did not match its verified checksum, so nothing was installed. Retry; if it keeps failing, the upstream file may have changed.');
       }
-      const plan = recipeFor(id, channel, readModArchive(bytes));
+      const plan = await this.planArchive(id, channel, bytes);
       if (plan.target !== paths.target || (plan.storageCode || null) !== paths.code || plan.base !== paths.base ||
           !(plan.files instanceof Map) || !plan.files.size) throw new Error('Unexpected Bot Warfare install target.');
       const files = new Map();

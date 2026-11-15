@@ -158,6 +158,8 @@ async function ipcFixture(options = {}) {
     './diagnostics.cjs': require('../electron/diagnostics.cjs'),
     './artwork-cache.cjs': { ArtworkCache: class { async read() { throw new Error('Artwork cache is not used by the IPC fixture.'); } } },
     './artwork-protocol.cjs': { artScheme: 'botland-art', createArtworkHandler: () => () => new Response('', { status: 404 }) },
+    './renderer-protocol.cjs': require('../electron/renderer-protocol.cjs'),
+    './ipc-validate.cjs': require('../electron/ipc-validate.cjs'),
     './profiles.cjs': { profileFor },
     './schema.cjs': { sourceRepos: {} },
   };
@@ -301,8 +303,11 @@ test('backup bridge forwards exact arguments and the validated manager owns back
     ['restoreConfigBackup', ['cod4', 'base', 'dom', backupId, 'stale'], /Invalid preview token/],
     ['pruneConfigBackups', ['cod4', 'base', 'dom', ['../outside']], /Invalid backup ids/],
   ]) {
+    const before = calls.length;
     await assert.rejects(api[method](...args), message);
-    assert.deepEqual(calls.at(-1), [method, ...args], `${method} must delegate validation to the manager`);
+    // Shape errors are rejected in main before any manager call; semantic
+    // errors are delegated to the manager.
+    if (calls.length !== before) assert.deepEqual(calls.at(-1), [method, ...args], `${method} must delegate validation to the manager`);
   }
 });
 

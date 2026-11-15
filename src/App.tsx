@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useRef, useState, type ReactNode } from 'react';
+import { memo, useEffect, useMemo, useRef, useState, type KeyboardEvent as ReactKeyboardEvent, type ReactNode } from 'react';
 import {
   Activity, ArrowLeft, ArrowRight, Check, ChevronRight, Clock3, Copy,
   Download, ExternalLink, FolderOpen, Gamepad2, Info, KeyRound, LayoutDashboard,
@@ -9,6 +9,7 @@ import {
 import type { ArtworkKind, BotStatus, Game, GameId, LogEntry, MapData, Snapshot, FirewallStatus } from './types';
 import ConfigWorkspace from './ConfigWorkspace';
 import { t, tp, translate, useLocale, setLocale, localeTag, LOCALES, type MessageKey } from './i18n';
+import { appendLogs, seedLogs, useGameLogs } from './logStore';
 import './artwork.css';
 
 type Tab = 'overview' | 'configuration' | 'rotation' | 'console';
@@ -144,7 +145,16 @@ function ConnectPanel({ game, busy, onCopy }: { game: Game; busy: boolean; onCop
     <p className="connect-disclosure">{t('These are this PC’s interface addresses, not a verified internet/WAN address. Players outside your network may need router port forwarding; Public mode alone does not make a server reachable.')}</p>
   </section>;
 }
-function RestartPanel({ game, busy, now, onChange }: { game: Game; busy: boolean; now: number; onChange: (enabled: boolean) => void }) {
+// Owns its countdown timer so the 1 s tick re-renders only this panel.
+function RestartPanel({ game, busy, onChange }: { game: Game; busy: boolean; onChange: (enabled: boolean) => void }) {
+  const [now, setNow] = useState(() => Date.now());
+  const counting = game.status === 'restarting' && !!game.restart.nextAttemptAt;
+  useEffect(() => {
+    if (!counting) return;
+    setNow(Date.now());
+    const timer = window.setInterval(() => setNow(Date.now()), 1000);
+    return () => window.clearInterval(timer);
+  }, [counting, game.restart.nextAttemptAt]);
   if (!game.installed && game.status === 'stopped') return null;
   const seconds = game.restart.nextAttemptAt ? Math.max(0, Math.ceil((new Date(game.restart.nextAttemptAt).getTime() - now) / 1000)) : null;
   return <section className="panel restart-panel"><div className="panel-heading compact"><div><span className="section-kicker">{t('SERVER RECOVERY')}</span><h2 className="h3-style">{t('Automatic restart')}</h2></div></div>
@@ -239,33 +249,84 @@ function SetupChecklist({ steps, ready, blockers, start }: { steps: SetupStep[];
     </ol>
   </section>;
 }
+// Owns its elapsed-time timer so the 1 s tick re-renders only this chip.
+function BusyIndicator({ label }: { label: string }) {
+  const [since] = useState(() => Date.now());
+  const [now, setNow] = useState(since);
+  useEffect(() => {
+    const timer = window.setInterval(() => setNow(Date.now()), 1000);
+    return () => window.clearInterval(timer);
+  }, []);
+  const seconds = Math.round((now - since) / 1000);
+  return <span className="busy-indicator" role="status"><RefreshCw size={13} className="busy-spin" aria-hidden="true" /> {translate(busyText(label))}…{seconds > 0 ? ` ${seconds}s` : ''}</span>;
+}
 function Logo() { return <div className="brand-symbol"><span /><span /><span /></div>; }
 
-function ConsolePanel({ game }: { game: Game }) {
+function sameLine(a: LogEntry, b: LogEntry) { return a.at === b.at && a.message === b.message && a.source === b.source; }
+// How many lines at the end of `next` arrived after `last` (a sliding window).
+function countAdded(next: LogEntry[], last: LogEntry | undefined) {
+  if (!last) return next.length;
+  for (let index = next.length - 1; index >= 0; index--) if (sameLine(next[index], last)) return next.length - 1 - index;
+  return next.length;
+}
+const ANNOUNCE_INTERVAL = 5000;
+const ConsolePanel = memo(function ConsolePanel({ game }: { game: Game }) {
+  const logs = useGameLogs(game.id);
   const [paused, setPaused] = useState(false);
   const [query, setQuery] = useState('');
   const [copied, setCopied] = useState(false);
+  // Screen readers get a throttled summary instead of every line.
+  const [announcement, setAnnouncement] = useState('');
   const pausedLines = useRef<LogEntry[]>([]);
   const scroller = useRef<HTMLDivElement | null>(null);
   const follow = useRef(true);
-  const lines = paused ? pausedLines.current : game.logs;
+  // Mirrors follow.current so Jump to latest re-enables when the user scrolls up.
+  const [following, setFollowing] = useState(true);
+  const lastSeen = useRef<LogEntry | undefined>(undefined);
+  const pendingAnnounce = useRef(0);
+  const announceTimer = useRef<number | null>(null);
+  const lastAnnounce = useRef(0);
+  const lines = paused ? pausedLines.current : logs;
   const term = query.trim().toLowerCase();
-  const visible = term ? lines.filter(line => line.message.toLowerCase().includes(term) || (line.source || 'manager').toLowerCase().includes(term)) : lines;
-  const keys = logKeys(visible);
-  const newLines = paused ? Math.max(0, game.logs.length - pausedLines.current.length) : 0;
+  const visible = useMemo(() => term ? lines.filter(line => line.message.toLowerCase().includes(term) || (line.source || 'manager').toLowerCase().includes(term)) : lines, [lines, term]);
+  const keys = useMemo(() => logKeys(visible), [visible]);
+  const newLines = paused ? countAdded(logs, pausedLines.current[pausedLines.current.length - 1]) : 0;
   // Keep the console on the newest output unless the user scrolled up or paused.
   useEffect(() => {
     const element = scroller.current;
     if (element && follow.current && !paused && !term) element.scrollTop = element.scrollHeight;
-  }, [game.logs, paused, term]);
-  useEffect(() => { setPaused(false); setQuery(''); setCopied(false); follow.current = true; }, [game.id]);
+  }, [logs, paused, term]);
+  useEffect(() => {
+    const previous = lastSeen.current;
+    lastSeen.current = logs[logs.length - 1];
+    if (!previous || paused) return;
+    const added = countAdded(logs, previous);
+    if (!added) return;
+    pendingAnnounce.current += added;
+    if (announceTimer.current !== null) return;
+    const wait = Math.max(0, ANNOUNCE_INTERVAL - (Date.now() - lastAnnounce.current));
+    announceTimer.current = window.setTimeout(() => {
+      announceTimer.current = null;
+      lastAnnounce.current = Date.now();
+      const count = pendingAnnounce.current;
+      pendingAnnounce.current = 0;
+      if (count) setAnnouncement(tp('{count} new line of server output.', '{count} new lines of server output.', count, { count }));
+    }, wait);
+  }, [logs, paused]);
+  const clearAnnouncer = () => { if (announceTimer.current !== null) window.clearTimeout(announceTimer.current); announceTimer.current = null; pendingAnnounce.current = 0; };
+  useEffect(() => clearAnnouncer, []);
+  useEffect(() => { setPaused(false); setQuery(''); setCopied(false); setAnnouncement(''); clearAnnouncer(); lastSeen.current = undefined; follow.current = true; setFollowing(true); }, [game.id]);
   const togglePause = () => {
-    if (!paused) pausedLines.current = [...game.logs];
+    if (!paused) { pausedLines.current = [...logs]; clearAnnouncer(); }
+    setAnnouncement(paused ? t('Live output resumed.') : t('Output paused. New lines are buffered.'));
     setPaused(!paused);
     follow.current = true;
+    setFollowing(true);
   };
   const jumpToLatest = () => {
     follow.current = true;
+    setFollowing(true);
+    if (paused) setAnnouncement(t('Live output resumed.'));
     setPaused(false);
     setQuery('');
     const element = scroller.current;
@@ -273,7 +334,14 @@ function ConsolePanel({ game }: { game: Game }) {
   };
   const copyVisible = async () => {
     const text = visible.map(line => `${gameTime(line.at)} ${line.source || 'manager'} ${line.message}`).join('\n');
-    try { await window.manager.copyText(text); setCopied(true); window.setTimeout(() => setCopied(false), 1500); } catch { setCopied(false); }
+    // The main process refuses more than 200,000 characters; say so instead of a generic failure.
+    if (text.length > 200_000) { setCopied(false); setAnnouncement(t('Visible output is too large to copy. Filter it to fewer lines and try again.')); return; }
+    // A false or rejected result must never claim success.
+    let ok = false;
+    try { ok = (await window.manager.copyText(text)) === true; } catch { ok = false; }
+    setCopied(ok);
+    setAnnouncement(ok ? t('Visible output copied.') : t('Could not copy output to the clipboard. Try again.'));
+    if (ok) window.setTimeout(() => setCopied(false), 1500);
   };
   return <section className="panel console-panel" role="tabpanel" id="panel-console" aria-labelledby="tab-console">
     <div className="panel-heading"><div className="panel-icon"><Terminal size={19} /></div><div><span className="section-kicker">{t('LIVE FEED')}</span><h2>{t('Server console')}</h2></div><span className="console-state"><span className={game.status === 'running' ? 'online' : (game.status === 'starting' || game.status === 'stopping' || game.status === 'restarting') ? 'attention' : ''} />{game.status === 'running' ? `PID ${game.pid}` : game.status === 'starting' ? 'STARTING' : game.status === 'stopping' ? 'STOPPING' : game.status === 'restarting' ? 'RESTARTING' : 'OFFLINE'}</span></div>
@@ -282,19 +350,20 @@ function ConsolePanel({ game }: { game: Game }) {
       <div className="console-actions">
         <label className="console-search"><Search size={14} aria-hidden="true" /><span className="sr-only">{t('Filter server output')}</span><input type="search" placeholder={t('Filter output…')} value={query} onChange={event => setQuery(event.target.value)} /></label>
         <button className="outline-button" onClick={togglePause}>{paused ? newLines ? t('Resume ({count} new)', { count: newLines }) : t('Resume') : t('Pause')}</button>
-        <button className="outline-button" onClick={jumpToLatest} disabled={!paused && !term && follow.current}>{t('Jump to latest')}</button>
+        <button className="outline-button" onClick={jumpToLatest} disabled={!paused && !term && following}>{t('Jump to latest')}</button>
         <button className="outline-button" onClick={copyVisible} disabled={!visible.length}>{copied ? t('Copied') : t('Copy')}</button>
         <button className="outline-button" onClick={() => { window.manager.openLogs().catch(() => {}); }}>{t('Open logs')}</button>
       </div>
-      <div className="console-lines" role="log" aria-label={t('Server output')} aria-live={paused ? 'polite' : 'off'} tabIndex={0} ref={scroller} onScroll={event => { const element = event.currentTarget; follow.current = element.scrollHeight - element.scrollTop - element.clientHeight < 40; }}>
+      <div className="console-lines" role="log" aria-label={t('Server output')} aria-live="off" tabIndex={0} ref={scroller} onScroll={event => { const element = event.currentTarget; follow.current = element.scrollHeight - element.scrollTop - element.clientHeight < 40; setFollowing(follow.current); }}>
         {visible.length ? visible.map((line: LogEntry, index) => <div className={`console-line ${line.level === 'error' ? 'error' : ''}`} key={keys[index]}><time>{gameTime(line.at)}</time><span className={`console-source ${line.source || 'manager'}`}>{line.source || 'manager'}</span>{line.level === 'error' && <span className="console-level">{t('ERROR')}</span>}<span>{line.message || ' '}</span></div>)
           : <div className="console-placeholder"><Terminal size={35} /><strong>{term ? t('No lines match.') : t('Nothing on the wire yet.')}</strong><span>{term ? t('Clear the filter to see all output.') : game.status === 'stopped' ? t('Start this server to see its output here.') : t('Waiting for the server to print its first lines…')}</span></div>}
       </div>
     </div>
-    {paused && <div className="console-paused" role="status">{tp('Paused. {count} new line buffered; Resume or Jump to latest to continue.', 'Paused. {count} new lines buffered; Resume or Jump to latest to continue.', newLines, { count: newLines })}</div>}
+    <div className="sr-only" role="status" aria-live="polite" aria-atomic="true">{announcement}</div>
+    {paused && <div className="console-paused">{tp('Paused. {count} new line buffered; Resume or Jump to latest to continue.', 'Paused. {count} new lines buffered; Resume or Jump to latest to continue.', newLines, { count: newLines })}</div>}
     <div className="console-footnote"><Info size={16} /> {document.documentElement.dataset.demo === 'true' ? t('Browser preview: output is simulated and no log file is written.') : t('Recent output is shown here; session logs are also saved to disk in botLANd’s app data folder. Keys are redacted, but other server output may be sensitive - review logs before sharing.')}</div>
   </section>;
-}
+});
 
 export default function App() {
   const [snapshot, setSnapshot] = useState<Snapshot | null>(null);
@@ -314,17 +383,15 @@ export default function App() {
   const [modeDraft, setModeDraft] = useState('');
   const [shuffleDraft, setShuffleDraft] = useState(true);
   const [busy, setBusy] = useState<string | null>(null);
-  const [busyTick, setBusyTick] = useState(0);
   // Log lines arrive one IPC event per line; coalesce them into one render.
   const pendingLogs = useRef<Partial<Record<GameId, LogEntry[]>>>({});
   const logFlush = useRef<number | null>(null);
-  const busySince = useRef(0);
   // Stop requests are tracked per game, independent of the global busy flag.
   const [stopRequests, setStopRequests] = useState<GameId[]>([]);
   const stopLocks = useRef(new Set<GameId>());
   const [configDirty, setConfigDirty] = useState(false);
   const [configBusy, setConfigBusy] = useState(false);
-  const rotationDraft = useRef<{ id: GameId | null; path: string; dirty: boolean }>({ id: null, path: '', dirty: false });
+  const rotationDraft = useRef<{ id: GameId | null; path: string; dirty: boolean; ready?: boolean }>({ id: null, path: '', dirty: false });
   const lastMapScan = useRef<{ id: GameId; path: string; maps: string[] } | null>(null);
   const [refreshRevision, setRefreshRevision] = useState(0);
   const [firewallStatus, setFirewallStatus] = useState<FirewallStatus | null>(null);
@@ -335,7 +402,6 @@ export default function App() {
   const [keyDraft, setKeyDraft] = useState('');
   const [botState, setBotState] = useState<{ id: GameId; path: string; status: BotStatus | null; error: string | null; loading: boolean } | null>(null);
   const [botRevision, setBotRevision] = useState(0);
-  const [clock, setClock] = useState(Date.now());
   // `busy` state updates asynchronously; this ref blocks a second click in the same tick.
   const busyLock = useRef(false);
   const mainPane = useRef<HTMLElement | null>(null);
@@ -351,12 +417,12 @@ export default function App() {
     let active = true;
     const version = snapshotVersion.current;
     const request = ++snapshotRequest.current;
-    window.manager.snapshot().then(data => { if (active && version === snapshotVersion.current && request === snapshotRequest.current) setSnapshot(data); }).catch(error => { if (active && version === snapshotVersion.current && request === snapshotRequest.current) setNotice({ text: displayError(error), error: true }); });
+    window.manager.snapshot().then(data => { if (active && version === snapshotVersion.current && request === snapshotRequest.current) { seedLogs(data.games); setSnapshot(data); } }).catch(error => { if (active && version === snapshotVersion.current && request === snapshotRequest.current) setNotice({ text: displayError(error), error: true }); });
     const unsubscribe = window.manager.subscribe(event => {
       if (!active) return;
       // Only full state events supersede an in-flight snapshot request; a log
       // line must not cause a fresh snapshot (which already has logs) to be dropped.
-      if (event.type === 'state') { snapshotVersion.current++; setSnapshot(event.snapshot); }
+      if (event.type === 'state') { snapshotVersion.current++; seedLogs(event.snapshot.games); setSnapshot(event.snapshot); }
       else if (event.type === 'log') {
         // One event per line would re-render the whole app per line; coalesce.
         (pendingLogs.current[event.id] ||= []).push(event.entry);
@@ -365,10 +431,8 @@ export default function App() {
             logFlush.current = null;
             const batch = pendingLogs.current;
             pendingLogs.current = {};
-            setSnapshot(previous => previous ? {
-              ...previous,
-              games: previous.games.map(game => batch[game.id] ? { ...game, logs: [...game.logs, ...batch[game.id]!].slice(-120) } : game),
-            } : previous);
+            // Only the console subscribes to the log store; App does not re-render.
+            appendLogs(batch);
           }, 80);
         }
       }
@@ -390,11 +454,6 @@ export default function App() {
     document.title = selectedId ? t('{game} — {section} · botLANd', { game: game?.short || selectedId, section: label }) : t('botLANd Server Manager');
   }, [selectedId, tab, game?.short, locale]);
   useEffect(() => {
-    if (!busy) return;
-    const timer = window.setInterval(() => setBusyTick(tick => tick + 1), 1000);
-    return () => window.clearInterval(timer);
-  }, [busy]);
-  useEffect(() => {
     if (focusAfterNavigation.current) {
       focusAfterNavigation.current = false;
       mainPane.current?.focus();
@@ -409,17 +468,14 @@ export default function App() {
     if (tab === 'rotation' && rotationDraft.current.id === game.id && rotationDraft.current.dirty) return;
     setTab('overview');
   }, [game?.installed, game?.status, game?.id, tab, configDirty, configBusy]);
-  useEffect(() => {
-    if (game?.status !== 'restarting' || !game.restart.nextAttemptAt) return;
-    setClock(Date.now());
-    const timer = window.setInterval(() => setClock(Date.now()), 1000);
-    return () => window.clearInterval(timer);
-  }, [game?.status, game?.restart.nextAttemptAt]);
   const currentBotState = game && botState?.id === game.id && botState.path === game.gamePath ? botState : null;
   const maps = selectedId && game?.installed && mapCache[selectedId]?.gamePath === game.gamePath ? mapCache[selectedId] : undefined;
   useEffect(() => {
     if (!game || rotationDraft.current.dirty) return;
     rotationDraft.current.path = game.gamePath;
+    // Drafts now hold this game's saved values; until then a stale draft from
+    // an earlier visit must not be mistaken for unsaved edits.
+    rotationDraft.current.ready = true;
     setPortDraft(String(game.options.port));
     setModeDraft(game.options.mode);
     setShuffleDraft(game.options.shuffle);
@@ -516,7 +572,7 @@ export default function App() {
   const rotationDirty = !!game && !!maps && !mapLoading && (portDraft !== String(game.options.port) || modeDraft !== savedMode || shuffleDraft !== game.options.shuffle || mapSelection.length !== savedMaps.length || mapSelection.some(name => !savedMaps.includes(name)));
   if (rotationDraft.current.id !== selectedId) rotationDraft.current = { id: selectedId, path: game?.gamePath || '', dirty: false };
   const rotationPathConflict = !!game && rotationDraft.current.dirty && rotationDraft.current.path !== game.gamePath;
-  if (game?.installed && maps && !mapLoading && !rotationPathConflict) rotationDraft.current.dirty = rotationDirty;
+  if (game?.installed && maps && !mapLoading && !rotationPathConflict && rotationDraft.current.ready) rotationDraft.current.dirty = rotationDirty;
   const rotationPending = tab === 'rotation' && rotationDraft.current.dirty;
   const unsavedDraft = (tab === 'configuration' && configDirty) || rotationPending;
   useEffect(() => {
@@ -542,7 +598,7 @@ export default function App() {
     setModeDraft(savedMode);
     setShuffleDraft(game.options.shuffle);
     setMapSelection(savedMaps);
-    rotationDraft.current = { id: game.id, path: game.gamePath, dirty: false };
+    rotationDraft.current = { id: game.id, path: game.gamePath, dirty: false, ready: true };
   }
   function canLeave() {
     if (tab === 'rotation' && busy === 'rotation') { setNotice({ text: t('Wait for launch options to finish saving before leaving. Stop and Cancel start remain available.'), error: true }); return false; }
@@ -555,6 +611,28 @@ export default function App() {
   }
   // Focus stays on the activated tab so keyboard users keep their place.
   function selectTab(next: Tab) { if (next !== tab && canLeave()) { setKeyDraft(''); setTab(next); } }
+  function tabDisabled(id: Tab) { return !!game && !game.installed && id !== 'overview' && !(id === 'console' && game.status !== 'stopped'); }
+  // Roving focus with automatic activation: arrows/Home/End select the next
+  // enabled tab. If the unsaved-changes prompt is declined, selection and
+  // focus stay on the current tab.
+  function onTabKeyDown(event: ReactKeyboardEvent<HTMLElement>) {
+    const enabled = tabs.filter(item => !tabDisabled(item.id));
+    if (!enabled.length) return;
+    const current = enabled.findIndex(item => item.id === (event.target as HTMLElement).dataset?.tab);
+    const rtl = getComputedStyle(event.currentTarget).direction === 'rtl';
+    let next: number;
+    if (event.key === 'ArrowRight' || event.key === 'ArrowLeft') {
+      const forward = (event.key === 'ArrowRight') !== rtl;
+      next = current < 0 ? 0 : (current + (forward ? 1 : -1) + enabled.length) % enabled.length;
+    } else if (event.key === 'Home') next = 0;
+    else if (event.key === 'End') next = enabled.length - 1;
+    else return;
+    event.preventDefault();
+    const target = enabled[next].id;
+    if (target !== tab && !canLeave()) return;
+    if (target !== tab) { setKeyDraft(''); setTab(target); }
+    document.getElementById(`tab-${target}`)?.focus();
+  }
   function goHome() { if (canLeave()) { if (selectedId !== null) focusAfterNavigation.current = true; setKeyDraft(''); setSelectedId(null); setTab('overview'); } }
   // Rescans installations too (which includes the process scan), so a newly
   // installed or moved game is always reachable from the top bar.
@@ -567,7 +645,7 @@ export default function App() {
     const version = snapshotVersion.current;
     const request = ++snapshotRequest.current;
     const data = await window.manager.snapshot();
-    if (version === snapshotVersion.current && request === snapshotRequest.current) setSnapshot(data);
+    if (version === snapshotVersion.current && request === snapshotRequest.current) { seedLogs(data.games); setSnapshot(data); }
   }
   // A completed write must not be reported as a failed write merely because the
   // follow-up status read failed. The mutation and the refresh are separate steps.
@@ -584,7 +662,7 @@ export default function App() {
     if (busy || busyLock.current) return;
     busyLock.current = true;
     const scope = selectedRef.current;
-    setBusy(label); setBusyTick(0); busySince.current = Date.now(); setNotice(null);
+    setBusy(label); setNotice(null);
     try {
       await task();
       await syncAfterAction(success, scope);
@@ -601,7 +679,7 @@ export default function App() {
     if (busy || busyLock.current) return false;
     busyLock.current = true;
     const scope = selectedRef.current;
-    setBusy(label); setBusyTick(0); busySince.current = Date.now(); setNotice(null);
+    setBusy(label); setNotice(null);
     try {
       await task();
       try { await syncSnapshot(); setNotice({ text: success, error: false, scope }); }
@@ -872,7 +950,7 @@ export default function App() {
       <div className="sidebar-footer">{(['cod4', 'mw2'] as const).map(id => { const target = snapshot.games.find(entry => entry.id === id); if (!target) return null; const reason = engineSidebarReason(target); const name = id === 'cod4' ? 'IW3x' : 'IW4x'; return <div key={id} className="engine-sidebar-section"><div className={id === 'cod4' ? 'footer-separator' : 'footer-separator engine-footer-divider'} /><div className="root-label"><Download size={15} /> {name.toUpperCase()}</div><div className="engine-sidebar-item"><button className="root-button" data-engine={id} aria-label={t('{action} {engine} for {game}', { action: target.setup.engine ? t('Update') : t('Install'), engine: name, game: target.title })} disabled={!!reason} title={reason || (id === 'cod4' ? t('Installs the verified Cod4R DedRun only; IW3x fast files need the official guide.') : t('Runs the official IW4x launcher in update-only mode; back up custom engine files first.'))} onClick={() => updateGameEngine(target)}><Download size={15} /> {target.engineBusy ? t('Updating…') : t('{action} {engine}', { action: target.setup.engine ? t('Update') : t('Install'), engine: name })} <ArrowRight size={14} /></button>{!target.installed && <span className="engine-sidebar-hint">{t('Choose {game} folder first', { game: target.short })}</span>}{id === 'mw2' && target.blockers.some(issue => issue.includes('IW4x update journal remains')) && <span className="engine-sidebar-hint">{t('Manual review required')}</span>}</div></div>; })}<div className="footer-separator engine-footer-divider" /><div className="root-label"><Download size={15} /> {t('PLUTONIUM')}</div><div className="root-path" title={snapshot.plutonium.error || undefined}>{snapshot.plutonium.updating ? t('Updating…') : !snapshot.plutonium.installed ? t('Not installed') : snapshot.plutonium.lastUpdated ? t('Updated {date}', { date: formatDate(snapshot.plutonium.lastUpdated) }) : t('Installed')}</div>{snapshot.plutonium.available && <button className="root-button" disabled={!!busy || snapshot.plutonium.updating || plutoniumRunning} title={plutoniumRunning ? t('Stop the Plutonium servers (WaW, BO1, MW3, BO2) first') : t('Used by World at War, Black Ops, MW3 and Black Ops II. botLANd also checks for updates before each start.')} onClick={updatePlutonium}><Download size={15} /> {snapshot.plutonium.installed ? t('Update Plutonium') : t('Install Plutonium')} <ArrowRight size={14} /></button>}<div className="sidebar-version">{t('botLANd')} <span>{t('LOCAL /')} {__APP_VERSION__}</span></div></div>
     </aside>
     <main id="main-content" ref={mainPane} className="main-pane" tabIndex={-1} aria-label={game ? t('{game} — {section}', { game: game.title, section: translate(tabs.find(item => item.id === tab)?.label || 'Overview') }) : t('Dashboard')}>
-      <header className="topbar"><div className="breadcrumbs"><span>{t('WORKSPACE')}</span><ChevronRight size={14} /><strong>{game ? game.short.toUpperCase() : t('DASHBOARD')}</strong></div><div className="topbar-right">{busy && <span className="busy-indicator" role="status"><RefreshCw size={13} className="busy-spin" aria-hidden="true" /> {translate(busyText(busy))}…{busyTick > 0 && busySince.current ? ` ${Math.max(1, Math.round((Date.now() - busySince.current) / 1000))}s` : ''}</span>}<span className="local-label"><span className="local-pulse" /> {t('LOCAL MACHINE')}</span><button className="icon-button" aria-label={t('Refresh server status and rescan installations')} title={busy ? t('Wait for the current task to finish') : t('Refresh server status and rescan installations')} disabled={!!busy} onClick={refreshWorkspace}><RefreshCw size={17} /></button></div></header>
+      <header className="topbar"><div className="breadcrumbs"><span>{t('WORKSPACE')}</span><ChevronRight size={14} /><strong>{game ? game.short.toUpperCase() : t('DASHBOARD')}</strong></div><div className="topbar-right">{busy && <BusyIndicator key={busy} label={busy} />}<span className="local-label"><span className="local-pulse" /> {t('LOCAL MACHINE')}</span><button className="icon-button" aria-label={t('Refresh server status and rescan installations')} title={busy ? t('Wait for the current task to finish') : t('Refresh server status and rescan installations')} disabled={!!busy} onClick={refreshWorkspace}><RefreshCw size={17} /></button></div></header>
       <div className="page-content">
         <div className="sr-only" role="status" aria-live="polite">{game ? `${game.short} server: ${statusLabel(game, firewallFor(game))}` : ''}</div>
         {game && <div className="sr-only" role="status" aria-live="polite">{tabs.find(item => item.id === tab)?.label || ''} {'panel'}</div>}
@@ -895,12 +973,12 @@ export default function App() {
         </> : <>
           <div className="detail-back"><button onClick={goHome}><ArrowLeft size={16} /> {t('ALL SERVERS')}</button><span>/</span><span>{game.short.toUpperCase()}</span></div>
           <section className={`detail-hero accent-${game.family} ${artReadyFor(game.id, 'hero') ? 'has-image' : ''}`}><img key={artUrlFor(game.id, 'hero', game.gamePath)} className="detail-hero-image" src={artUrlFor(game.id, 'hero', game.gamePath)} alt="" decoding="async" onLoad={() => markArt(game.id, 'hero', true)} onError={event => { event.currentTarget.hidden = true; markArt(game.id, 'hero', false); }} /><div className="detail-hero-art" aria-hidden="true"><span>{gameCodes[game.id]}</span></div><div className="detail-hero-content"><div className="eyebrow"><span className="eyebrow-line" /> {game.engine.toUpperCase()} <span className="eyebrow-divider">/</span> {t('DEDICATED SERVER')}</div><h1>{game.title}</h1><p>{game.subtitle} <span>·</span> {game.id === 'bo1' ? t('PUBLIC ONLY') : t('NEXT START: {scope}', { scope: game.options.lan ? t('LAN') : t('PUBLIC') })} {t('BOT SERVER')}</p><div className="detail-hero-bottom"><StateChip game={game} firewall={firewallFor(game)} />{snapshot.updates[game.id]?.updateAvailable === true && <span className="bot-update-badge">{t('BOT WARFARE UPDATE')}</span>}<span className="hero-port"><Radio size={15} /> {t('UDP')} {game.activePort ?? game.options.port}{game.activePort != null && game.activePort !== game.options.port ? t(' (next: {port})', { port: game.options.port }) : ''}</span><span className="hero-port"><Gamepad2 size={15} /> {game.engine}</span>{game.installed && <VisibilitySwitch game={game} disabled={!!busy} onChange={next => changeVisibility(game, next)} />}</div></div><div className="detail-hero-action">{game.installed || game.status !== 'stopped' ? launchControl(game) : <button className="button primary-button" disabled={!!busy} onClick={() => action('folder', () => window.manager.chooseFolder(game.id))}><FolderOpen size={16} /> {t('Browse game folder')}</button>}</div></section>
-          <nav className="detail-tabs" aria-label={t('Game sections')} role="tablist">{tabs.map(item => <button key={item.id} data-tab={item.id} role="tab" id={`tab-${item.id}`} aria-controls={tab === item.id ? `panel-${item.id}` : undefined} aria-selected={tab === item.id} className={tab === item.id ? 'selected' : ''} disabled={!game.installed && item.id !== 'overview' && !(item.id === 'console' && game.status !== 'stopped')} onClick={() => selectTab(item.id)}><item.icon size={17} aria-hidden="true" />{translate(item.label)}</button>)}</nav>
-          {tab === 'overview' && <div className="detail-layout" role="tabpanel" id="panel-overview" aria-labelledby="tab-overview"><div className="detail-primary"><OrphanWarning game={game} busy={!!busy} onRescan={() => action('rescan-orphans', () => window.manager.rescanOrphans(), t('Process scan complete.'))} /><ConnectPanel key={`${game.id}-${game.startedAt || ''}`} game={game} busy={!!busy} onCopy={address => copyConnectAddress(game.id, address)} /><SetupChecklist key={`setup-${game.id}`} steps={setupSteps(game)} ready={game.installed && !game.blockers.length && !game.engineBusy && (game.id !== 'bo1' || bo1RuleReady)} blockers={game.blockers} start={launchControl(game)} /><RestartPanel game={game} busy={!!busy} now={clock} onChange={enabled => action('auto-restart', () => window.manager.setAutoRestart(game.id, enabled), `Automatic restart ${enabled ? 'enabled' : 'disabled'} for ${game.short}.`)} /><section className="panel"><div className="panel-heading"><div className="panel-icon"><ShieldCheck size={19} /></div><div><span className="section-kicker">{t('PREFLIGHT CHECK')}</span><h2>{t('Server readiness')}</h2></div><span className={`readiness-pill ${!game.installed || game.blockers.length || game.engineBusy || (game.id === 'bo1' && !bo1RuleReady) ? 'bad' : 'good'}`}>{!game.installed ? t('GAME NOT DETECTED') : game.engineBusy ? t('ENGINE UPDATING') : game.blockers.length ? tp('{count} ISSUE', '{count} ISSUES', game.blockers.length, { count: game.blockers.length }) : game.id === 'bo1' && !bo1RuleReady ? t('FIREWALL CHECK NEEDED') : t('ALL CHECKS PASSED')}</span></div>{game.installed && !game.blockers.length && !game.engineBusy && !game.warnings.length && !firewallAdvisory && (game.id !== 'bo1' || bo1RuleReady) ? <div className="all-clear"><div><Check size={20} /></div><div><strong>{t('Everything looks good.')}</strong><span>{t('Your files and launch dependencies are in place. Ready when you are.')}</span></div></div> : <div className="check-list">{game.engineBusy && <div className="check-item"><RefreshCw size={17} /><span>{game.engine} {t('is updating. Wait for the update to finish before starting.')}</span></div>}{!game.installed && !game.blockers.length && <div className="check-item error"><FolderOpen size={17} /><span>{t('No installed game folder was detected. Browse to your existing installation to continue.')}</span></div>}{game.id === 'bo1' && game.installed && !bo1RuleReady && <div className="check-item error"><TriangleAlert size={17} /><span>{t('A verified botLANd public inbound UDP firewall rule is required before starting BO1. Apply it below.')}</span></div>}{game.blockers.map((issue, index) => <div className="check-item error" key={`b-${index}`}><TriangleAlert size={17} /><span>{issue}</span></div>)}{game.warnings.map((issue, index) => <div className="check-item warning" key={`w-${index}`}><Info size={17} /><span>{issue}</span></div>)}{firewallAdvisory && <div className="check-item warning"><Info size={17} /><span>{t('No matching inbound firewall rule for UDP')} {game.activePort ?? game.options.port}{t('. Other PCs may be blocked from joining until you apply one in the Windows firewall panel.')}</span></div>}{game.installed && !game.blockers.length && !game.engineBusy && <div className="check-item success"><Check size={17} /><span>{t('Launch dependencies and config found.')}</span></div>}</div>}</section>
+          <nav className="detail-tabs" aria-label={t('Game sections')} role="tablist" onKeyDown={onTabKeyDown}>{tabs.map(item => { const unavailable = tabDisabled(item.id); return <button key={item.id} type="button" data-tab={item.id} role="tab" id={`tab-${item.id}`} aria-controls={tab === item.id ? `panel-${item.id}` : undefined} aria-selected={tab === item.id} tabIndex={tab === item.id ? 0 : -1} className={tab === item.id ? 'selected' : ''} aria-disabled={unavailable || undefined} onClick={() => { if (!unavailable) selectTab(item.id); }}><item.icon size={17} aria-hidden="true" />{translate(item.label)}</button>; })}</nav>
+          {tab === 'overview' && <div className="detail-layout" role="tabpanel" id="panel-overview" aria-labelledby="tab-overview"><div className="detail-primary"><OrphanWarning game={game} busy={!!busy} onRescan={() => action('rescan-orphans', () => window.manager.rescanOrphans(), t('Process scan complete.'))} /><ConnectPanel key={`${game.id}-${game.startedAt || ''}`} game={game} busy={!!busy} onCopy={address => copyConnectAddress(game.id, address)} /><SetupChecklist key={`setup-${game.id}`} steps={setupSteps(game)} ready={game.installed && !game.blockers.length && !game.engineBusy && (game.id !== 'bo1' || bo1RuleReady)} blockers={game.blockers} start={launchControl(game)} /><RestartPanel game={game} busy={!!busy} onChange={enabled => action('auto-restart', () => window.manager.setAutoRestart(game.id, enabled), `Automatic restart ${enabled ? 'enabled' : 'disabled'} for ${game.short}.`)} /><section className="panel"><div className="panel-heading"><div className="panel-icon"><ShieldCheck size={19} /></div><div><span className="section-kicker">{t('PREFLIGHT CHECK')}</span><h2>{t('Server readiness')}</h2></div><span className={`readiness-pill ${!game.installed || game.blockers.length || game.engineBusy || (game.id === 'bo1' && !bo1RuleReady) ? 'bad' : 'good'}`}>{!game.installed ? t('GAME NOT DETECTED') : game.engineBusy ? t('ENGINE UPDATING') : game.blockers.length ? tp('{count} ISSUE', '{count} ISSUES', game.blockers.length, { count: game.blockers.length }) : game.id === 'bo1' && !bo1RuleReady ? t('FIREWALL CHECK NEEDED') : t('ALL CHECKS PASSED')}</span></div>{game.installed && !game.blockers.length && !game.engineBusy && !game.warnings.length && !firewallAdvisory && (game.id !== 'bo1' || bo1RuleReady) ? <div className="all-clear"><div><Check size={20} /></div><div><strong>{t('Everything looks good.')}</strong><span>{t('Your files and launch dependencies are in place. Ready when you are.')}</span></div></div> : <div className="check-list">{game.engineBusy && <div className="check-item"><RefreshCw size={17} /><span>{game.engine} {t('is updating. Wait for the update to finish before starting.')}</span></div>}{!game.installed && !game.blockers.length && <div className="check-item error"><FolderOpen size={17} /><span>{t('No installed game folder was detected. Browse to your existing installation to continue.')}</span></div>}{game.id === 'bo1' && game.installed && !bo1RuleReady && <div className="check-item error"><TriangleAlert size={17} /><span>{t('A verified botLANd public inbound UDP firewall rule is required before starting BO1. Apply it below.')}</span></div>}{game.blockers.map((issue, index) => <div className="check-item error" key={`b-${index}`}><TriangleAlert size={17} /><span>{issue}</span></div>)}{game.warnings.map((issue, index) => <div className="check-item warning" key={`w-${index}`}><Info size={17} /><span>{issue}</span></div>)}{firewallAdvisory && <div className="check-item warning"><Info size={17} /><span>{t('No matching inbound firewall rule for UDP')} {game.activePort ?? game.options.port}{t('. Other PCs may be blocked from joining until you apply one in the Windows firewall panel.')}</span></div>}{game.installed && !game.blockers.length && !game.engineBusy && <div className="check-item success"><Check size={17} /><span>{t('Launch dependencies and config found.')}</span></div>}</div>}</section>
           {game.installed && <section className="panel"><div className="panel-heading"><div className="panel-icon"><SlidersHorizontal size={19} /></div><div><span className="section-kicker">{t('AT A GLANCE')}</span><h2>{t('Current setup')}</h2></div><button className="text-action" onClick={() => selectTab('configuration')}>{t('EDIT SETTINGS')} <ArrowRight size={15} /></button></div><div className="quick-grid"><div><span>{t('PLAYER SLOTS')}</span><strong>{game.config.sv_maxclients || '—'}</strong></div><div><span>{t('BOT FILL TARGET')}</span><strong>{game.config.bots_manage_fill || '—'}</strong></div><div><span>{t('MAPS SELECTED')}</span><strong>{maps ? savedMaps.length : '—'}</strong></div><div><span>{t('GAME MODE')}</span><strong>{maps?.modes.find(mode => mode.value === game.options.mode)?.label || game.options.mode.toUpperCase()}</strong></div></div></section>}</div>
           <div className="detail-secondary"><BotPanel key={`bot-${game.id}`} game={game} status={currentBotState?.status || null} loading={!!game.installed && (!currentBotState || currentBotState.loading)} error={currentBotState?.error || null} busy={!!busy} updateAvailable={snapshot.updates[game.id]?.updateAvailable ?? null} onRetry={() => setBotRevision(previous => previous + 1)} onAction={operation => manageBot(game, operation)} onChannel={channel => changeBotChannel(game, channel)} /><KeyPanel key={`key-${game.id}`} game={game} draft={keyDraft} busy={!!busy} saving={busy === 'key-save'} onDraft={setKeyDraft} onSave={() => savePastedKey(game.id)} onReset={resetKeyStorage} onRemove={() => { if (window.confirm(t('Remove the saved server key? The next launch will need a key.'))) keyAction('key-remove', () => window.manager.removeKey(game.id), t('Saved key removed.')); }} onKeyPage={() => action('key-page', () => window.manager.openKeyPage())} /><section className="panel path-panel"><div className="section-kicker">{t('INSTALLATION')}</div><h2 className="h3-style">{t('Game folder')}</h2><div className="path-display" title={game.gamePath}><FolderOpen size={18} /><span>{game.gamePath || t('Not detected')}</span></div><p className="path-source">{game.pathSource === 'steam' ? t('Detected in your Steam library') : game.pathSource === 'manual' ? t('Selected manually') : t('No folder selected')}</p>{game.detectedPath && game.detectedPath !== game.gamePath && <button className="inline-link detected-folder" disabled={!!busy || game.status !== 'stopped'} onClick={() => action('detected-folder', () => window.manager.useDetectedFolder(game.id), t('Now using the folder detected in your Steam library.'))}>{t('Use detected folder')} <FolderOpen size={13} /></button>}<button className="outline-button full-width" disabled={!!busy} onClick={() => action('folder', () => window.manager.chooseFolder(game.id))}><FolderOpen size={16} /> {t('Browse game folder')}</button><button className="inline-link engine-link" disabled={!!busy} onClick={() => action('engine-guide', () => window.manager.openEngineGuide(game.id))}>{game.engine} {t('setup guide')} <ExternalLink size={14} /></button><div className="panel-divider" /><div className="section-kicker">{t('CONFIG FILE')}</div><div className="path-display smaller" title={game.configPath}><Settings2 size={17} /><span>{game.configPath || t('Not found')}</span></div>{game.installed && game.configMissing && <button className="outline-button full-width" disabled={!!busy} onClick={() => action('starter', () => window.manager.createStarterConfig(game.id), t('Server config created. You can change its settings on the Configuration tab.'))}><Settings2 size={16} /> {t('Create server config')}</button>}<button className="inline-link" disabled={!!busy || !game.installed || !!game.configMissing} onClick={() => action('open', () => window.manager.openConfig(game.id))}>{t('Open original config')} <ExternalLink size={14} /></button>{game.installed && <><div className="panel-divider" /><div className="section-kicker">{t('WINDOWS FIREWALL')}</div><FirewallPanel game={game} status={firewallStatus} busy={!!busy} onApply={() => changeFirewall(game, true)} onRemove={() => changeFirewall(game, false)} /></>}<div className="panel-divider" /><div className="section-kicker">{t('GAME ARTWORK')}</div><p className="artwork-note">{t('Loaded from your local Steam library cache. Custom images stay on this PC.')}</p><div className="artwork-actions"><button onClick={() => changeArtwork(game.id, 'cover')} disabled={!!busy}>{t('Change card image')}</button><button onClick={() => changeArtwork(game.id, 'hero')} disabled={!!busy}>{t('Change header')}</button><button onClick={() => restoreArtwork(game.id, 'cover')} disabled={!!busy}>{t('Steam card image')}</button><button onClick={() => restoreArtwork(game.id, 'hero')} disabled={!!busy}>{t('Steam header')}</button></div></section><section className="panel activity-panel"><div className="panel-heading compact"><div><span className="section-kicker">{t('RECENT ACTIVITY')}</span><h2 className="h3-style">{t('Server output')}</h2></div><button className="text-action" onClick={() => selectTab('console')}>{t('VIEW ALL')} <ArrowRight size={15} /></button></div>{game.logs.length ? game.logs.slice(-3).reverse().map((line, index) => <div className="activity-line" key={index}><span className={line.level === 'error' ? 'activity-error' : ''} /><p>{line.message}</p><time>{gameTime(line.at)}</time></div>) : <div className="activity-empty"><Clock3 size={19} /> {t('No activity yet. Start the server to see its output.')}</div>}</section></div></div>}
           {tab === 'configuration' && <>{!game.installed && <div className="config-notice error" role="alert">{t('The game folder is unavailable. Your unsaved edits are still here; restore the folder before saving, or leave this tab to discard them.')}</div>}<ConfigWorkspace key={game.id} game={game} maps={maps} refreshRevision={refreshRevision} onDirtyChange={setConfigDirty} onBusyChange={setConfigBusy} /></>}
-          {tab === 'rotation' && <div className="settings-layout" role="tabpanel" id="panel-rotation" aria-labelledby="tab-rotation"><div className="panel rotation-panel"><div className="panel-heading"><div className="panel-icon"><MapIcon size={19} /></div><div><span className="section-kicker">{t('THE NEXT MATCH')}</span><h2>{t('Maps & modes')}</h2></div></div><p className="panel-description">{t('Only maps found in this installation are listed. A fresh rotation is written when the server starts.')}</p>{rotationPathConflict && <div className="config-path-warning rotation-path-warning" role="alert"><TriangleAlert size={17} /><div><strong>{t('Game folder changed while you were editing.')}</strong><p>{t('This draft belongs to the previous folder. Saving is blocked until you discard it or restore that folder.')}</p><button className="outline-button" disabled={!!busy || !maps || mapLoading} onClick={resetRotationDrafts}>{t('Discard draft and use new folder')}</button></div></div>}{!game.installed && <div className="config-notice error" role="alert">{t('The game folder is unavailable. Your unsaved rotation is preserved; restore the folder before saving, or leave this tab to discard it.')}</div>}{game.installed && mapError && <div className="config-notice error map-scan-error" role="alert"><span>{t('Could not scan maps:')} {mapError} {t('Previous map results cannot be used to save.')}</span><button className="button outline-button" onClick={() => setRefreshRevision(previous => previous + 1)}>{t('Retry map scan')}</button></div>}{!!missingDraftMaps.length && <div className="config-notice error" role="alert"><TriangleAlert size={16} /> {missingDraftMaps.length} {t('selected map')}{missingDraftMaps.length === 1 ? '' : 's'} {t('disappeared after the rescan. Clear or reselect maps before saving.')}</div>}{(missingMaps.length > 0 || missingMode) && <div className="config-notice error" role="alert"><TriangleAlert size={16} /> {missingMaps.length > 0 ? `${tp('{count} saved map no longer installed. ', '{count} saved maps no longer installed. ', missingMaps.length, { count: missingMaps.length })}` : ''}{missingMode ? t('The saved game mode is unavailable. ') : ''}{t('Save updated launch options before starting.')}</div>}<div className="rotation-controls"><label className="form-field"><span>{t('Game mode')}</span><small>{t('Available modes for this game')}</small><select value={modeDraft} disabled={mapLoading || !maps || busy === 'rotation' || rotationPathConflict} onChange={event => setModeDraft(event.target.value)}>{maps?.modes?.length ? maps.modes.map(mode => <option key={mode.value} value={mode.value}>{mode.label}</option>) : <option value={modeDraft}>{modeDraft}</option>}</select></label><label className="form-field"><span>{t('UDP port')}</span><small>{t('Use a unique port for simultaneous servers')}</small><input type="number" min="1024" max="65535" value={portDraft} disabled={mapLoading || !maps || busy === 'rotation' || rotationPathConflict} aria-invalid={!portValid} aria-describedby={portValid ? undefined : `port-error-${game.id}`} onChange={event => setPortDraft(event.target.value)} /></label>{!portValid && <p className="field-error" id={`port-error-${game.id}`}>{t('UDP port must be a whole number between 1024 and 65535.')}</p>}</div><label className="toggle-row"><span className={`toggle ${shuffleDraft ? 'on' : ''}`}><input type="checkbox" aria-label={t('Shuffle maps on every launch')} checked={shuffleDraft} disabled={mapLoading || !maps || busy === 'rotation' || rotationPathConflict} onChange={event => setShuffleDraft(event.target.checked)} /><span /></span><span><strong>{t('Shuffle on every launch')}</strong><small>{shuffleDraft ? t('Maps are played in a new random order each time.') : t('Maps follow the alphabetical list order below.')}</small></span></label><div className="map-heading"><div><span className="section-kicker">{t('MAP POOL')}</span><h3>{mapLoading ? t('Scanning maps…') : t('{selected} / {total} maps selected', { selected: mapSelection.length, total: maps?.maps.length ?? 0 })}</h3></div><div className="map-tools"><button disabled={mapLoading || !maps || busy === 'rotation' || rotationPathConflict} onClick={() => setMapSelection(maps?.maps || [])}>{t('SELECT ALL')}</button><button disabled={mapLoading || !maps || busy === 'rotation' || rotationPathConflict} onClick={() => setMapSelection([])}>{t('CLEAR')}</button></div></div><div className="map-search"><Search size={16} aria-hidden="true" /><input type="search" aria-label={t('Find a map')} placeholder={t('Find a map…')} value={mapSearch} onChange={event => setMapSearch(event.target.value)} /></div><div className="map-grid" role="group" aria-labelledby="map-pool-heading">{visibleMaps.map(map => <button key={map} type="button" disabled={mapLoading || !maps || busy === 'rotation' || rotationPathConflict} aria-pressed={mapSelection.includes(map)} className={`map-option ${mapSelection.includes(map) ? 'chosen' : ''}`} onClick={() => toggleMap(map)}><span className="map-check">{mapSelection.includes(map) && <Check size={13} />}</span><span><strong>{gameMapName(map)}</strong><small>{map}</small></span></button>)}{!visibleMaps.length && <div className="map-empty">{mapLoading ? t('Looking for installed maps…') : mapSearch.trim() ? t('No installed maps match “{query}”.', { query: mapSearch.trim() }) : mapError ? t('Map scan failed. Retry above to load installed maps.') : t('No installed multiplayer maps were found. Check your game folder.')}</div>}</div><div className="form-footer"><div><Info size={17} /> {t('Your rotation is generated at launch.')}{maps && maps.maps.length > 0 && maps.maps.every(map => mapSelection.includes(map)) ? t(' With every map selected, maps you install later are included too.') : ''}</div><div className="form-footer-actions">{rotationPending && <button className="outline-button" disabled={!!busy} onClick={resetRotationDrafts}>{t('Discard changes')}</button>}<button className="button primary-button" disabled={!!busy || !game.installed || !maps || mapLoading || rotationPathConflict || !portValid || !!missingDraftMaps.length || !(rotationDirty || missingMaps.length > 0 || missingMode)} title={rotationDirty || missingMaps.length > 0 || missingMode ? undefined : t('No unsaved changes')} onClick={saveRotation}><Save size={16} /> {busy === 'rotation' ? t('Saving…') : t('Save launch options')}</button></div></div></div><aside className="settings-aside"><div className="panel"><div className="panel-icon featured"><ListFilter size={20} /></div><h3>{t('Built for this game.')}</h3><p>{t('Map availability and rotation syntax differ between engines. BotLANd uses this title’s own map format and skips anything missing from your installation.')}</p><div className="rotation-summary"><span>{t('ROTATION ENGINE')}</span><strong>{game.engine}</strong><span>{t('OUTPUT')}</span><strong>{game.id === 'mw3' ? t('DSR + map rotation') : game.id === 'bo2' ? t('ExecGTS + map rotation') : t('Map rotation config')}</strong></div></div><div className="aside-tip"><Info size={18} /><p>{t('A different port lets you run multiple servers at once. After changing it, update the Windows firewall rule on the')} <button className="inline-link" onClick={() => selectTab('overview')}>{t('Overview tab')}</button>.</p></div></aside></div>}
+          {tab === 'rotation' && <div className="settings-layout" role="tabpanel" id="panel-rotation" aria-labelledby="tab-rotation"><div className="panel rotation-panel"><div className="panel-heading"><div className="panel-icon"><MapIcon size={19} /></div><div><span className="section-kicker">{t('THE NEXT MATCH')}</span><h2>{t('Maps & modes')}</h2></div></div><p className="panel-description">{t('Only maps found in this installation are listed. A fresh rotation is written when the server starts.')}</p>{rotationPathConflict && <div className="config-path-warning rotation-path-warning" role="alert"><TriangleAlert size={17} /><div><strong>{t('Game folder changed while you were editing.')}</strong><p>{t('This draft belongs to the previous folder. Saving is blocked until you discard it or restore that folder.')}</p><button className="outline-button" disabled={!!busy || !maps || mapLoading} onClick={resetRotationDrafts}>{t('Discard draft and use new folder')}</button></div></div>}{!game.installed && <div className="config-notice error" role="alert">{t('The game folder is unavailable. Your unsaved rotation is preserved; restore the folder before saving, or leave this tab to discard it.')}</div>}{game.installed && mapError && <div className="config-notice error map-scan-error" role="alert"><span>{t('Could not scan maps:')} {mapError} {t('Previous map results cannot be used to save.')}</span><button className="button outline-button" onClick={() => setRefreshRevision(previous => previous + 1)}>{t('Retry map scan')}</button></div>}{!!missingDraftMaps.length && <div className="config-notice error" role="alert"><TriangleAlert size={16} /> {missingDraftMaps.length} {t('selected map')}{missingDraftMaps.length === 1 ? '' : 's'} {t('disappeared after the rescan. Clear or reselect maps before saving.')}</div>}{(missingMaps.length > 0 || missingMode) && <div className="config-notice error" role="alert"><TriangleAlert size={16} /> {missingMaps.length > 0 ? `${tp('{count} saved map no longer installed. ', '{count} saved maps no longer installed. ', missingMaps.length, { count: missingMaps.length })}` : ''}{missingMode ? t('The saved game mode is unavailable. ') : ''}{t('Save updated launch options before starting.')}</div>}<div className="rotation-controls"><label className="form-field"><span>{t('Game mode')}</span><small>{t('Available modes for this game')}</small><select value={modeDraft} disabled={mapLoading || !maps || busy === 'rotation' || rotationPathConflict} onChange={event => setModeDraft(event.target.value)}>{maps?.modes?.length ? maps.modes.map(mode => <option key={mode.value} value={mode.value}>{mode.label}</option>) : <option value={modeDraft}>{modeDraft}</option>}</select></label><label className="form-field"><span>{t('UDP port')}</span><small>{t('Use a unique port for simultaneous servers')}</small><input type="number" min="1024" max="65535" value={portDraft} disabled={mapLoading || !maps || busy === 'rotation' || rotationPathConflict} aria-invalid={!portValid} aria-describedby={portValid ? undefined : `port-error-${game.id}`} onChange={event => setPortDraft(event.target.value)} /></label>{!portValid && <p className="field-error" id={`port-error-${game.id}`}>{t('UDP port must be a whole number between 1024 and 65535.')}</p>}</div><label className="toggle-row"><span className={`toggle ${shuffleDraft ? 'on' : ''}`}><input type="checkbox" aria-label={t('Shuffle maps on every launch')} checked={shuffleDraft} disabled={mapLoading || !maps || busy === 'rotation' || rotationPathConflict} onChange={event => setShuffleDraft(event.target.checked)} /><span /></span><span><strong>{t('Shuffle on every launch')}</strong><small>{shuffleDraft ? t('Maps are played in a new random order each time.') : t('Maps follow the alphabetical list order below.')}</small></span></label><div className="map-heading"><div><span className="section-kicker">{t('MAP POOL')}</span><h3 id="map-pool-heading">{mapLoading ? t('Scanning maps…') : t('{selected} / {total} maps selected', { selected: mapSelection.length, total: maps?.maps.length ?? 0 })}</h3></div><div className="map-tools"><button disabled={mapLoading || !maps || busy === 'rotation' || rotationPathConflict} onClick={() => setMapSelection(maps?.maps || [])}>{t('SELECT ALL')}</button><button disabled={mapLoading || !maps || busy === 'rotation' || rotationPathConflict} onClick={() => setMapSelection([])}>{t('CLEAR')}</button></div></div><div className="map-search"><Search size={16} aria-hidden="true" /><input type="search" aria-label={t('Find a map')} placeholder={t('Find a map…')} value={mapSearch} onChange={event => setMapSearch(event.target.value)} /></div><div className="map-grid" role="group" aria-labelledby="map-pool-heading">{visibleMaps.map(map => <button key={map} type="button" disabled={mapLoading || !maps || busy === 'rotation' || rotationPathConflict} aria-pressed={mapSelection.includes(map)} className={`map-option ${mapSelection.includes(map) ? 'chosen' : ''}`} onClick={() => toggleMap(map)}><span className="map-check">{mapSelection.includes(map) && <Check size={13} />}</span><span><strong>{gameMapName(map)}</strong><small>{map}</small></span></button>)}{!visibleMaps.length && <div className="map-empty">{mapLoading ? t('Looking for installed maps…') : mapSearch.trim() ? t('No installed maps match “{query}”.', { query: mapSearch.trim() }) : mapError ? t('Map scan failed. Retry above to load installed maps.') : t('No installed multiplayer maps were found. Check your game folder.')}</div>}</div><div className="form-footer"><div><Info size={17} /> {t('Your rotation is generated at launch.')}{maps && maps.maps.length > 0 && maps.maps.every(map => mapSelection.includes(map)) ? t(' With every map selected, maps you install later are included too.') : ''}</div><div className="form-footer-actions">{rotationPending && <button className="outline-button" disabled={!!busy} onClick={resetRotationDrafts}>{t('Discard changes')}</button>}<button className="button primary-button" disabled={!!busy || !game.installed || !maps || mapLoading || rotationPathConflict || !portValid || !!missingDraftMaps.length || !(rotationDirty || missingMaps.length > 0 || missingMode)} title={rotationDirty || missingMaps.length > 0 || missingMode ? undefined : t('No unsaved changes')} onClick={saveRotation}><Save size={16} /> {busy === 'rotation' ? t('Saving…') : t('Save launch options')}</button></div></div></div><aside className="settings-aside"><div className="panel"><div className="panel-icon featured"><ListFilter size={20} /></div><h3>{t('Built for this game.')}</h3><p>{t('Map availability and rotation syntax differ between engines. BotLANd uses this title’s own map format and skips anything missing from your installation.')}</p><div className="rotation-summary"><span>{t('ROTATION ENGINE')}</span><strong>{game.engine}</strong><span>{t('OUTPUT')}</span><strong>{game.id === 'mw3' ? t('DSR + map rotation') : game.id === 'bo2' ? t('ExecGTS + map rotation') : t('Map rotation config')}</strong></div></div><div className="aside-tip"><Info size={18} /><p>{t('A different port lets you run multiple servers at once. After changing it, update the Windows firewall rule on the')} <button className="inline-link" onClick={() => selectTab('overview')}>{t('Overview tab')}</button>.</p></div></aside></div>}
           {tab === 'console' && <ConsolePanel game={game} />}
         </>}
       </div>

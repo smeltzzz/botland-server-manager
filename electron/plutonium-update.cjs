@@ -250,10 +250,18 @@ class PlutoniumUpdater {
     // must not proceed until that update has finished (or failed).
     const pending = this.running;
     const installed = await this.installed();
-    if (!pending && installed && (skip || await this.fresh()) && !this.running) return { updated: false };
+    const active = pending || this.running;
+    // An active peer owns the Plutonium files even if its bootstrapper was
+    // removed meanwhile. Never repair/install under it. An explicit updater
+    // already in progress is different: keep waiting for that same run.
+    if (!active && skip) {
+      if (!installed) throw new Error('Plutonium is not installed. Stop every Plutonium server before installing it.');
+      return { updated: false };
+    }
+    if (!active && installed && await this.fresh() && !this.running) return { updated: false };
     log(installed ? 'Checking for Plutonium updates…' : 'Installing Plutonium…');
     try {
-      await (pending || this.running || this.update());
+      await (active || this.running || this.update());
       log(installed ? 'Plutonium is up to date.' : 'Plutonium installed.');
       return { updated: true };
     } catch (error) {

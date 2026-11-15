@@ -101,7 +101,8 @@ function cod4Development(entries, files, patches) {
     if (!Buffer.isBuffer(bytes) || !bytes.length) throw new Error(`Empty Bot Warfare source file: ${name}`);
     content[relative] = new Uint8Array(bytes);
   }
-  files.set('z_svr_bots.iwd', Buffer.from(zipSync(content, { level: 6 })));
+  // Reproducible bytes whether this pure recipe runs directly or in a worker.
+  files.set('z_svr_bots.iwd', Buffer.from(zipSync(content, { level: 6, mtime: new Date(1980, 0, 1) })));
   files.set(CALLBACK, callback);
   waypoints(entries, root + 'scriptdata/waypoints/', files);
   patches.push('CoD4: build IWD from source maps/ and scripts/ (excluding .gsx)');

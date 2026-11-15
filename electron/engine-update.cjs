@@ -2,7 +2,7 @@ const fs = require('node:fs/promises');
 const path = require('node:path');
 const { createHash, randomUUID } = require('node:crypto');
 const { spawn } = require('node:child_process');
-const { readModArchive } = require('./mod-archive.cjs');
+const { readModArchiveAsync } = require('./archive-cpu.cjs');
 
 const PINS = Object.freeze({
   cod4: Object.freeze({ version: 'Cod4R-DedRun', base: 'iw3mp.exe', target: 'Cod4R-DedRun.exe',
@@ -209,11 +209,14 @@ class EngineUpdater {
   // `pins` is a fixture seam for offline tests only; production callers must not
   // override the hard-coded release digests. `confirmOverwrite` must obtain user
   // consent for EACH unknown existing executable before any files are changed.
-  constructor({ fetch: fetcher = globalThis.fetch, run = runLauncher, userData, confirmOverwrite = () => false, pins = PINS, fault = () => {} } = {}) {
-    if (typeof fetcher !== 'function' || typeof run !== 'function' || typeof confirmOverwrite !== 'function' || typeof fault !== 'function') throw new TypeError('Invalid engine updater hooks.');
+  constructor({ fetch: fetcher = globalThis.fetch, run = runLauncher, userData, confirmOverwrite = () => false,
+    pins = PINS, fault = () => {}, readArchive = readModArchiveAsync } = {}) {
+    if (typeof fetcher !== 'function' || typeof run !== 'function' || typeof confirmOverwrite !== 'function' ||
+        typeof fault !== 'function' || typeof readArchive !== 'function') throw new TypeError('Invalid engine updater hooks.');
     if (userData !== undefined && (typeof userData !== 'string' || !path.isAbsolute(userData))) throw new Error('Absolute app data folder required.');
     this.fetch = fetcher;
     this.run = run;
+    this.readArchive = readArchive; // Validation/inflate/CRC are CPU-only worker work.
     this.confirmOverwrite = confirmOverwrite;
     this.pins = pins;
     this.fault = fault; // Offline tests can simulate process death at transaction boundaries.
@@ -355,7 +358,7 @@ class EngineUpdater {
     let body = archive;
     if (id === 'mw2') {
       if (!Number.isSafeInteger(pin.unpacked) || pin.unpacked < 1 || pin.unpacked > 50 * 1024 * 1024) throw new Error('Invalid launcher size pin.');
-      const entries = readModArchive(archive, { maxInputBytes: pin.size, maxEntries: 1,
+      const entries = await this.readArchive(archive, { maxInputBytes: pin.size, maxEntries: 1,
         maxEntryBytes: pin.unpacked, maxExtractedBytes: pin.unpacked });
       if (entries.size !== 1 || !entries.has(pin.target) || entries.get(pin.target).length !== pin.unpacked) {
         throw new Error('Unexpected IW4x launcher ZIP contents.');

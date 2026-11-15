@@ -15,6 +15,8 @@ const { profileFor } = require('./profiles.cjs');
 const { sourceRepos } = require('./schema.cjs');
 const { ArtworkCache } = require('./artwork-cache.cjs');
 const { artScheme, createArtworkHandler } = require('./artwork-protocol.cjs');
+const { rendererScheme, rendererEntryUrl, rendererSchemeRegistration, createRendererHandler } = require('./renderer-protocol.cjs');
+const { validatePayload } = require('./ipc-validate.cjs');
 
 const engineGuides = {
   cod4: 'https://iw3x.com/setup#hosting',
@@ -30,44 +32,14 @@ const engineGuides = {
 // keeps the page out of file://'s broad read access.
 if (typeof protocol?.registerSchemesAsPrivileged === 'function') {
   protocol.registerSchemesAsPrivileged([
-    { scheme: 'app', privileges: { standard: true, secure: true, supportFetchAPI: true, codeCache: true } },
+    rendererSchemeRegistration,
     // Artwork is user-owned content, so it gets its own origin. The handler
     // resolves only known game/kind pairs; no URL text becomes a file path.
     { scheme: artScheme, privileges: { standard: true, secure: true } },
   ]);
 }
 
-const MIME = {
-  '.html': 'text/html; charset=utf-8',
-  '.js': 'text/javascript; charset=utf-8',
-  '.css': 'text/css; charset=utf-8',
-  '.json': 'application/json',
-  '.svg': 'image/svg+xml',
-  '.png': 'image/png',
-  '.jpg': 'image/jpeg',
-  '.jpeg': 'image/jpeg',
-  '.webp': 'image/webp',
-  '.ico': 'image/x-icon',
-  '.ttf': 'font/ttf',
-  '.woff': 'font/woff',
-  '.woff2': 'font/woff2',
-};
-async function serveRenderer(request) {
-  const root = path.join(__dirname, '..', 'dist');
-  let pathname;
-  try { pathname = decodeURIComponent(new URL(request.url).pathname); }
-  catch { return new Response('Bad request', { status: 400 }); }
-  const relative = pathname === '/' || pathname === '' ? 'index.html' : pathname.replace(/^\/+/, '');
-  const target = path.resolve(root, relative);
-  // Only files inside dist; no traversal, no absolute or UNC escapes.
-  if (target !== root && !target.startsWith(root + path.sep)) return new Response('Not found', { status: 404 });
-  try {
-    const body = await fs.readFile(target);
-    return new Response(body, { headers: { 'content-type': MIME[path.extname(target).toLowerCase()] || 'application/octet-stream' } });
-  } catch {
-    return new Response('Not found', { status: 404 });
-  }
-}
+const serveRenderer = createRendererHandler();
 
 
 // Downscale JPEG/WebP banners for the renderer. PNG keeps its alpha channel and
@@ -156,12 +128,13 @@ async function createWindow() {
   // Windows sign-out or shutdown: there is no time for dialogs, so stop owned
   // servers (Cod4R gets its graceful quit first) and close session logs.
   window.on('session-end', () => {
-    quitAfterStop = true;
     discardConfirmed = true;
-    manager?.stopAll().catch(() => {});
+    if (!stoppingForQuit) finishQuit();
   });
   window.webContents.setWindowOpenHandler(() => ({ action: 'deny' }));
   window.webContents.on('will-navigate', event => event.preventDefault());
+  window.webContents.on('will-redirect', event => { if (!isAppOrigin(event?.url)) event.preventDefault(); });
+  window.webContents.on('will-frame-navigate', event => { if (!isAppOrigin(event?.url)) event.preventDefault(); });
   // Ctrl+Plus/Minus/0 used to depend on the application menu, which is removed
   // from releases. Keep keyboard text zoom without restoring Reload/DevTools.
   const setZoom = delta => {
@@ -192,9 +165,9 @@ async function createWindow() {
     manager?.cancelShutdown?.();
   });
   if (app.isPackaged) Menu.setApplicationMenu(null); // No Reload or DevTools shortcuts in releases.
-  if (typeof protocol?.handle === 'function') protocol.handle('app', serveRenderer);
+  if (typeof protocol?.handle === 'function') protocol.handle(rendererScheme, serveRenderer);
   if (typeof protocol?.handle === 'function') protocol.handle(artScheme, serveArtwork);
-  if (app.isPackaged) await window.loadURL('app://botland/index.html');
+  if (app.isPackaged) await window.loadURL(rendererEntryUrl);
   else await window.loadURL('http://127.0.0.1:5173');
   // Metadata checks run in the background and never delay the first window.
   manager.checkBotUpdates?.().catch(() => {});
@@ -206,6 +179,25 @@ async function createWindow() {
     }).catch(() => {});
   }
 }
+
+// The only origin app content may load from: app://botland when packaged, the
+// Vite dev server otherwise.
+function isAppOrigin(url) {
+  if (typeof url !== 'string') return false;
+  let parsed;
+  try { parsed = new URL(url); } catch { return false; }
+  const expected = new URL(app.isPackaged ? rendererEntryUrl : 'http://127.0.0.1:5173');
+  return parsed.protocol === expected.protocol && parsed.host === expected.host;
+}
+
+// Defense in depth for any webContents (including ones not created here):
+// no <webview>, no popups, no off-origin navigation.
+app.on('web-contents-created', (_event, contents) => {
+  contents.on('will-attach-webview', event => event.preventDefault());
+  contents.setWindowOpenHandler?.(() => ({ action: 'deny' }));
+  contents.on('will-navigate', event => { if (!isAppOrigin(event?.url)) event.preventDefault(); });
+  contents.on('will-redirect', event => { if (!isAppOrigin(event?.url)) event.preventDefault(); });
+});
 
 function focusWindow() {
   if (!window || window.isDestroyed()) return;
@@ -227,6 +219,7 @@ if (primaryInstance) app.whenReady().then(() => {
     if (!manager) throw new Error('Server manager is not ready.');
     if (!window || _event.sender !== window.webContents || _event.senderFrame !== window.webContents.mainFrame) throw new Error('Invalid window.');
     if (typeof action !== 'string' || !payload || typeof payload !== 'object' || Array.isArray(payload)) throw new Error('Invalid request.');
+    validatePayload(action, payload);
     const id = payload.id;
     switch (action) {
       case 'snapshot': return manager.snapshot();
@@ -327,20 +320,52 @@ function needsQuitPrompt() { return Boolean(manager?.hasRunning() || manager?.ha
 function showBox(options) {
   return window && !window.isDestroyed() ? dialog.showMessageBoxSync(window, options) : dialog.showMessageBoxSync(options);
 }
+function showInstallerBusy() {
+  // Quitting mid-install would leave files for the next launch to recover.
+  const plutonium = Boolean(manager?.plutonium?.updating);
+  const engine = Boolean(manager?.engineBusy?.size);
+  showBox({
+    type: 'info', buttons: ['OK'], defaultId: 0, cancelId: 0,
+    title: plutonium ? 'Plutonium update in progress' : engine ? 'Engine update in progress' : 'Bot Warfare change in progress',
+    message: plutonium ? 'Wait for the Plutonium update to finish before closing botLANd.' : engine ? 'Wait for the engine update to finish before closing botLANd.' : 'Wait for the Bot Warfare change to finish before closing botLANd.',
+    detail: plutonium ? 'Closing now could leave Plutonium half-updated.' : engine ? 'Closing now could leave engine files or the IW4x launcher update incomplete.' : 'Closing now could leave the mod files half-updated. The change usually takes less than a minute.',
+  });
+}
+async function finishQuit() {
+  stoppingForQuit = true;
+  try {
+    // stopAll owns the shutdown guard and waits for launch preparation as well
+    // as process termination. A disappearing instance can still have a log tail
+    // or session close in flight, so drain that queue before the final check.
+    await manager?.stopAll?.();
+    await manager?.waitForSessionCleanup?.();
+    if (manager?.hasModWork?.()) {
+      stoppingForQuit = false;
+      discardConfirmed = false;
+      manager.cancelShutdown?.();
+      showInstallerBusy();
+      return;
+    }
+    if (manager?.hasRunning()) {
+      stoppingForQuit = false;
+      discardConfirmed = false;
+      manager.cancelShutdown?.();
+      dialog.showErrorBox('Servers still running', 'A managed server could not be stopped. The app will remain open so you can try again.');
+      return;
+    }
+    stoppingForQuit = false;
+    quitAfterStop = true;
+    app.quit();
+  } catch (error) {
+    stoppingForQuit = false;
+    discardConfirmed = false;
+    manager?.cancelShutdown?.();
+    dialog.showErrorBox('Could not close', error.message);
+  }
+}
 function requestQuit() {
   if (stoppingForQuit) return;
-  if (manager?.hasModWork?.()) {
-    // Quitting mid-install would leave files for the next launch to recover.
-    const plutonium = Boolean(manager.plutonium?.updating);
-    const engine = Boolean(manager.engineBusy?.size);
-    showBox({
-      type: 'info', buttons: ['OK'], defaultId: 0, cancelId: 0,
-      title: plutonium ? 'Plutonium update in progress' : engine ? 'Engine update in progress' : 'Bot Warfare change in progress',
-      message: plutonium ? 'Wait for the Plutonium update to finish before closing botLANd.' : engine ? 'Wait for the engine update to finish before closing botLANd.' : 'Wait for the Bot Warfare change to finish before closing botLANd.',
-      detail: plutonium ? 'Closing now could leave Plutonium half-updated.' : engine ? 'Closing now could leave engine files or the IW4x launcher update incomplete.' : 'Closing now could leave the mod files half-updated. The change usually takes less than a minute.',
-    });
-    return;
-  }
+  if (manager?.hasModWork?.()) { showInstallerBusy(); return; }
   const result = showBox({
     type: 'warning', buttons: ['Keep app open', 'Stop servers and exit'], defaultId: 0, cancelId: 0,
     title: 'Servers are still running', message: 'Stop your managed servers before closing botLANd?',
@@ -348,36 +373,26 @@ function requestQuit() {
       + (rendererDirty ? '\n\nYour unsaved configuration or rotation edits will also be discarded.' : ''),
   });
   if (result !== 1) return;
-  stoppingForQuit = true;
   discardConfirmed = true;
-  manager.stopAll().then(() => {
-    stoppingForQuit = false;
-    if (manager.hasRunning()) {
-      discardConfirmed = false;
-      dialog.showErrorBox('Servers still running', 'A managed server could not be stopped. The app will remain open so you can try again.');
-    } else { quitAfterStop = true; app.quit(); }
-  }).catch(error => {
-    stoppingForQuit = false;
-    discardConfirmed = false;
-    manager.cancelShutdown?.();
-    dialog.showErrorBox('Could not close', error.message);
-  });
+  finishQuit();
 }
 app.on('before-quit', event => {
-  if (quitAfterStop) return;
   if (stoppingForQuit) { event.preventDefault(); return; }
+  // Do not let a prior confirmation bypass installer work or cleanup which
+  // appeared while a stop, disk-log close, or native unload prompt was pending.
+  if (quitAfterStop) {
+    if (!needsQuitPrompt() && !manager?.hasPendingSessionCleanup?.()) return;
+    quitAfterStop = false;
+    discardConfirmed = false;
+    manager?.cancelShutdown?.();
+  }
   if (!needsQuitPrompt()) {
-    if (!manager?.hasPendingSessionCleanup?.()) return;
+    if (!manager) return;
+    // Even an apparently idle quit reserves the manager's shutdown guard.
+    // Otherwise an IPC installer/launch could start during the native unsaved
+    // draft prompt, after this initial no-work observation.
     event.preventDefault();
-    stoppingForQuit = true;
-    manager.waitForSessionCleanup().then(() => {
-      stoppingForQuit = false;
-      quitAfterStop = true;
-      app.quit();
-    }, error => {
-      stoppingForQuit = false;
-      dialog.showErrorBox('Could not close', error.message);
-    });
+    finishQuit();
     return;
   }
   event.preventDefault();

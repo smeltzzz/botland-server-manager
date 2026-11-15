@@ -8,7 +8,7 @@ export interface ConnectAddresses { primaryAddress: string | null; ambiguous: bo
 export interface OrphanCandidate { pid: number | null; port: number; reason: string }
 export interface RestartState { enabled: boolean; attempts: number; nextAttemptAt: string | null; cutOff: boolean }
 export interface ConfigBackup { id: string; date: string; bytes: number }
-export interface ConfigRestorePreview { token: string; summary: { changed: boolean; currentBytes: number; backupBytes: number; contents: string } }
+export interface ConfigRestorePreview { token: string; summary: { changed: boolean; missing?: boolean; currentBytes: number; backupBytes: number; contents: string } }
 export interface GameSetup { folder: boolean; engine: boolean | null; plutonium: boolean | null; key: boolean | null; bots: boolean; config: boolean; maps: boolean }
 export type ArtworkKind = 'hero' | 'cover' | 'logo';
 export interface Game {

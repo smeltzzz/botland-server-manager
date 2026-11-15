@@ -8,4 +8,5 @@
 .card-art.has-image::after{z-index:1}
 .card-art.has-image .card-art-code,.card-art.has-image .card-logo{z-index:2}
 .detail-hero-image{z-index:0}
-.detail-hero.has-image::after{z-index:1}
+.detail-hero.has-image::after{z-index:1}/* Bright artwork must not wash out hero text (3:1 heading, 4.5:1 body at every width). */
+.detail-hero.has-image::after{background:linear-gradient(0deg,rgba(20,22,19,.92),rgba(20,22,19,.88))}

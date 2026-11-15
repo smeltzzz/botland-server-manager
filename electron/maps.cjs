@@ -1,7 +1,7 @@
 const fs = require('node:fs/promises');
 const path = require('node:path');
 const crypto = require('node:crypto');
-const { withoutBlockComments, decode } = require('./config.cjs');
+const { parseEntries, withoutBlockComments, decode } = require('./config.cjs');
 
 const safeName = /^[a-z0-9_]+$/i;
 async function exists(file) { try { await fs.access(file); return true; } catch { return false; } }
@@ -53,6 +53,34 @@ async function scanMaps(profile, gamePath) {
   }
   return [...new Set(names.filter(n => safeName.test(n)))].sort((a, b) => a.localeCompare(b));
 }
+// A declaration must occupy its own command line (an optional trailing ; is
+// harmless). Do not accept a prefix such as dom-other, or guess which of two
+// commands on one line wins. Separate complete lines retain the engine's last-
+// declaration-wins behavior. Comments and quoted text are not commands.
+function bo2Gametype(text) {
+  let gametype = null;
+  for (const line of text.split(/\r?\n/)) {
+    if (/^\s*(?:\/\/|#|;)/.test(line)) continue;
+    let quoted = false;
+    let command = '';
+    const commands = [];
+    for (let i = 0; i < line.length; i++) {
+      const char = line[i];
+      if (char === '"') quoted = !quoted;
+      if (!quoted && char === '/' && line[i + 1] === '/') break;
+      if (!quoted && char === ';') { commands.push(command.trim()); command = ''; }
+      else command += char;
+    }
+    commands.push(command.trim());
+    const active = commands.filter(Boolean);
+    if (!active.some(item => /^set_gametype\b/i.test(item))) continue;
+    if (active.length !== 1) return null;
+    const match = active[0].match(/^set_gametype\s+(?:"([a-z0-9_]+)"|([a-z0-9_]+))\s*$/i);
+    if (!match) return null;
+    gametype = (match[1] || match[2]).toLowerCase();
+  }
+  return gametype;
+}
 async function modeOptions(profile, gamePath) {
   if (profile.modeType === 'gametype') {
     return profile.id === 'cod4' || profile.id === 'mw2'
@@ -63,22 +91,22 @@ async function modeOptions(profile, gamePath) {
   const extension = profile.id === 'mw3' ? '.dsr' : '.cfg';
   let entries = [];
   try { entries = await fs.readdir(folder); } catch { /* Folder not installed. */ }
-  let candidates = entries.filter(n => n.toLowerCase().endsWith(extension) && safeName.test(n.slice(0, -extension.length)));
-  if (profile.id === 'bo2') {
-    // This folder also contains Zombies settings. Only multiplayer files that
-    // explicitly select their own gametype are valid for a t6mp rotation.
-    const verified = await Promise.all(candidates.map(async name => {
-      try {
-        // Decode like the config editor, so UTF-16 mode files are not silently dropped.
-        const text = withoutBlockComments(decode(await fs.readFile(path.join(folder, name))).text);
-        const declarations = text.split(/\r?\n/).map(line => line.split('//', 1)[0].trim().match(/^set_gametype\s+([a-z0-9_]+)\b/i)).filter(Boolean);
-        const declaration = declarations.at(-1);
-        return declaration?.[1].toLowerCase() === name.slice(0, -extension.length).toLowerCase() ? name : null;
-      } catch { return null; }
-    }));
-    candidates = verified.filter(Boolean);
-  }
-  return candidates.map(n => ({ value: n.slice(0, -extension.length), label: n.slice(0, -extension.length).replace(/_default$/i, '').toUpperCase() }));
+  const candidates = entries.filter(n => n.toLowerCase().endsWith(extension) && safeName.test(n.slice(0, -extension.length)));
+  const verified = await Promise.all(candidates.map(async name => {
+    try {
+      const file = path.join(folder, name);
+      if (!(await fs.stat(file)).isFile()) return null;
+      // Use the editor's decoder and mode dialect, for both DSR and T6 rules.
+      // A directory, unreadable file or malformed UTF-16 is not an installed mode.
+      const text = withoutBlockComments(decode(await fs.readFile(file)).text);
+      parseEntries(text, profile.id === 'mw3' ? 'gameOpt' : 'gts');
+      // T6's folder also contains Zombies settings. Only complete multiplayer
+      // declarations selecting the file's own gametype belong in a rotation.
+      if (profile.id === 'bo2' && bo2Gametype(text) !== name.slice(0, -extension.length).toLowerCase()) return null;
+      return name;
+    } catch { return null; }
+  }));
+  return verified.filter(Boolean).map(n => ({ value: n.slice(0, -extension.length), label: n.slice(0, -extension.length).replace(/_default$/i, '').toUpperCase() }));
 }
 function shuffle(names) {
   const copy = [...names];

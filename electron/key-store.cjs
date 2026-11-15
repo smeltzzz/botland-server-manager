@@ -32,18 +32,12 @@ function decodeCipher(value) {
   return bytes;
 }
 
-async function decryptKey(safeStorage, stored, asyncProvider) {
+async function decryptKey(safeStorage, stored) {
   const bytes = decodeCipher(stored);
   try {
-    let key;
-    let shouldReEncrypt = false;
-    if (asyncProvider) {
-      const result = await safeStorage.decryptStringAsync(bytes);
-      key = result?.result;
-      shouldReEncrypt = result?.shouldReEncrypt === true;
-    } else {
-      key = safeStorage.decryptString(bytes);
-    }
+    const result = await safeStorage.decryptStringAsync(bytes);
+    const key = result?.result;
+    const shouldReEncrypt = result?.shouldReEncrypt === true;
     if (typeof key !== 'string' || !key) throw new Error(invalidStore);
     return { value: key, shouldReEncrypt };
   } catch {
@@ -60,11 +54,10 @@ async function decryptKey(safeStorage, stored, asyncProvider) {
 class KeyStore {
   constructor(filePath, safeStorage) {
     if (typeof filePath !== 'string' || !path.isAbsolute(filePath)) throw new Error('A private absolute key-store path is required.');
-    const asyncProvider = safeStorage && typeof safeStorage.isAsyncEncryptionAvailable === 'function' &&
+    const asyncProvider = !!safeStorage && typeof safeStorage.isAsyncEncryptionAvailable === 'function' &&
       typeof safeStorage.encryptStringAsync === 'function' && typeof safeStorage.decryptStringAsync === 'function';
-    const syncProvider = safeStorage && typeof safeStorage.isEncryptionAvailable === 'function' &&
-      typeof safeStorage.encryptString === 'function' && typeof safeStorage.decryptString === 'function';
-    if (!asyncProvider && !syncProvider) throw new Error('Electron safeStorage is required.');
+    // Electron 47 removes the synchronous safeStorage API; only the async API is
+    // used. Without it the store fails closed (encryption unavailable).
     this.filePath = filePath;
     this.safeStorage = safeStorage;
     this.asyncProvider = asyncProvider;
@@ -75,11 +68,11 @@ class KeyStore {
   // on Windows when no user encryption provider is available).
   async requireEncryption() {
     let available = false;
-    try {
-      available = (this.asyncProvider
-        ? await this.safeStorage.isAsyncEncryptionAvailable()
-        : this.safeStorage.isEncryptionAvailable()) === true;
-    } catch { /* unavailable */ }
+    if (this.asyncProvider) {
+      try {
+        available = (await this.safeStorage.isAsyncEncryptionAvailable()) === true;
+      } catch { /* unavailable */ }
+    }
     if (!available) throw storeError('Secure key storage is unavailable.', 'encryption-unavailable');
   }
 
@@ -161,7 +154,7 @@ class KeyStore {
       const keys = await this.read();
       let cipher;
       try {
-        cipher = this.asyncProvider ? await this.safeStorage.encryptStringAsync(key) : this.safeStorage.encryptString(key);
+        cipher = await this.safeStorage.encryptStringAsync(key);
         // A misconfigured/mock provider must not accidentally persist the input.
         if (!Buffer.isBuffer(cipher) || !cipher.length || cipher.length > maxCipherBytes || cipher.toString('utf8') === key) {
           throw new Error('Invalid ciphertext.');
@@ -180,7 +173,7 @@ class KeyStore {
       await this.requireEncryption();
       const stored = (await this.read())[id];
       if (stored === undefined) return false;
-      await decryptKey(this.safeStorage, stored, this.asyncProvider);
+      await decryptKey(this.safeStorage, stored);
       return true;
     });
   }
@@ -192,13 +185,13 @@ class KeyStore {
       await this.requireEncryption();
       const stored = (await this.read())[id];
       if (stored === undefined) return null;
-      const { value, shouldReEncrypt } = await decryptKey(this.safeStorage, stored, this.asyncProvider);
+      const { value, shouldReEncrypt } = await decryptKey(this.safeStorage, stored);
       if (shouldReEncrypt) {
         // The OS asked for fresh wrapping (key rotation). Re-wrap this key so it
         // stays readable later; a failure here must not lose the usable value.
         try {
           const keys = await this.read();
-          const cipher = this.asyncProvider ? await this.safeStorage.encryptStringAsync(value) : this.safeStorage.encryptString(value);
+          const cipher = await this.safeStorage.encryptStringAsync(value);
           if (Buffer.isBuffer(cipher) && cipher.length && cipher.length <= maxCipherBytes) {
             keys[id] = cipher.toString('base64');
             await this.write(keys);

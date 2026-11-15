@@ -6,7 +6,7 @@ const { spawn, execFile } = require('node:child_process');
 const { promisify } = require('node:util');
 const { StringDecoder } = require('node:string_decoder');
 const { profiles, order, profileFor, bootstrapPath } = require('./profiles.cjs');
-const { readConfig, readDocument, previewConfig, saveConfig, parseEntries, withoutBlockComments, decode } = require('./config.cjs');
+const { parseConfig, readDocument, previewConfig, saveConfig, parseEntries, withoutBlockComments, decode } = require('./config.cjs');
 const { schemaFor, sourceRepos } = require('./schema.cjs');
 const { findArtwork, imageMeta } = require('./artwork.cjs');
 const { scanMaps, modeOptions, rotationText, writeRotation } = require('./maps.cjs');
@@ -87,8 +87,10 @@ class ServerManager {
     this.firewallBusy = new Set();
     this.firewallStarting = new Set();
     this.logs = new Map();
+    this.logSequences = new Map(); // Runtime totals, independent of retained lines and never persisted.
     this.sessionCleanup = new Map();
     this.persistQueue = Promise.resolve();
+    this.configCache = new Map();
     this.mutationQueue = Promise.resolve();
     this.broadcastSequence = 0;
     this.lastBroadcast = 0;
@@ -214,9 +216,17 @@ class ServerManager {
     const value = process.env.LOCALAPPDATA || '';
     return value && path.isAbsolute(value) ? value : '';
   }
+  selectedGamePath(id) {
+    return this.options(id).gamePath || this.detected?.games?.[id]?.gamePath || '';
+  }
   async gamePath(id) {
-    const opts = this.options(id);
-    return opts.gamePath || this.detected?.games?.[id]?.gamePath || '';
+    profileFor(id);
+    const instance = this.instances.get(id);
+    // Detection is only a suggestion while a launch/retry owns its folder.
+    // Keep this separate from options(): saving a port or map preference must
+    // not turn an implicit Steam selection into a persisted manual override.
+    if (['starting', 'running', 'stopping', 'restarting'].includes(instance?.status) && typeof instance.launchPath === 'string') return instance.launchPath;
+    return this.selectedGamePath(id);
   }
   ensureOrphanTimer() {
     if (this.orphanTimer || this.shuttingDown) return;
@@ -232,23 +242,24 @@ class ServerManager {
       this.detectError = error.message || 'Installation scan failed.';
       throw error;
     }
-    const before = Object.keys(previous?.games || {}).length;
-    const after = Object.keys(next?.games || {}).length;
+    const installedEvidence = scan => Object.values(scan?.games || {}).some(game => game?.installed || game?.gamePath);
+    const lostLibraries = previous?.libraries?.length > 0 && !next?.libraries?.length;
+    const lostInstalls = installedEvidence(previous) && !installedEvidence(next);
     this.detected = next;
-    // reg.exe has a short timeout; an antivirus or profile hiccup can return an
-    // empty library. Keep the result (the user may have moved Steam) but say the
-    // scan looked incomplete instead of silently dropping every card.
-    this.detectError = before > 0 && after === 0
-      ? 'Steam returned no game libraries this time. If your games are still installed, try Rescan installations again.'
+    // Detection always has six game keys, even after a failed registry read.
+    // Compare actual library/install evidence instead of counting those keys.
+    // Keep the suggestions (Steam may really have moved) but flag the dropout.
+    this.detectError = lostLibraries || lostInstalls
+      ? 'Steam could not confirm the game libraries or installations found last time. If your games are still installed, try Rescan installations again.'
       : null;
-    await this.rescanOrphans();
+    await this.rescanOrphans({ broadcast: false });
     // Keep the read-only diagnostic off the snapshot path. Only a real startup
     // installation scan installs this unref'd periodic refresh.
     this.ensureOrphanTimer();
     await this.broadcastState();
     return true;
   }
-  async rescanOrphans() {
+  async rescanOrphans({ broadcast = true } = {}) {
     if (this.orphanScan) return this.orphanScan;
     const scan = (async () => {
       const candidates = (await Promise.all(order.map(async id => ({ id, port: this.options(id).port,
@@ -259,7 +270,7 @@ class ServerManager {
       this.orphans = new Map(findings.filter(item => item && !this.ownsListener(item) &&
         candidates.some(candidate => candidate.id === item.id && candidate.port === item.port))
         .map(item => [item.id, { pid: item.pid, port: item.port, reason: item.reason }]));
-      await this.broadcastState();
+      if (broadcast) await this.broadcastState();
       return [...this.orphans.entries()];
     })();
     this.orphanScan = scan;
@@ -437,18 +448,25 @@ class ServerManager {
     const gamePath = await this.gamePath(id);
     if (!gamePath || !(await inspectGameFolder(id, gamePath)).installed) throw new Error(`Select an installed ${profile.short} game folder first.`);
     if (!this.modInstaller || !this.modSource) throw new Error('Bot Warfare installer is unavailable.');
+    const channel = this.botChannel(id);
     const [status, resolved] = await Promise.all([
       this.modInstaller.status(id, gamePath),
-      this.data.updatesEnabled ? this.modSource.resolveSource(id, this.botChannel(id)) : Promise.resolve(null),
+      this.data.updatesEnabled ? this.modSource.resolveSource(id, channel) : Promise.resolve(null),
     ]);
-    const source = resolved ? { supported: resolved.supported, ref: resolved.ref, notes: resolved.notes, status: resolved.status }
-      : { supported: this.botChannel(id) === 'stable' || ['cod4', 'bo2'].includes(id),
-        ref: this.botChannel(id) === 'stable' ? SOURCES[id].tag || SOURCES[id].commit : null,
-        notes: 'Update checks are off. Use Check now to see upstream release notes.', status: 'disabled' };
-    return { ...status, channel: this.botChannel(id), source };
+    // "Supported" describes the channel, not permission to install its latest
+    // ref. Stable must have this build's pin; development is explicitly unverified.
+    const supported = resolved ? resolved.supported === true : channel === 'stable' || ['cod4', 'bo2'].includes(id);
+    const ref = resolved ? resolved.ref || null : channel === 'stable' ? SOURCES[id].tag || SOURCES[id].commit : null;
+    const verified = supported && channel === 'stable' && (resolved ? resolved.verified === true : Boolean(SOURCES[id].sha256));
+    const resolvable = resolved ? Boolean(ref && resolved.assetUrl && ['tag', 'commit'].includes(resolved.refType)) : Boolean(ref);
+    const source = { supported, verified, installable: supported && resolvable && (channel === 'development' || verified), ref,
+      notes: resolved ? resolved.notes : 'Update checks are off. Use Check now to see upstream release notes.',
+      status: resolved ? resolved.status : 'disabled' };
+    return { ...status, channel, source };
   }
   async botAction(id, operation) {
     profileFor(id);
+    if (this.shuttingDown) throw new Error('The manager is shutting down.');
     if (!['install', 'update', 'reinstall', 'remove'].includes(operation)) throw new Error('Unknown Bot Warfare action.');
     if (!this.modInstaller) throw new Error('Bot Warfare installer is unavailable.');
     if (this.folderUpdates.has(id)) throw new Error('Wait for the game folder change to finish before changing Bot Warfare.');
@@ -488,7 +506,7 @@ class ServerManager {
     const configPath = path.join(gamePath, profile.config);
     const blockers = [];
     const warnings = [];
-    const pathSource = options.gamePath ? 'manual' : gamePath ? 'steam' : 'none';
+    const pathSource = this.instances.get(id)?.pathSource || (options.gamePath ? 'manual' : gamePath ? 'steam' : 'none');
     const inspected = this.detected && gamePath ? await inspectGameFolder(id, gamePath) : null;
     const installed = inspected ? inspected.installed : Boolean(gamePath && await exists(gamePath));
     const { status: keyStatus, reason: keyReason } = await this.keyState(id);
@@ -580,6 +598,7 @@ class ServerManager {
       setup.maps = count() === mapsStart;
     }
     const configStart = count();
+    let config = {};
     // Read every installed title's base config here, not only in snapshot():
     // Start calls check() directly and must fail closed on unreadable files.
     // Without a game folder configPath is relative to the working directory.
@@ -590,7 +609,9 @@ class ServerManager {
         // Decode like the editor does; malformed UTF-16 must not reach the game.
         // Existing values are not revalidated against editor-only limits: this
         // preflight checks readability, not whether users may edit those values.
-        const body = withoutBlockComments(decode(await fs.readFile(configPath)).text);
+        const text = await this.cachedConfigText(configPath, stat);
+        config = parseConfig(text, { id, target: 'base', mode: options.mode });
+        const body = withoutBlockComments(text);
         if (id === 'mw3' || id === 'bo2') {
           const rotation = path.basename(profile.rotation).toLowerCase();
           const relative = profile.rotation.toLowerCase();
@@ -612,17 +633,24 @@ class ServerManager {
       } catch (error) { blockers.push(configReadBlocker(profile, error)); }
     }
     setup.config = installed && !configMissing && count() === configStart;
-    return { gamePath, installed, pathSource, keyStatus, keyReason, configMissing, setup, blockers, warnings, options };
+    return { gamePath, installed, pathSource, keyStatus, keyReason, configMissing, setup, blockers, warnings, options, config };
   }
+  // Decoded base-config text, reused while path + mtime + size are unchanged.
+  // App writes also clear the cache explicitly (see invalidateConfigCache).
+  async cachedConfigText(file, stat) {
+    const key = path.resolve(file).toLowerCase();
+    const cached = this.configCache.get(key);
+    if (cached && cached.mtimeMs === stat.mtimeMs && cached.size === stat.size) return cached.text;
+    const text = decode(await fs.readFile(file)).text;
+    this.configCache.set(key, { mtimeMs: stat.mtimeMs, size: stat.size, text });
+    return text;
+  }
+  invalidateConfigCache() { this.configCache.clear(); }
   async snapshot() {
     const games = await Promise.all(order.map(async id => {
       const profile = profiles[id];
       const result = await this.check(id);
-      let config = {};
-      if (result.installed && !result.configMissing) {
-        try { config = await readConfig(path.join(result.gamePath, profile.config), { id, target: 'base', mode: result.options.mode }); }
-        catch (error) { if (!result.blockers.some(x => x.startsWith('Could not read server config'))) result.blockers.push(configReadBlocker(profile, error)); }
-      }
+      const config = result.config || {};
       const instance = this.instances.get(id);
       const restart = this.restarts.get(id);
       if (restart && instance?.status === 'running' && instance.startedAt && this.restartTimers.now() - Date.parse(instance.startedAt) > this.restartWindow) {
@@ -815,6 +843,7 @@ class ServerManager {
       }
       throw error;
     });
+    this.invalidateConfigCache();
     // The file now exists; a refresh failure must not report the creation as failed.
     await this.broadcastState().catch(() => {});
     return file;
@@ -854,7 +883,8 @@ class ServerManager {
     if (typeof token !== 'string' || !/^[a-f0-9]{64}$/.test(token)) throw new Error('Review the changes before saving.');
     const { file, mode: selectedMode } = await this.configTarget(id, target, mode);
     this.assertConfigPath(file, expectedPath);
-    await saveConfig(file, values, { id, target, mode: selectedMode, token });
+    try { await saveConfig(file, values, { id, target, mode: selectedMode, token }); }
+    finally { this.invalidateConfigCache(); }
     // The file is already committed. A failed notification or reload must not
     // turn that successful write into a reported save failure.
     await this.broadcastState().catch(() => {});
@@ -874,7 +904,9 @@ class ServerManager {
   }
   async restoreConfigBackup(id, target, mode, backupId, token) {
     const { file } = await this.configTarget(id, target, mode);
-    const restored = await restoreBackup(file, backupId, token);
+    let restored;
+    try { restored = await restoreBackup(file, backupId, token); }
+    finally { this.invalidateConfigCache(); }
     // The restore is already on disk; a failed refresh must not report it as failed.
     await this.broadcastState().catch(() => {});
     return restored;
@@ -996,6 +1028,20 @@ class ServerManager {
     return { name, port, state, ...(owned ? { managed: true } : {}), ...(legacy ? { legacy: true } : {}) };
   }
   firewallJournal(id) { return `${this.settingsPath}.firewall-${id}.json`; }
+  // Atomic (temp + fsync + rename) so a crash never leaves a truncated journal.
+  async writeFirewallJournal(id, value) {
+    const target = this.firewallJournal(id);
+    await fs.mkdir(path.dirname(target), { recursive: true });
+    const temp = `${target}.${crypto.randomUUID()}.tmp`;
+    try {
+      const handle = await fs.open(temp, 'wx');
+      try {
+        await handle.writeFile(JSON.stringify(value), 'utf8');
+        await handle.sync();
+      } finally { await handle.close(); }
+      await fs.rename(temp, target);
+    } finally { await fs.rm(temp, { force: true }).catch(() => {}); }
+  }
   async runElevated(lines, id) {
     const workspace = await fs.mkdtemp(path.join(os.tmpdir(), 'botland-elevate-'));
     const resultFile = path.join(workspace, 'result.json');
@@ -1018,6 +1064,9 @@ class ServerManager {
     // Pass the script inline rather than as a file in a user-writable folder,
     // so nothing can be swapped in between the UAC prompt and execution.
     const encoded = Buffer.from(script, 'utf16le').toString('base64');
+    // The payload is interpolated into a single-quoted PowerShell literal; only
+    // base64 characters may ever reach it.
+    if (!/^[A-Za-z0-9+/=]+$/.test(encoded)) throw new Error('Refusing to run an invalid elevated command payload.');
     // A declined UAC prompt is ERROR_CANCELLED (1223); its message text is
     // localized, so report the native code as the exit code instead.
     const command = `try { $p = Start-Process -WindowStyle Hidden -Verb RunAs -PassThru -Wait powershell.exe `
@@ -1029,8 +1078,7 @@ class ServerManager {
       if (id) {
         // Persist evidence BEFORE anything can be elevated. On a crash/restart,
         // absence of a terminal result is still a blocker, not a fresh start.
-        await fs.mkdir(path.dirname(this.settingsPath), { recursive: true });
-        await fs.writeFile(this.firewallJournal(id), JSON.stringify({ workspace }));
+        await this.writeFirewallJournal(id, { workspace });
       }
       let wrapperError;
       try {
@@ -1079,7 +1127,10 @@ class ServerManager {
       const pending = this.firewallUnresolved.get(id);
       if (pending) {
         let result;
-        try { result = JSON.parse((await fs.readFile(pending.resultFile, 'utf8')).replace(/^\uFEFF/, '')); } catch { /* Still unresolved. */ }
+        // A corrupt journal ({} placeholder) has no result file: stays blocked.
+        if (typeof pending.resultFile === 'string') {
+          try { result = JSON.parse((await fs.readFile(pending.resultFile, 'utf8')).replace(/^\uFEFF/, '')); } catch { /* Still unresolved. */ }
+        }
         if (typeof result?.ok !== 'boolean') throw new Error(`The previous elevated firewall change is still unresolved. Wait for elevated PowerShell to finish and retry. Status refresh or app restart does not cancel pending elevation${id === 'bo1' ? '; BO1 Start remains blocked' : ''}. If no outcome can be recovered, close its administrator prompt and terminate its elevated PowerShell before manually removing ${this.firewallJournal(id)} and restarting botLANd.`);
         await fs.rm(this.firewallJournal(id), { force: true });
         this.firewallUnresolved.delete(id);
